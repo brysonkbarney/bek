@@ -1,0 +1,55 @@
+name: Feature request
+description: Propose a product or platform improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Bek has one visible Slack teammate. Feature requests should preserve the @bek user experience and put routing, access, model, repo, tool, budget, and approval choices under admin policy.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      placeholder: "Admins need to attach a read-only MCP docs search tool to one channel."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Slack setup
+        - Access bundles
+        - Approvals
+        - Model providers
+        - MCP gateway
+        - Repos/GitHub
+        - Sandbox/runtime
+        - Budgets and usage
+        - Audit/security
+        - Hosted/commercial
+        - Other
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: invariant
+    attributes:
+      label: Invariants
+      options:
+        - label: End users still tag one visible teammate, @bek.
+          required: true
+        - label: Admins can govern access by channel/place, access bundle, tool, repo, model, budget, and approval policy.
+          required: true
+        - label: Risky writes remain auditable and approval-gated unless an admin explicitly configures otherwise.
+          required: true

@@ -1,0 +1,130 @@
+import { describe, expect, it } from "vitest";
+import { BekStore } from "./store";
+
+function createPendingApproval(store: BekStore, prompt = "@bek open a PR") {
+  const run = store.createRun({
+    prompt,
+    placeScopeId: "place_checkout",
+    capability: "github.pr",
+    resource: "github:redohq/checkout",
+  });
+  const snapshot = store.read();
+  const approval = snapshot.approvals.find(
+    (candidate) => candidate.runId === run.id,
+  );
+  if (!approval) {
+    throw new Error("Expected approval.");
+  }
+  return approval;
+}
+
+describe("Bek approvals", () => {
+  it("requires another human to approve risky writes with the original payload hash", () => {
+    const store = new BekStore();
+    const approval = createPendingApproval(store);
+
+    expect(() =>
+      store.decideApproval(approval.id, "approved", {
+        principalId: "principal_admin",
+        payloadHash: approval.payloadHash,
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejects hash tampering and self-approval for risky writes", () => {
+    const store = new BekStore();
+    const approval = createPendingApproval(store);
+
+    expect(() =>
+      store.decideApproval(approval.id, "approved", {
+        principalId: "principal_admin",
+        payloadHash: "bad-hash-bad-hash",
+      }),
+    ).toThrow(/hash/i);
+
+    expect(() =>
+      store.decideApproval(approval.id, "approved", {
+        principalId: "principal_bryson",
+        payloadHash: approval.payloadHash,
+      }),
+    ).toThrow(/self-approve/i);
+  });
+
+  it("rejects stale approval hashes from a different pending request", () => {
+    const store = new BekStore();
+    const staleApproval = createPendingApproval(
+      store,
+      "@bek open the first PR",
+    );
+    const currentApproval = createPendingApproval(
+      store,
+      "@bek open the second PR",
+    );
+
+    expect(staleApproval.payloadHash).not.toBe(currentApproval.payloadHash);
+    expect(() =>
+      store.decideApproval(currentApproval.id, "approved", {
+        principalId: "principal_admin",
+        payloadHash: staleApproval.payloadHash,
+      }),
+    ).toThrow(/hash/i);
+    expect(
+      store
+        .read()
+        .approvals.find((candidate) => candidate.id === currentApproval.id)
+        ?.status,
+    ).toBe("pending");
+  });
+
+  it("rejects agent approval actors", () => {
+    const store = new BekStore();
+    const approval = createPendingApproval(store);
+
+    expect(() =>
+      store.decideApproval(approval.id, "approved", {
+        principalId: "principal_bek",
+        payloadHash: approval.payloadHash,
+      }),
+    ).toThrow(/human principal/i);
+    expect(
+      store.read().approvals.find((candidate) => candidate.id === approval.id)
+        ?.status,
+    ).toBe("pending");
+  });
+
+  it("does not allow an approval to be decided twice", () => {
+    const store = new BekStore();
+    const approval = createPendingApproval(store);
+
+    expect(
+      store.decideApproval(approval.id, "approved", {
+        principalId: "principal_admin",
+        payloadHash: approval.payloadHash,
+      }).status,
+    ).toBe("approved");
+
+    expect(() =>
+      store.decideApproval(approval.id, "approved", {
+        principalId: "principal_admin",
+        payloadHash: approval.payloadHash,
+      }),
+    ).toThrow(/no longer pending/i);
+  });
+
+  it("expires approvals after the approval window", () => {
+    const store = new BekStore();
+    const approval = createPendingApproval(store);
+
+    expect(() =>
+      store.decideApproval(approval.id, "approved", {
+        principalId: "principal_admin",
+        payloadHash: approval.payloadHash,
+        now: "2099-01-01T00:00:00.000Z",
+      }),
+    ).toThrow(/expired/i);
+    expect(
+      store.read().approvals.find((candidate) => candidate.id === approval.id)
+        ?.status,
+    ).toBe("expired");
+  });
+});

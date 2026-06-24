@@ -1,0 +1,37 @@
+name: Documentation improvement
+description: Report missing, confusing, or stale docs.
+title: "[Docs]: "
+labels:
+  - docs
+  - needs-triage
+body:
+  - type: textarea
+    id: page
+    attributes:
+      label: Page or section
+      description: Link or name the doc that needs work.
+      placeholder: docs/setup/slack.md
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is unclear or missing?
+    validations:
+      required: true
+  - type: dropdown
+    id: audience
+    attributes:
+      label: Primary audience
+      options:
+        - New self-hosting admin
+        - Slack workspace admin
+        - Model/tool integrator
+        - Security reviewer
+        - Contributor
+        - Commercial/hosted evaluator
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggested fix
+      description: Optional, but examples help.

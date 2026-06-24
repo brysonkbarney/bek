@@ -1,0 +1,29 @@
+{
+  "name": "bek",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open-source Claude Tag-style Slack teammate: one visible handle, any model/tool/repo/sandbox behind it.",
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "dev": "turbo dev --parallel",
+    "dev:api": "pnpm --filter @bek/api dev",
+    "dev:web": "pnpm --filter @bek/web dev",
+    "build": "turbo build",
+    "test": "turbo test",
+    "typecheck": "turbo typecheck",
+    "lint": "turbo lint",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "smoke": "bash scripts/smoke.sh",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+  },
+  "packageManager": "pnpm@11.1.3",
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "prettier": "^3.7.4",
+    "turbo": "^2.6.3",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.16"
+  }
+}
