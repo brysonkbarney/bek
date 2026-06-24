@@ -29,20 +29,23 @@ It can:
 - redirect installers to Slack OAuth with signed state,
 - validate OAuth callback state and exchange OAuth codes when
   `BEK_SLACK_OAUTH_EXCHANGE=true` or `NODE_ENV=production`,
+- store exchanged Slack bot tokens in the local encrypted credential vault when
+  `BEK_CREDENTIAL_MASTER_KEY` is set,
 - parse Bek approval button actions and apply them when the Slack user is mapped to a Bek principal,
 - build Slack Web API message payloads for queued runs, approval requests, approval decisions, and final answers,
-- post thread replies, approval buttons, approval decisions, and final answers through the Slack Web API when `SLACK_BOT_TOKEN` is set,
+- post thread replies, approval buttons, approval decisions, and final answers through the Slack Web API with a stored OAuth token or `SLACK_BOT_TOKEN` fallback,
 - provide a typed Slack Web API client interface plus HTTP and fake in-memory clients,
 - build durable Slack ingress keys for events, slash commands, and approval interactions,
 - persist handled delivery keys in the Bek snapshot so retries dedupe across API app instances and Postgres-backed restarts.
 
-When exchange is enabled, the callback returns redacted install metadata for
-verification. Bek does not persist the exchanged bot token yet. For local or
-self-hosted posting, set `SLACK_BOT_TOKEN` from the Slack app's Bot User OAuth
-Token.
+When exchange is enabled, the callback returns redacted install metadata and
+stores the bot token encrypted in the local credential vault. Set
+`BEK_CREDENTIAL_MASTER_KEY` before exchanging codes, and keep that key stable
+for persisted installs. For manual local fallback, set `SLACK_BOT_TOKEN` from
+the Slack app's Bot User OAuth Token.
 
-It does not yet include bot token vault storage or persistent Slack
-user/principal mapping.
+It does not yet include hosted-grade KMS/secret-manager custody, rotation,
+revocation workflows, or persistent Slack user/principal mapping.
 
 ## Create A Slack App
 
@@ -77,6 +80,7 @@ user/principal mapping.
    export SLACK_CLIENT_SECRET=...
    export SLACK_STATE_SECRET="$(openssl rand -hex 32)"
    export SLACK_REDIRECT_URI=https://YOUR-TUNNEL.example.com/api/slack/oauth/callback
+   export BEK_CREDENTIAL_MASTER_KEY="hex:$(openssl rand -hex 32)"
    export BEK_SLACK_OAUTH_EXCHANGE=true
    ```
 
@@ -88,16 +92,19 @@ user/principal mapping.
 
    If admin API auth is enabled, call the install endpoint with the admin bearer token from a trusted admin surface.
 
-9. Enable outbound posting by setting the Bot User OAuth Token:
+9. Enable outbound posting.
+
+   The preferred local/self-hosted path is the stored OAuth bot token from step 8. As a manual fallback, set the Bot User OAuth Token directly:
 
    ```bash
    export SLACK_BOT_TOKEN=xoxb-...
    ```
 
-   The token needs `chat:write`; the default `SLACK_BOT_SCOPES` includes it.
-   Bek posts in the originating channel or thread after the accepted run or
-   approval decision has been persisted. If Slack posting fails, the request is
-   still accepted and the run timeline records the delivery error.
+   Stored or manual tokens need `chat:write`; the default `SLACK_BOT_SCOPES`
+   includes it. Bek posts in the originating channel or thread after the
+   accepted run or approval decision has been persisted. If Slack posting
+   fails, the request is still accepted and the run timeline records the
+   delivery error.
 
 10. Configure slash commands and interactivity:
 
@@ -140,7 +147,11 @@ The seed data recognizes:
 | `#checkout-eng`    | `C_CHECKOUT`       | `place_checkout` |
 | `#general`         | `C_GENERAL`        | `place_general`  |
 
-Real Slack channel IDs will differ. Until persistent channel setup lands, real workspace testing needs the configured place external ID to match the Slack event channel ID.
+Real Slack channel IDs will differ. Until persistent channel setup lands, real
+workspace testing needs the configured place external ID to match the Slack
+event channel ID. For real Slack workspaces, also set the channel place
+metadata team ID, or pass `externalTeamId` to `POST /api/channels`, so Bek
+rejects callbacks from a different Slack team even if a channel ID collides.
 
 ## Required Admin Decisions
 
@@ -154,6 +165,6 @@ Before inviting Bek broadly, decide:
 
 ## Launch Blockers
 
-- Bot token storage through a credential broker.
+- Hosted-grade credential broker/KMS, rotation, revocation, and access audit.
 - Persistent Slack user/principal mapping.
 - Admin UI for channel discovery and bundle attachment.

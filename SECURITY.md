@@ -16,6 +16,9 @@ exploit details in public issues, discussions, or pull requests.
 - Writes require approval unless an admin explicitly configures otherwise.
 - Sandbox execution must not receive raw provider keys.
 - Memory retrieval must enforce ACLs before context injection.
+- Local encrypted OAuth token storage depends on protecting
+  `BEK_CREDENTIAL_MASTER_KEY`; a database backup plus that key can decrypt
+  local-vault envelopes.
 
 ## Threat Model Starting Points
 
@@ -30,7 +33,8 @@ High-risk surfaces to review first:
 - Slack public callbacks and unsigned local demo mode.
 - Admin API auth, CORS, and future admin identity/RBAC.
 - Approval payload integrity and approver mapping.
-- Credential brokering for Slack, GitHub, model providers, MCP, and sandboxes.
+- Local Slack credential vaulting and hosted credential brokering for Slack,
+  GitHub, model providers, MCP, and sandboxes.
 - Sandbox filesystem and network isolation.
 - MCP schema drift, tool output redaction, and tool-call auditing.
 - Cross-tenant isolation before Postgres-backed mode is used beyond a
@@ -41,5 +45,5 @@ High-risk surfaces to review first:
 
 This early repo includes the product spine and tests, but production use still
 requires real OAuth apps, production-grade persistence operations, hardened
-sandboxing, tenant isolation review, credential broker integration, and external
-security review.
+sandboxing, tenant isolation review, managed credential broker/KMS integration,
+key rotation/revocation operations, and external security review.

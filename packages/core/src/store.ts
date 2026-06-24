@@ -2,7 +2,7 @@ import { createSeedSnapshot } from "./seed";
 import { bundlesForPlace, evaluatePolicy } from "./policy";
 import { createApprovalRequest, createRun, createRunEvent } from "./runs";
 import { createId } from "./ids";
-import { redactUnknown } from "./security";
+import { redactSecrets, redactUnknown } from "./security";
 import type {
   AccessBundle,
   AgentIdentity,
@@ -10,6 +10,10 @@ import type {
   BekSnapshot,
   CapabilityGrant,
   CapabilityKind,
+  ConnectorInstall,
+  ConnectorInstallStatus,
+  CredentialRecord,
+  CredentialStatus,
   IngressDelivery,
   IngressDeliveryKind,
   ModelPolicy,
@@ -54,6 +58,35 @@ export interface RecordIngressDeliveryInput {
   runId?: string | undefined;
   approvalId?: string | undefined;
   response?: Record<string, unknown> | undefined;
+  now?: string | undefined;
+}
+
+export interface UpsertConnectorInstallInput {
+  id?: string | undefined;
+  kind: ConnectorInstall["kind"];
+  provider: string;
+  externalId?: string | undefined;
+  displayName: string;
+  status?: ConnectorInstallStatus | undefined;
+  installedByPrincipalId?: string | undefined;
+  config?: Record<string, unknown> | undefined;
+  metadata?: Record<string, unknown> | undefined;
+  now?: string | undefined;
+}
+
+export interface UpsertCredentialInput {
+  id?: string | undefined;
+  connectorInstallId?: string | undefined;
+  name: string;
+  provider: string;
+  externalAccountId?: string | undefined;
+  secretRef: string;
+  status?: CredentialStatus | undefined;
+  scopeSummary: string;
+  metadata?: Record<string, unknown> | undefined;
+  expiresAt?: string | undefined;
+  rotationDueAt?: string | undefined;
+  lastUsedAt?: string | undefined;
   now?: string | undefined;
 }
 
@@ -150,6 +183,7 @@ export class BekStore {
     externalId: string;
     name: string;
     sensitivity: PlaceScope["sensitivity"];
+    metadata?: Record<string, unknown> | undefined;
   }): PlaceScope {
     if (
       this.snapshot.places.some(
@@ -166,8 +200,13 @@ export class BekStore {
     const place: PlaceScope = {
       id: createId("place"),
       orgId: this.snapshot.org.id,
-      ...input,
+      kind: input.kind,
+      provider: input.provider,
+      externalId: input.externalId,
+      name: input.name,
+      sensitivity: input.sensitivity,
     };
+    assignOptional(place, "metadata", redactedRecord(input.metadata));
     this.snapshot.places.unshift(place);
     this.recordChange();
     return structuredClone(place);
@@ -179,6 +218,7 @@ export class BekStore {
       name?: string | undefined;
       externalId?: string | undefined;
       sensitivity?: PlaceScope["sensitivity"] | undefined;
+      metadata?: Record<string, unknown> | undefined;
     },
   ): PlaceScope {
     const place = this.findPlace(placeId);
@@ -205,6 +245,12 @@ export class BekStore {
     }
     if (input.sensitivity) {
       place.sensitivity = input.sensitivity;
+    }
+    if (input.metadata) {
+      const metadata = redactedRecord(input.metadata);
+      if (metadata) {
+        place.metadata = metadata;
+      }
     }
     this.recordChange();
     return structuredClone(place);
@@ -404,6 +450,116 @@ export class BekStore {
     return structuredClone(profile);
   }
 
+  upsertConnectorInstall(input: UpsertConnectorInstallInput): ConnectorInstall {
+    const now = input.now ?? new Date().toISOString();
+    const existing = this.snapshot.connectorInstalls.find(
+      (candidate) =>
+        candidate.id === input.id ||
+        (input.externalId !== undefined &&
+          candidate.provider === input.provider &&
+          candidate.externalId === input.externalId),
+    );
+
+    if (existing) {
+      existing.kind = input.kind;
+      existing.provider = input.provider;
+      existing.displayName = input.displayName;
+      existing.status = input.status ?? existing.status;
+      existing.updatedAt = now;
+      assignOptional(existing, "externalId", input.externalId);
+      assignOptional(
+        existing,
+        "installedByPrincipalId",
+        input.installedByPrincipalId,
+      );
+      assignOptional(existing, "config", redactedRecord(input.config));
+      assignOptional(existing, "metadata", redactedRecord(input.metadata));
+      this.recordChange();
+      return structuredClone(existing);
+    }
+
+    const install: ConnectorInstall = {
+      id: input.id ?? createId("connector"),
+      orgId: this.snapshot.org.id,
+      kind: input.kind,
+      provider: input.provider,
+      displayName: input.displayName,
+      status: input.status ?? "active",
+      createdAt: now,
+      updatedAt: now,
+    };
+    assignOptional(install, "externalId", input.externalId);
+    assignOptional(
+      install,
+      "installedByPrincipalId",
+      input.installedByPrincipalId,
+    );
+    assignOptional(install, "config", redactedRecord(input.config));
+    assignOptional(install, "metadata", redactedRecord(input.metadata));
+    this.snapshot.connectorInstalls.unshift(install);
+    this.recordChange();
+    return structuredClone(install);
+  }
+
+  upsertCredential(input: UpsertCredentialInput): CredentialRecord {
+    const now = input.now ?? new Date().toISOString();
+    if (
+      input.connectorInstallId &&
+      !this.snapshot.connectorInstalls.some(
+        (install) => install.id === input.connectorInstallId,
+      )
+    ) {
+      throw new Error("Connector install not found.");
+    }
+
+    const existing = this.snapshot.credentials.find(
+      (candidate) =>
+        candidate.id === input.id ||
+        (input.connectorInstallId !== undefined &&
+          candidate.connectorInstallId === input.connectorInstallId &&
+          candidate.provider === input.provider &&
+          candidate.externalAccountId === input.externalAccountId),
+    );
+
+    if (existing) {
+      existing.name = input.name;
+      existing.provider = input.provider;
+      existing.secretRef = redactSecrets(input.secretRef);
+      existing.status = input.status ?? existing.status;
+      existing.scopeSummary = input.scopeSummary;
+      existing.updatedAt = now;
+      assignOptional(existing, "connectorInstallId", input.connectorInstallId);
+      assignOptional(existing, "externalAccountId", input.externalAccountId);
+      assignOptional(existing, "metadata", redactedRecord(input.metadata));
+      assignOptional(existing, "expiresAt", input.expiresAt);
+      assignOptional(existing, "rotationDueAt", input.rotationDueAt);
+      assignOptional(existing, "lastUsedAt", input.lastUsedAt);
+      this.recordChange();
+      return structuredClone(existing);
+    }
+
+    const credential: CredentialRecord = {
+      id: input.id ?? createId("credential"),
+      orgId: this.snapshot.org.id,
+      name: input.name,
+      provider: input.provider,
+      secretRef: redactSecrets(input.secretRef),
+      status: input.status ?? "active",
+      scopeSummary: input.scopeSummary,
+      createdAt: now,
+      updatedAt: now,
+    };
+    assignOptional(credential, "connectorInstallId", input.connectorInstallId);
+    assignOptional(credential, "externalAccountId", input.externalAccountId);
+    assignOptional(credential, "metadata", redactedRecord(input.metadata));
+    assignOptional(credential, "expiresAt", input.expiresAt);
+    assignOptional(credential, "rotationDueAt", input.rotationDueAt);
+    assignOptional(credential, "lastUsedAt", input.lastUsedAt);
+    this.snapshot.credentials.unshift(credential);
+    this.recordChange();
+    return structuredClone(credential);
+  }
+
   createRun(input: {
     prompt: string;
     placeScopeId: string;
@@ -450,7 +606,7 @@ export class BekStore {
         this.snapshot.org.id,
         run.id,
         "run.created",
-        `Bek queued: ${input.prompt}`,
+        `Bek queued: ${run.prompt}`,
       ),
     );
 
@@ -837,4 +993,22 @@ function eventTypeForStatus(status: RunStatus): RunEvent["type"] {
     return "run.failed";
   }
   return "run.status_changed";
+}
+
+function assignOptional<T extends object, K extends keyof T>(
+  target: T,
+  key: K,
+  value: T[K],
+): void {
+  if (value !== undefined) {
+    target[key] = value;
+  }
+}
+
+function redactedRecord(
+  value: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  return value === undefined
+    ? undefined
+    : (redactUnknown(value) as Record<string, unknown>);
 }

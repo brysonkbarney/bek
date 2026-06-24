@@ -5,6 +5,7 @@ describe("Slack event normalization", () => {
   it("keeps message timestamps for threaded app mention replies", () => {
     expect(
       normalizeSlackEvent({
+        team_id: "T123",
         event: {
           type: "app_mention",
           channel: "C123",
@@ -16,12 +17,14 @@ describe("Slack event normalization", () => {
     ).toMatchObject({
       type: "mention",
       channelId: "C123",
+      teamId: "T123",
       userId: "U123",
       threadTs: "1700000000.000001",
     });
 
     expect(
       normalizeSlackEvent({
+        team: { id: "T123" },
         event: {
           type: "app_mention",
           channel: "C123",
@@ -33,6 +36,7 @@ describe("Slack event normalization", () => {
       }),
     ).toMatchObject({
       type: "mention",
+      teamId: "T123",
       threadTs: "1700000000.000001",
     });
   });
@@ -40,6 +44,7 @@ describe("Slack event normalization", () => {
   it("keeps reaction item timestamps for threaded replies", () => {
     expect(
       normalizeSlackEvent({
+        team_id: "T123",
         event: {
           type: "reaction_added",
           user: "U123",
@@ -53,6 +58,7 @@ describe("Slack event normalization", () => {
     ).toMatchObject({
       type: "reaction",
       channelId: "C123",
+      teamId: "T123",
       reaction: "eyes",
       threadTs: "1700000000.000003",
     });

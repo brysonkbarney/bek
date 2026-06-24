@@ -3,6 +3,8 @@ import type {
   ApprovalRequest,
   BekSnapshot,
   CapabilityGrant,
+  ConnectorInstall,
+  CredentialRecord,
   IngressDelivery,
   Principal,
   RunEvent,
@@ -16,6 +18,8 @@ import {
   approvals,
   budgetPolicies,
   capabilityProfiles,
+  connectorInstalls,
+  credentialMetadata,
   grants,
   ingressDeliveries,
   modelPolicies,
@@ -31,6 +35,8 @@ import {
   type ApprovalRow,
   type BudgetPolicyRow,
   type CapabilityProfileRow,
+  type ConnectorInstallRow,
+  type CredentialMetadataRow,
   type GrantRow,
   type IngressDeliveryRow,
   type ModelPolicyRow,
@@ -88,6 +94,7 @@ type PlaceSnapshotRow = Pick<
   | "externalId"
   | "name"
   | "sensitivity"
+  | "metadata"
   | "createdAt"
   | "updatedAt"
 >;
@@ -146,6 +153,39 @@ type BudgetPolicySnapshotRow = Pick<
   | "name"
   | "perRunCents"
   | "perDayCents"
+  | "createdAt"
+  | "updatedAt"
+>;
+type ConnectorInstallSnapshotRow = Pick<
+  ConnectorInstallRow,
+  | "id"
+  | "orgId"
+  | "kind"
+  | "provider"
+  | "externalId"
+  | "displayName"
+  | "status"
+  | "installedByPrincipalId"
+  | "config"
+  | "metadata"
+  | "createdAt"
+  | "updatedAt"
+>;
+type CredentialMetadataSnapshotRow = Pick<
+  CredentialMetadataRow,
+  | "id"
+  | "orgId"
+  | "connectorInstallId"
+  | "name"
+  | "provider"
+  | "externalAccountId"
+  | "secretRef"
+  | "status"
+  | "scopeSummary"
+  | "metadata"
+  | "expiresAt"
+  | "rotationDueAt"
+  | "lastUsedAt"
   | "createdAt"
   | "updatedAt"
 >;
@@ -212,6 +252,8 @@ export interface BekSnapshotRows {
   modelPolicies: ModelPolicySnapshotRow[];
   runtimeProfiles: RuntimeProfileSnapshotRow[];
   budgetPolicies: BudgetPolicySnapshotRow[];
+  connectorInstalls: ConnectorInstallSnapshotRow[];
+  credentials: CredentialMetadataSnapshotRow[];
   runs: RunSnapshotRow[];
   events: RunEventSnapshotRow[];
   approvals: ApprovalSnapshotRow[];
@@ -248,6 +290,8 @@ export class DrizzleBekSnapshotRepository implements BekSnapshotRepository {
       modelPolicyRows,
       runtimeProfileRows,
       budgetPolicyRows,
+      connectorInstallRows,
+      credentialRows,
       runRows,
       eventRows,
       approvalRows,
@@ -308,6 +352,19 @@ export class DrizzleBekSnapshotRepository implements BekSnapshotRepository {
         .orderBy(asc(budgetPolicies.id)),
       this.db
         .select()
+        .from(connectorInstalls)
+        .where(eq(connectorInstalls.orgId, orgId))
+        .orderBy(desc(connectorInstalls.updatedAt), asc(connectorInstalls.id)),
+      this.db
+        .select()
+        .from(credentialMetadata)
+        .where(eq(credentialMetadata.orgId, orgId))
+        .orderBy(
+          desc(credentialMetadata.updatedAt),
+          asc(credentialMetadata.id),
+        ),
+      this.db
+        .select()
         .from(runs)
         .where(eq(runs.orgId, orgId))
         .orderBy(desc(runs.createdAt), asc(runs.id)),
@@ -340,6 +397,8 @@ export class DrizzleBekSnapshotRepository implements BekSnapshotRepository {
       modelPolicies: modelPolicyRows,
       runtimeProfiles: runtimeProfileRows,
       budgetPolicies: budgetPolicyRows,
+      connectorInstalls: connectorInstallRows,
+      credentials: credentialRows,
       runs: runRows,
       events: eventRows,
       approvals: approvalRows,
@@ -396,6 +455,7 @@ export function snapshotToRows(
     })),
     places: snapshot.places.map((place) => ({
       ...place,
+      metadata: place.metadata ?? {},
       createdAt: now,
       updatedAt: now,
     })),
@@ -444,6 +504,39 @@ export function snapshotToRows(
       ...policy,
       createdAt: now,
       updatedAt: now,
+    })),
+    connectorInstalls: snapshot.connectorInstalls.map((install) => ({
+      id: install.id,
+      orgId: install.orgId,
+      kind: install.kind,
+      provider: install.provider,
+      externalId: install.externalId ?? null,
+      displayName: install.displayName,
+      status: install.status,
+      installedByPrincipalId: install.installedByPrincipalId ?? null,
+      config: install.config ?? {},
+      metadata: install.metadata ?? {},
+      createdAt: toDate(install.createdAt),
+      updatedAt: toDate(install.updatedAt),
+    })),
+    credentials: snapshot.credentials.map((credential) => ({
+      id: credential.id,
+      orgId: credential.orgId,
+      connectorInstallId: credential.connectorInstallId ?? null,
+      name: credential.name,
+      provider: credential.provider,
+      externalAccountId: credential.externalAccountId ?? null,
+      secretRef: credential.secretRef,
+      status: credential.status,
+      scopeSummary: credential.scopeSummary,
+      metadata: credential.metadata ?? {},
+      expiresAt: credential.expiresAt ? toDate(credential.expiresAt) : null,
+      rotationDueAt: credential.rotationDueAt
+        ? toDate(credential.rotationDueAt)
+        : null,
+      lastUsedAt: credential.lastUsedAt ? toDate(credential.lastUsedAt) : null,
+      createdAt: toDate(credential.createdAt),
+      updatedAt: toDate(credential.updatedAt),
     })),
     runs: snapshot.runs.map((run) => ({
       ...run,
@@ -543,6 +636,9 @@ export function rowsToSnapshot(rows: BekSnapshotRows): BekSnapshot {
       externalId: place.externalId,
       name: place.name,
       sensitivity: place.sensitivity,
+      ...(Object.keys(place.metadata ?? {}).length > 0
+        ? { metadata: place.metadata }
+        : {}),
     })),
     accessBundles: accessBundlesFromRows(rows),
     modelPolicies: rows.modelPolicies.map((policy) => ({
@@ -567,6 +663,8 @@ export function rowsToSnapshot(rows: BekSnapshotRows): BekSnapshot {
       perRunCents: policy.perRunCents,
       perDayCents: policy.perDayCents,
     })),
+    connectorInstalls: rows.connectorInstalls.map(connectorInstallFromRow),
+    credentials: rows.credentials.map(credentialFromRow),
     runs: rows.runs.map((run) => ({
       id: run.id,
       orgId: run.orgId,
@@ -605,6 +703,10 @@ async function deleteCurrentSnapshotRows(db: MutationDb, orgId: string) {
   await db.delete(approvals).where(eq(approvals.orgId, orgId));
   await db.delete(runEvents).where(eq(runEvents.orgId, orgId));
   await db.delete(runs).where(eq(runs.orgId, orgId));
+  await db
+    .delete(credentialMetadata)
+    .where(eq(credentialMetadata.orgId, orgId));
+  await db.delete(connectorInstalls).where(eq(connectorInstalls.orgId, orgId));
   await db.delete(grants).where(eq(grants.orgId, orgId));
   await db
     .delete(accessBundlePlaces)
@@ -649,6 +751,12 @@ async function insertSnapshotRows(db: MutationDb, rows: BekSnapshotRows) {
   }
   if (rows.budgetPolicies.length > 0) {
     await db.insert(budgetPolicies).values(rows.budgetPolicies);
+  }
+  if (rows.connectorInstalls.length > 0) {
+    await db.insert(connectorInstalls).values(rows.connectorInstalls);
+  }
+  if (rows.credentials.length > 0) {
+    await db.insert(credentialMetadata).values(rows.credentials);
   }
   if (rows.agents.length > 0) {
     await db.insert(agents).values(rows.agents);
@@ -767,6 +875,72 @@ function approvalFromRow(row: ApprovalSnapshotRow): ApprovalRequest {
   }
 
   return approval;
+}
+
+function connectorInstallFromRow(
+  row: ConnectorInstallSnapshotRow,
+): ConnectorInstall {
+  const install: ConnectorInstall = {
+    id: row.id,
+    orgId: row.orgId,
+    kind: row.kind,
+    provider: row.provider,
+    displayName: row.displayName,
+    status: row.status,
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
+  };
+  if (row.externalId) {
+    install.externalId = row.externalId;
+  }
+  if (row.installedByPrincipalId) {
+    install.installedByPrincipalId = row.installedByPrincipalId;
+  }
+  const config = nonEmptyRecord(row.config);
+  if (config) {
+    install.config = config;
+  }
+  const metadata = nonEmptyRecord(row.metadata);
+  if (metadata) {
+    install.metadata = metadata;
+  }
+  return install;
+}
+
+function credentialFromRow(
+  row: CredentialMetadataSnapshotRow,
+): CredentialRecord {
+  const credential: CredentialRecord = {
+    id: row.id,
+    orgId: row.orgId,
+    name: row.name,
+    provider: row.provider,
+    secretRef: row.secretRef,
+    status: row.status,
+    scopeSummary: row.scopeSummary,
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
+  };
+  if (row.connectorInstallId) {
+    credential.connectorInstallId = row.connectorInstallId;
+  }
+  if (row.externalAccountId) {
+    credential.externalAccountId = row.externalAccountId;
+  }
+  const metadata = nonEmptyRecord(row.metadata);
+  if (metadata) {
+    credential.metadata = metadata;
+  }
+  if (row.expiresAt) {
+    credential.expiresAt = toIso(row.expiresAt);
+  }
+  if (row.rotationDueAt) {
+    credential.rotationDueAt = toIso(row.rotationDueAt);
+  }
+  if (row.lastUsedAt) {
+    credential.lastUsedAt = toIso(row.lastUsedAt);
+  }
+  return credential;
 }
 
 function ingressDeliveryFromRow(

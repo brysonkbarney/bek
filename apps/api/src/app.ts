@@ -1,5 +1,19 @@
 import { timingSafeEqual } from "node:crypto";
-import { BekStore, bundlesForPlace, evaluatePolicy } from "@bek/core";
+import {
+  BekStore,
+  bundlesForPlace,
+  evaluatePolicy,
+  redactSecrets,
+  redactUnknown,
+} from "@bek/core";
+import type {
+  BekSnapshot,
+  ConnectorInstall,
+  CredentialRecord,
+  PlaceScope,
+  Run,
+  RunEvent,
+} from "@bek/core";
 import {
   buildSlackCommandErrorResponse,
   buildSlackCommandDurableKey,
@@ -14,6 +28,7 @@ import {
   parseSlackCommand,
   parseSlackInteraction,
   redactSlackInstallRecord,
+  type SlackInstallRecord,
   type SlackWebApiClient,
   verifySlackOAuthState,
   verifySlackSignature,
@@ -21,6 +36,10 @@ import {
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
+import {
+  requireLocalCredentialVault,
+  type LocalCredentialVault,
+} from "./credential-vault";
 import { createSlackOutboundDelivery } from "./slack-outbound";
 import {
   LocalWorkerController,
@@ -148,6 +167,59 @@ export function createApp(
     }
   }
 
+  function persistSlackInstall(
+    install: SlackInstallRecord,
+    input: { credentialVault: LocalCredentialVault },
+  ) {
+    const snapshot = store.read();
+    const now = new Date().toISOString();
+    const teamName = install.teamName ?? install.teamId;
+    const connectorInstall = store.upsertConnectorInstall({
+      id: `connector_slack_${safeIdPart(install.teamId)}`,
+      kind: "slack",
+      provider: "slack",
+      externalId: install.teamId,
+      displayName: teamName,
+      status: "active",
+      metadata: {
+        appId: install.appId,
+        teamId: install.teamId,
+        teamName: install.teamName,
+        enterpriseId: install.enterpriseId,
+        enterpriseName: install.enterpriseName,
+        botUserId: install.botUserId,
+        authedUserId: install.authedUserId,
+        scopes: install.scope,
+        installedAt: install.installedAt,
+      },
+      now,
+    });
+    const credentialId = `credential_slack_bot_${safeIdPart(install.teamId)}`;
+    const encrypted = input.credentialVault.encryptSlackBotToken({
+      orgId: snapshot.org.id,
+      teamId: install.teamId,
+      credentialId,
+      botToken: install.botToken,
+    });
+    const credential = store.upsertCredential({
+      id: credentialId,
+      connectorInstallId: connectorInstall.id,
+      name: `${teamName} Slack bot token`,
+      provider: "slack",
+      externalAccountId: install.teamId,
+      secretRef: encrypted.secretRef,
+      status: "active",
+      scopeSummary: install.scope.join(","),
+      metadata: {
+        vaultEnvelope: encrypted.vaultEnvelope,
+        fingerprint: encrypted.fingerprint,
+        source: "slack_oauth",
+      },
+      now,
+    });
+    return { install: connectorInstall, credential };
+  }
+
   app.get("/health", (c) =>
     c.json({
       ok: true,
@@ -156,7 +228,7 @@ export function createApp(
     }),
   );
 
-  app.get("/api/bootstrap", (c) => c.json(store.read()));
+  app.get("/api/bootstrap", (c) => c.json(publicSnapshot(store.read())));
   app.get("/api/org", (c) => c.json(store.read().org));
   app.get("/api/agent", (c) => c.json(store.read().agent));
   app.patch("/api/agent", async (c) => {
@@ -174,6 +246,15 @@ export function createApp(
     const pendingApprovals = snapshot.approvals.filter(
       (approval) => approval.status === "pending",
     );
+    const slackInstall = latestSlackInstall(snapshot);
+    const slackCredential =
+      slackInstall?.status === "active"
+        ? latestSlackCredential(
+            snapshot,
+            slackInstall.id,
+            slackInstall.externalId,
+          )
+        : undefined;
     const githubGrantCount = snapshot.accessBundles
       .flatMap((bundle) => bundle.grants)
       .filter((grant) => grant.resource.startsWith("github:")).length;
@@ -181,6 +262,15 @@ export function createApp(
       visibleHandle: snapshot.agent.handle,
       singleVisibleAgent: snapshot.agent.handle === "@bek",
       slackChannels: slackChannels.length,
+      slackInstalled: Boolean(slackInstall),
+      slackInstallStatus: slackInstall?.status ?? null,
+      slackWorkspaceName: slackInstall?.displayName ?? null,
+      slackWorkspaceId: slackInstall?.externalId ?? null,
+      slackBotUserId:
+        typeof slackInstall?.metadata?.botUserId === "string"
+          ? slackInstall.metadata.botUserId
+          : null,
+      slackTokenStored: Boolean(slackCredential),
       accessBundles: snapshot.accessBundles.length,
       modelPolicies: snapshot.modelPolicies.length,
       runtimeProfiles: snapshot.runtimeProfiles.length,
@@ -195,15 +285,23 @@ export function createApp(
   });
   app.get("/api/channels", (c) =>
     c.json(
-      store.read().places.filter((place) => place.kind === "slack_channel"),
+      store
+        .read()
+        .places.filter((place) => place.kind === "slack_channel")
+        .map(publicPlace),
     ),
+  );
+  app.get("/api/connectors/slack", (c) =>
+    c.json(slackInstallSummaries(store.read())),
   );
   app.post("/api/channels", async (c) => {
     const body = createChannelSchema.parse(await c.req.json());
+    const { externalTeamId, ...placeInput } = body;
     const channel = store.createPlace({
       kind: "slack_channel",
       provider: "slack",
-      ...body,
+      ...placeInput,
+      ...(externalTeamId ? { metadata: { teamId: externalTeamId } } : {}),
     });
     await store.flushChanges();
     return c.json(channel, 201);
@@ -221,12 +319,18 @@ export function createApp(
     const bundles = snapshot.accessBundles.filter((bundle) =>
       bundle.attachedPlaceIds.includes(channel.id),
     );
-    const runs = snapshot.runs.filter((run) => run.placeScopeId === channel.id);
-    return c.json({ channel, bundles, runs });
+    const runs = snapshot.runs
+      .filter((run) => run.placeScopeId === channel.id)
+      .map(publicRun);
+    return c.json({ channel: publicPlace(channel), bundles, runs });
   });
   app.patch("/api/channels/:channelId", async (c) => {
     const body = updateChannelSchema.parse(await c.req.json());
-    const channel = store.updatePlace(c.req.param("channelId"), body);
+    const { externalTeamId, ...placeInput } = body;
+    const channel = store.updatePlace(c.req.param("channelId"), {
+      ...placeInput,
+      ...(externalTeamId ? { metadata: { teamId: externalTeamId } } : {}),
+    });
     await store.flushChanges();
     return c.json(channel);
   });
@@ -306,9 +410,11 @@ export function createApp(
     await store.flushChanges();
     return c.json(profile);
   });
-  app.get("/api/runs", (c) => c.json(store.read().runs));
+  app.get("/api/runs", (c) => c.json(store.read().runs.map(publicRun)));
   app.get("/api/approvals", (c) => c.json(store.read().approvals));
-  app.get("/api/audit-events", (c) => c.json(store.read().events));
+  app.get("/api/audit-events", (c) =>
+    c.json(store.read().events.map(publicRunEvent)),
+  );
   app.get("/api/model-usage", (c) => {
     const runs = store.read().runs;
     return c.json({
@@ -329,8 +435,10 @@ export function createApp(
       return c.json({ error: "Run not found" }, 404);
     }
     return c.json({
-      run,
-      events: snapshot.events.filter((event) => event.runId === run.id),
+      run: publicRun(run),
+      events: snapshot.events
+        .filter((event) => event.runId === run.id)
+        .map(publicRunEvent),
       approvals: snapshot.approvals.filter(
         (approval) => approval.runId === run.id,
       ),
@@ -340,7 +448,7 @@ export function createApp(
     const events = store
       .read()
       .events.filter((event) => event.runId === c.req.param("runId"));
-    return c.json(events);
+    return c.json(events.map(publicRunEvent));
   });
   app.get("/api/worker/queue", (c) =>
     c.json({
@@ -489,6 +597,22 @@ export function createApp(
       );
     }
 
+    let credentialVault;
+    try {
+      credentialVault = requireLocalCredentialVault();
+    } catch (error) {
+      return c.json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Slack OAuth token storage is not configured.",
+        },
+        500,
+      );
+    }
+
     const exchange = await exchangeSlackOAuthCode({
       clientId: process.env.SLACK_CLIENT_ID!,
       clientSecret: process.env.SLACK_CLIENT_SECRET!,
@@ -506,10 +630,18 @@ export function createApp(
       );
     }
 
+    const persistedInstall = persistSlackInstall(exchange.install, {
+      credentialVault,
+    });
+    await store.flushChanges();
+
     return c.json({
       ok: true,
       status: "installed",
       install: redactSlackInstallRecord(exchange.install),
+      connectorInstall: publicConnectorInstall(persistedInstall.install),
+      credential: publicCredential(persistedInstall.credential),
+      tokenStored: true,
       returnTo: state.payload.returnTo ?? null,
     });
   });
@@ -597,6 +729,7 @@ export function createApp(
     await slackOutbound.deliverApprovalDecision(approval.id, {
       channelId: interaction.channelId,
       threadTs: interaction.messageTs,
+      teamId: interaction.teamId,
     });
     await flushSlackOutboundChanges();
 
@@ -656,8 +789,10 @@ export function createApp(
     }
 
     const snapshot = store.read();
-    const place = snapshot.places.find(
-      (candidate) => candidate.externalId === command.channelId,
+    const place = resolveSlackPlace(
+      snapshot,
+      command.channelId,
+      command.teamId,
     );
     if (!place) {
       const response = buildSlackCommandIgnoredResponse({
@@ -697,6 +832,7 @@ export function createApp(
     await flushChangesWithDeliveryRollback(commandKey);
     await slackOutbound.deliverRunOutcome(run.id, {
       channelId: command.channelId,
+      teamId: command.teamId,
     });
     await flushSlackOutboundChanges();
 
@@ -732,9 +868,25 @@ export function createApp(
     }
     if (event.type === "mention" || event.type === "reaction") {
       const snapshot = store.read();
-      const place = snapshot.places.find(
-        (candidate) => candidate.externalId === event.channelId,
-      );
+      if (!event.channelId) {
+        if (eventKey) {
+          store.recordIngressDelivery({
+            key: eventKey,
+            kind: "slack.event",
+            status: "ignored",
+            response: {
+              reason: "Slack event payload is missing channel.",
+            },
+          });
+          await flushChangesWithDeliveryRollback(eventKey);
+        }
+        return c.json({
+          ok: false,
+          ignored: true,
+          reason: "Slack event payload is missing channel.",
+        });
+      }
+      const place = resolveSlackPlace(snapshot, event.channelId, event.teamId);
       if (!place) {
         if (eventKey) {
           store.recordIngressDelivery({
@@ -773,6 +925,7 @@ export function createApp(
       await slackOutbound.deliverRunOutcome(run.id, {
         channelId: event.channelId,
         threadTs: event.threadTs,
+        teamId: event.teamId,
       });
       await flushSlackOutboundChanges();
       return c.json({ ok: true, runId: run.id });
@@ -855,6 +1008,7 @@ const updateAgentSchema = z
 const createChannelSchema = z
   .object({
     externalId: z.string().min(1),
+    externalTeamId: z.string().min(1).optional(),
     name: z.string().min(1),
     sensitivity: sensitivitySchema,
   })
@@ -966,6 +1120,218 @@ function latestApproval(store: BekStore, approvalId: string) {
     throw new Error("Approval not found.");
   }
   return approval;
+}
+
+function resolveSlackPlace(
+  snapshot: BekSnapshot,
+  channelId: string,
+  teamId?: string | undefined,
+): PlaceScope | undefined {
+  return snapshot.places.find(
+    (candidate) =>
+      candidate.kind === "slack_channel" &&
+      candidate.provider === "slack" &&
+      candidate.externalId === channelId &&
+      slackPlaceAcceptsTeam(snapshot, candidate, teamId),
+  );
+}
+
+function slackPlaceAcceptsTeam(
+  snapshot: BekSnapshot,
+  place: PlaceScope,
+  teamId?: string | undefined,
+): boolean {
+  const placeTeamId =
+    stringMetadata(place.metadata, "teamId") ??
+    stringMetadata(place.metadata, "slackTeamId");
+  const slackInstalls = snapshot.connectorInstalls.filter(
+    (install) => install.kind === "slack" && install.provider === "slack",
+  );
+
+  if (placeTeamId) {
+    if (teamId && teamId !== placeTeamId) {
+      return false;
+    }
+    const matchingInstall = slackInstalls.find(
+      (install) => install.externalId === placeTeamId,
+    );
+    return !matchingInstall || matchingInstall.status === "active";
+  }
+
+  if (slackInstalls.length === 0) {
+    return true;
+  }
+
+  return Boolean(
+    teamId &&
+    slackInstalls.some(
+      (install) => install.status === "active" && install.externalId === teamId,
+    ),
+  );
+}
+
+function publicSnapshot(snapshot: BekSnapshot): BekSnapshot {
+  return {
+    ...snapshot,
+    places: snapshot.places.map(publicPlace),
+    runs: snapshot.runs.map(publicRun),
+    events: snapshot.events.map(publicRunEvent),
+    connectorInstalls: snapshot.connectorInstalls.map(publicConnectorInstall),
+    credentials: snapshot.credentials.map(publicCredential),
+  };
+}
+
+function publicPlace(place: PlaceScope): PlaceScope {
+  const { metadata, ...rest } = place;
+  const publicPlaceScope: PlaceScope = { ...rest };
+  const publicMetadata = publicMetadataRecord(metadata);
+  if (publicMetadata) {
+    publicPlaceScope.metadata = publicMetadata;
+  }
+  return publicPlaceScope;
+}
+
+function publicRun(run: Run): Run {
+  return {
+    ...run,
+    prompt: redactSecrets(run.prompt),
+  };
+}
+
+function publicRunEvent(event: RunEvent): RunEvent {
+  const publicEvent: RunEvent = {
+    ...event,
+    message: redactSecrets(event.message),
+  };
+  if (event.data) {
+    publicEvent.data = redactUnknown(event.data) as Record<string, unknown>;
+  }
+  return publicEvent;
+}
+
+function publicConnectorInstall(install: ConnectorInstall): ConnectorInstall {
+  const { config, metadata, ...rest } = install;
+  const publicInstall: ConnectorInstall = { ...rest };
+  const publicConfig = publicMetadataRecord(config);
+  if (publicConfig) {
+    publicInstall.config = publicConfig;
+  }
+  const publicMetadata = publicMetadataRecord(metadata);
+  if (publicMetadata) {
+    publicInstall.metadata = publicMetadata;
+  }
+  return publicInstall;
+}
+
+function publicCredential(credential: CredentialRecord): CredentialRecord {
+  const { metadata, ...rest } = credential;
+  const publicCredentialRecord: CredentialRecord = {
+    ...rest,
+    secretRef: "[redacted:secret-ref]",
+  };
+  const publicMetadata = publicCredentialMetadata(metadata);
+  if (publicMetadata) {
+    publicCredentialRecord.metadata = publicMetadata;
+  }
+  return publicCredentialRecord;
+}
+
+function slackInstallSummaries(snapshot: BekSnapshot) {
+  return snapshot.connectorInstalls
+    .filter(
+      (install) => install.kind === "slack" && install.provider === "slack",
+    )
+    .map((install) => {
+      const credential = latestSlackCredential(
+        snapshot,
+        install.id,
+        install.externalId,
+      );
+      return {
+        id: install.id,
+        status: install.status,
+        externalId: install.externalId ?? null,
+        displayName: install.displayName,
+        appId: stringMetadata(install.metadata, "appId"),
+        teamId:
+          stringMetadata(install.metadata, "teamId") ?? install.externalId,
+        teamName: stringMetadata(install.metadata, "teamName"),
+        enterpriseId: stringMetadata(install.metadata, "enterpriseId"),
+        enterpriseName: stringMetadata(install.metadata, "enterpriseName"),
+        botUserId: stringMetadata(install.metadata, "botUserId"),
+        authedUserId: stringMetadata(install.metadata, "authedUserId"),
+        scopes: arrayMetadata(install.metadata, "scopes"),
+        installedAt: stringMetadata(install.metadata, "installedAt"),
+        updatedAt: install.updatedAt,
+        credentialStatus: credential?.status ?? null,
+        scopeSummary: credential?.scopeSummary ?? null,
+        tokenPresent: Boolean(credential),
+      };
+    });
+}
+
+function latestSlackInstall(
+  snapshot: BekSnapshot,
+): ConnectorInstall | undefined {
+  return snapshot.connectorInstalls.find(
+    (install) => install.kind === "slack" && install.provider === "slack",
+  );
+}
+
+function latestSlackCredential(
+  snapshot: BekSnapshot,
+  connectorInstallId: string,
+  teamId?: string | undefined,
+): CredentialRecord | undefined {
+  return snapshot.credentials.find(
+    (credential) =>
+      credential.provider === "slack" &&
+      credential.status === "active" &&
+      (credential.connectorInstallId === connectorInstallId ||
+        (teamId ? credential.externalAccountId === teamId : false)),
+  );
+}
+
+function publicCredentialMetadata(
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!metadata) {
+    return undefined;
+  }
+  const publicMetadata = publicMetadataRecord(metadata) ?? {};
+  if (metadata.vaultEnvelope) {
+    publicMetadata.vaultEnvelopeStored = true;
+  }
+  return Object.keys(publicMetadata).length > 0 ? publicMetadata : undefined;
+}
+
+function publicMetadataRecord(
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!metadata) {
+    return undefined;
+  }
+  const { vaultEnvelope: _vaultEnvelope, ...rest } = metadata;
+  const redacted = redactUnknown(rest) as Record<string, unknown>;
+  return Object.keys(redacted).length > 0 ? redacted : undefined;
+}
+
+function stringMetadata(
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = metadata?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function arrayMetadata(
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): string[] {
+  const value = metadata?.[key];
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
 }
 
 const defaultSlackBotScopes = [
@@ -1095,4 +1461,8 @@ function slackPrincipalIdForUser(slackUserId?: string | undefined) {
   return typeof principalId === "string" && principalId.length > 0
     ? principalId
     : undefined;
+}
+
+function safeIdPart(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "_");
 }

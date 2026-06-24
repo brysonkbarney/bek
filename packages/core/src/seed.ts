@@ -88,6 +88,7 @@ export function createSeedSnapshot(
         externalId: "C_CHECKOUT",
         name: "#checkout-eng",
         sensitivity: "internal",
+        metadata: { teamId: "T123" },
       },
       {
         id: generalPlaceId,
@@ -97,6 +98,7 @@ export function createSeedSnapshot(
         externalId: "C_GENERAL",
         name: "#general",
         sensitivity: "public",
+        metadata: { teamId: "T123" },
       },
     ],
     accessBundles: [
@@ -200,6 +202,8 @@ export function createSeedSnapshot(
         perDayCents: 50000,
       },
     ],
+    connectorInstalls: [],
+    credentials: [],
     runs: [
       {
         id: "run_demo",

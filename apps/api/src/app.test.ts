@@ -6,12 +6,14 @@ import {
   type SlackActionsBlock,
   verifySlackOAuthState,
 } from "@bek/slack";
-import { BekStore } from "@bek/core";
+import { BekStore, createSeedSnapshot } from "@bek/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "./app";
 
 const managedEnvKeys = [
   "BEK_ADMIN_API_TOKEN",
+  "BEK_CREDENTIAL_KEY_ID",
+  "BEK_CREDENTIAL_MASTER_KEY",
   "BEK_RUN_ADVANCEMENT",
   "BEK_SLACK_OAUTH_EXCHANGE",
   "BEK_SLACK_USER_PRINCIPAL_MAP",
@@ -29,6 +31,8 @@ const originalEnv: Partial<Record<(typeof managedEnvKeys)[number], string>> =
 for (const key of managedEnvKeys) {
   originalEnv[key] = process.env[key];
 }
+
+const testCredentialMasterKey = `hex:${"7".repeat(64)}`;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -745,6 +749,97 @@ describe("Bek API", () => {
     });
   });
 
+  it("redacts secret-shaped prompt text from public run responses", async () => {
+    const app = createApp();
+    const secret = "xoxb-this-secret-token-should-redact";
+    const res = await app.request("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: `@bek investigate ${secret}`,
+        placeScopeId: "place_checkout",
+        capability: "slack.read",
+        resource: "slack:C_CHECKOUT",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    const run = (await res.json()) as { id: string; prompt: string };
+
+    expect(res.status).toBe(201);
+    expect(run.prompt).not.toContain(secret);
+    expect(run.prompt).toContain("[redacted:slack-token]");
+
+    const listText = JSON.stringify(
+      await (await app.request("/api/runs")).json(),
+    );
+    const detailText = JSON.stringify(
+      await (await app.request(`/api/runs/${run.id}`)).json(),
+    );
+    const bootstrapText = JSON.stringify(
+      await (await app.request("/api/bootstrap")).json(),
+    );
+
+    expect(listText).not.toContain(secret);
+    expect(detailText).not.toContain(secret);
+    expect(bootstrapText).not.toContain(secret);
+  });
+
+  it("defensively redacts contaminated snapshot metadata from bootstrap", async () => {
+    const secret = "xoxb-contaminated-token-should-redact";
+    const snapshot = createSeedSnapshot();
+    snapshot.runs.unshift({
+      ...snapshot.runs[0]!,
+      id: "run_contaminated",
+      prompt: `@bek leaked ${secret}`,
+    });
+    snapshot.places[0]!.metadata = {
+      teamId: "T123",
+      botToken: secret,
+    };
+    snapshot.connectorInstalls.push({
+      id: "connector_contaminated",
+      orgId: snapshot.org.id,
+      kind: "slack",
+      provider: "slack",
+      externalId: "T123",
+      displayName: "Redo",
+      status: "active",
+      metadata: {
+        botToken: secret,
+        vaultEnvelope: { ciphertext: secret },
+      },
+      createdAt: "2026-01-02T03:04:05.000Z",
+      updatedAt: "2026-01-02T03:04:05.000Z",
+    });
+    snapshot.credentials.push({
+      id: "credential_contaminated",
+      orgId: snapshot.org.id,
+      connectorInstallId: "connector_contaminated",
+      name: "Slack bot token",
+      provider: "slack",
+      externalAccountId: "T123",
+      secretRef: secret,
+      status: "active",
+      scopeSummary: "chat:write",
+      metadata: {
+        rawToken: secret,
+        vaultEnvelope: { ciphertext: secret },
+      },
+      createdAt: "2026-01-02T03:04:05.000Z",
+      updatedAt: "2026-01-02T03:04:05.000Z",
+    });
+
+    const bootstrapText = JSON.stringify(
+      await (
+        await createApp(new BekStore(snapshot)).request("/api/bootstrap")
+      ).json(),
+    );
+
+    expect(bootstrapText).not.toContain(secret);
+    expect(bootstrapText).not.toContain('"vaultEnvelope":');
+    expect(bootstrapText).toContain("[redacted:slack-token]");
+    expect(bootstrapText).toContain("[redacted:secret-ref]");
+  });
+
   it("advances allowed API runs through the local worker when enabled", async () => {
     const app = createApp(new BekStore(), {
       runAdvancement: "worker_local",
@@ -1298,6 +1393,58 @@ describe("Bek API", () => {
     });
   });
 
+  it("rejects Slack callbacks whose team does not match the channel scope", async () => {
+    const store = new BekStore();
+    const app = createApp(store);
+    const initialRunCount = store.read().runs.length;
+    const eventBody = JSON.stringify({
+      team_id: "T_OTHER",
+      event_id: "EvWrongTeam",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek hello from another workspace",
+      },
+    });
+
+    const eventRes = await app.request("/api/slack/events", {
+      method: "POST",
+      body: eventBody,
+      headers: signedSlackHeaders(eventBody),
+    });
+
+    expect(eventRes.status).toBe(200);
+    await expect(eventRes.json()).resolves.toMatchObject({
+      ok: false,
+      ignored: true,
+    });
+
+    const commandBody = slackForm({
+      command: "/bek",
+      channel_id: "C_CHECKOUT",
+      user_id: "U123",
+      text: "hello from another workspace",
+      team_id: "T_OTHER",
+    });
+    const commandRes = await app.request("/api/slack/commands", {
+      method: "POST",
+      body: commandBody,
+      headers: signedSlackHeaders(
+        commandBody,
+        Math.floor(Date.now() / 1000).toString(),
+        "application/x-www-form-urlencoded",
+      ),
+    });
+
+    expect(commandRes.status).toBe(200);
+    await expect(commandRes.json()).resolves.toMatchObject({
+      ok: false,
+      ignored: true,
+    });
+    expect(store.read().runs).toHaveLength(initialRunCount);
+  });
+
   it("fails Slack install clearly when OAuth env is missing", async () => {
     delete process.env.BEK_ADMIN_API_TOKEN;
     delete process.env.SLACK_CLIENT_ID;
@@ -1400,6 +1547,7 @@ describe("Bek API", () => {
   it("exchanges Slack OAuth callbacks in explicit exchange mode", async () => {
     configureFakeSlackOAuth();
     process.env.BEK_SLACK_OAUTH_EXCHANGE = "true";
+    process.env.BEK_CREDENTIAL_MASTER_KEY = testCredentialMasterKey;
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       Response.json({
         ok: true,
@@ -1417,8 +1565,10 @@ describe("Bek API", () => {
       nowSeconds: Math.floor(Date.now() / 1000),
       returnTo: "/settings/slack",
     });
+    const store = new BekStore();
+    const app = createApp(store);
 
-    const res = await createApp().request(
+    const res = await app.request(
       `/api/slack/oauth/callback?code=fake-code&state=${encodeURIComponent(
         state,
       )}`,
@@ -1426,6 +1576,9 @@ describe("Bek API", () => {
     const json = (await res.json()) as {
       status: string;
       install: Record<string, unknown>;
+      connectorInstall: Record<string, unknown>;
+      credential: Record<string, unknown>;
+      tokenStored: boolean;
       returnTo: string;
     };
 
@@ -1438,14 +1591,83 @@ describe("Bek API", () => {
         teamName: "Redo",
         botTokenRedacted: "xoxb...oken",
       },
+      connectorInstall: {
+        externalId: "T123",
+        displayName: "Redo",
+        status: "active",
+      },
+      credential: {
+        provider: "slack",
+        externalAccountId: "T123",
+        secretRef: "[redacted:secret-ref]",
+        metadata: {
+          vaultEnvelopeStored: true,
+        },
+      },
+      tokenStored: true,
     });
     expect(json.install.botToken).toBeUndefined();
+    expect(JSON.stringify(json)).not.toContain("xoxb-super-secret-token");
+
+    const snapshotText = JSON.stringify(store.read());
+    expect(snapshotText).not.toContain("xoxb-super-secret-token");
+    expect(store.read().connectorInstalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "slack",
+          provider: "slack",
+          externalId: "T123",
+        }),
+      ]),
+    );
+    expect(store.read().credentials).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          provider: "slack",
+          externalAccountId: "T123",
+          secretRef: "bek-local-vault:slack:org_demo:T123:bot",
+          metadata: expect.objectContaining({
+            vaultEnvelope: expect.any(Object),
+          }),
+        }),
+      ]),
+    );
+
+    const bootstrap = await app.request("/api/bootstrap");
+    const bootstrapText = JSON.stringify(await bootstrap.json());
+    expect(bootstrapText).not.toContain("xoxb-super-secret-token");
+    expect(bootstrapText).not.toContain('"vaultEnvelope":');
+    expect(bootstrapText).toContain("vaultEnvelopeStored");
     expect(fetch).toHaveBeenCalledWith(
       "https://slack.com/api/oauth.v2.access",
       expect.objectContaining({
         method: "POST",
       }),
     );
+  });
+
+  it("requires a credential master key before consuming Slack OAuth codes", async () => {
+    configureFakeSlackOAuth();
+    process.env.BEK_SLACK_OAUTH_EXCHANGE = "true";
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const state = createSlackOAuthState({
+      stateSecret: process.env.SLACK_STATE_SECRET!,
+      nonce: "test-nonce",
+      nowSeconds: Math.floor(Date.now() / 1000),
+    });
+
+    const res = await createApp().request(
+      `/api/slack/oauth/callback?code=fake-code&state=${encodeURIComponent(
+        state,
+      )}`,
+    );
+
+    expect(res.status).toBe(500);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("BEK_CREDENTIAL_MASTER_KEY"),
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("rejects invalid Slack OAuth callback state", async () => {
@@ -1612,6 +1834,94 @@ describe("Bek API", () => {
     );
   });
 
+  it("posts Slack replies using the stored OAuth bot token", async () => {
+    configureFakeSlackOAuth();
+    process.env.BEK_SLACK_OAUTH_EXCHANGE = "true";
+    process.env.BEK_CREDENTIAL_MASTER_KEY = testCredentialMasterKey;
+    const storedToken = "xoxb-stored-bot-token-123456";
+    let usedStoredToken = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const urlText = String(url);
+      if (urlText === "https://slack.com/api/oauth.v2.access") {
+        return Response.json({
+          ok: true,
+          app_id: "A123",
+          access_token: storedToken,
+          scope: "app_mentions:read,commands,chat:write",
+          bot_user_id: "U_BEK",
+          team: { id: "T123", name: "Redo" },
+          authed_user: { id: "U_ADMIN" },
+        });
+      }
+      if (urlText === "https://slack.com/api/chat.postMessage") {
+        usedStoredToken =
+          (init?.headers as Record<string, string> | undefined)
+            ?.authorization === `Bearer ${storedToken}`;
+        return Response.json({
+          ok: true,
+          channel: "C_CHECKOUT",
+          ts: "1710000000.000050",
+        });
+      }
+      return Response.json(
+        { ok: false, error: "unexpected_url" },
+        { status: 500 },
+      );
+    });
+
+    const app = createApp(new BekStore());
+    const state = createSlackOAuthState({
+      stateSecret: process.env.SLACK_STATE_SECRET!,
+      nonce: "test-nonce",
+      nowSeconds: Math.floor(Date.now() / 1000),
+    });
+    const install = await app.request(
+      `/api/slack/oauth/callback?code=fake-code&state=${encodeURIComponent(
+        state,
+      )}`,
+    );
+    expect(install.status).toBe(200);
+
+    const res = await app.request("/api/slack/events", {
+      method: "POST",
+      body: JSON.stringify({
+        team_id: "T123",
+        event_id: "EvStoredTokenOutbound",
+        event: {
+          type: "app_mention",
+          channel: "C_CHECKOUT",
+          user: "U123",
+          text: "@bek hello with stored token",
+          ts: "1710000000.000051",
+        },
+      }),
+    });
+    const json = (await res.json()) as { runId: string };
+
+    expect(res.status).toBe(200);
+    expect(usedStoredToken).toBe(true);
+    await expect(
+      expectJson(app, `/api/runs/${json.runId}`),
+    ).resolves.toMatchObject({
+      events: expect.arrayContaining([
+        expect.objectContaining({
+          message: "Slack final_answer message posted.",
+          data: expect.objectContaining({
+            slackOutbound: expect.objectContaining({
+              ok: true,
+              channel: "C_CHECKOUT",
+              ts: "1710000000.000050",
+            }),
+          }),
+        }),
+      ]),
+    });
+    const bootstrapText = JSON.stringify(
+      await (await app.request("/api/bootstrap")).json(),
+    );
+    expect(bootstrapText).not.toContain(storedToken);
+  });
+
   it("posts approval-needed Slack buttons for paused worker runs", async () => {
     const slackClient = new FakeSlackWebApiClient();
     const app = createApp(new BekStore(), {
@@ -1760,7 +2070,7 @@ describe("Bek API", () => {
       payload: JSON.stringify({
         type: "block_actions",
         channel: { id: "C_CHECKOUT" },
-        team: { id: "T_DEMO" },
+        team: { id: "T123" },
         actions: [approvalAction],
       }),
     });
@@ -1780,7 +2090,7 @@ describe("Bek API", () => {
         type: "block_actions",
         user: { id: "U_UNMAPPED" },
         channel: { id: "C_CHECKOUT" },
-        team: { id: "T_DEMO" },
+        team: { id: "T123" },
         actions: [approvalAction],
       }),
     });
@@ -1810,7 +2120,7 @@ describe("Bek API", () => {
       type: "block_actions",
       user: { id: "U_APPROVER" },
       channel: { id: "C_CHECKOUT" },
-      team: { id: "T_DEMO" },
+      team: { id: "T123" },
       container: { message_ts: "1710000000.000040" },
       actions: [
         {
@@ -1880,7 +2190,7 @@ describe("Bek API", () => {
       command: "/bek",
       user_id: "U123",
       text: "hello",
-      team_id: "T_DEMO",
+      team_id: "T123",
     });
     const missingChannel = await app.request("/api/slack/commands", {
       method: "POST",
@@ -1898,7 +2208,7 @@ describe("Bek API", () => {
       channel_id: "C_UNKNOWN",
       user_id: "U123",
       text: "hello",
-      team_id: "T_DEMO",
+      team_id: "T123",
     });
     const unknownChannel = await app.request("/api/slack/commands", {
       method: "POST",
@@ -1920,7 +2230,7 @@ describe("Bek API", () => {
       channel_id: "C_CHECKOUT",
       user_id: "U123",
       text: "summarize the rollout",
-      team_id: "T_DEMO",
+      team_id: "T123",
       trigger_id: "1337.42",
     });
     const retryHeaders = signedSlackHeaders(
@@ -1955,7 +2265,7 @@ describe("Bek API", () => {
       channel_id: "C_CHECKOUT",
       user_id: "U123",
       text: "summarize the restart",
-      team_id: "T_DEMO",
+      team_id: "T123",
       trigger_id: "restart.42",
     });
 
@@ -1995,7 +2305,7 @@ describe("Bek API", () => {
       channel_id: "C_CHECKOUT",
       user_id: "U123",
       text: "summarize the rollout",
-      team_id: "T_DEMO",
+      team_id: "T123",
     });
 
     const res = await app.request("/api/slack/commands", {

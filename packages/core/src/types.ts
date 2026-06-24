@@ -34,6 +34,28 @@ export type RiskLevel =
 
 export type Decision = "allow" | "ask" | "deny";
 
+export type ConnectorKind =
+  | "slack"
+  | "github"
+  | "linear"
+  | "model_provider"
+  | "mcp"
+  | "sandbox"
+  | "custom";
+
+export type ConnectorInstallStatus =
+  | "pending"
+  | "active"
+  | "paused"
+  | "revoked"
+  | "error";
+
+export type CredentialStatus =
+  | "active"
+  | "disabled"
+  | "rotation_due"
+  | "revoked";
+
 export type RunStatus =
   | "queued"
   | "reading_context"
@@ -106,6 +128,7 @@ export interface PlaceScope {
   externalId: string;
   name: string;
   sensitivity: "public" | "internal" | "confidential" | "restricted";
+  metadata?: Record<string, unknown>;
 }
 
 export interface AccessBundle {
@@ -150,6 +173,39 @@ export interface BudgetPolicy {
   name: string;
   perRunCents: number;
   perDayCents: number;
+}
+
+export interface ConnectorInstall {
+  id: string;
+  orgId: string;
+  kind: ConnectorKind;
+  provider: string;
+  externalId?: string;
+  displayName: string;
+  status: ConnectorInstallStatus;
+  installedByPrincipalId?: string;
+  config?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  createdAt: ISODate;
+  updatedAt: ISODate;
+}
+
+export interface CredentialRecord {
+  id: string;
+  orgId: string;
+  connectorInstallId?: string;
+  name: string;
+  provider: string;
+  externalAccountId?: string;
+  secretRef: string;
+  status: CredentialStatus;
+  scopeSummary: string;
+  metadata?: Record<string, unknown>;
+  expiresAt?: ISODate;
+  rotationDueAt?: ISODate;
+  lastUsedAt?: ISODate;
+  createdAt: ISODate;
+  updatedAt: ISODate;
 }
 
 export interface Run {
@@ -232,6 +288,8 @@ export interface BekSnapshot {
   modelPolicies: ModelPolicy[];
   runtimeProfiles: RuntimeProfile[];
   budgetPolicies: BudgetPolicy[];
+  connectorInstalls: ConnectorInstall[];
+  credentials: CredentialRecord[];
   runs: Run[];
   events: RunEvent[];
   approvals: ApprovalRequest[];

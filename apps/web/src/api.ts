@@ -29,6 +29,8 @@ export interface Bootstrap {
   modelPolicies: ModelPolicy[];
   runtimeProfiles: RuntimeProfile[];
   budgetPolicies: BudgetPolicy[];
+  connectorInstalls: ConnectorInstall[];
+  credentials: CredentialRecord[];
   runs: Run[];
   events: RunEvent[];
   approvals: ApprovalRequest[];
@@ -38,6 +40,12 @@ export interface SetupStatus {
   visibleHandle: string;
   singleVisibleAgent: boolean;
   slackChannels: number;
+  slackInstalled?: boolean;
+  slackInstallStatus?: string | null;
+  slackWorkspaceName?: string | null;
+  slackWorkspaceId?: string | null;
+  slackBotUserId?: string | null;
+  slackTokenStored?: boolean;
   accessBundles: number;
   modelPolicies: number;
   runtimeProfiles: number;
@@ -67,6 +75,7 @@ export interface PlaceScope {
   provider: string;
   externalId: string;
   sensitivity: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface AccessBundle {
@@ -107,6 +116,32 @@ export interface BudgetPolicy {
   name: string;
   perRunCents: number;
   perDayCents: number;
+}
+
+export interface ConnectorInstall {
+  id: string;
+  kind: string;
+  provider: string;
+  externalId?: string;
+  displayName: string;
+  status: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CredentialRecord {
+  id: string;
+  connectorInstallId?: string;
+  name: string;
+  provider: string;
+  externalAccountId?: string;
+  secretRef: string;
+  status: string;
+  scopeSummary: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface RunEvent {

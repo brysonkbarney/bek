@@ -36,19 +36,21 @@ the current OSS spine.
 - [ ] Configure slash command callbacks at `/api/slack/commands`.
 - [ ] Configure interactivity callbacks at `/api/slack/interactivity`.
 - [ ] Set OAuth variables before testing `/api/slack/install`.
+- [ ] Set `BEK_CREDENTIAL_MASTER_KEY` before OAuth exchange so Bek can store
+      the returned bot token in the local encrypted vault. Keep this key stable
+      across API restarts and database restores.
 - [ ] Set `BEK_SLACK_OAUTH_EXCHANGE=true` outside production when testing real
       OAuth code exchange.
-- [ ] Set `SLACK_BOT_TOKEN` with `chat:write` before expecting Bek to post
-      thread replies, approval buttons, decisions, or final answers.
+- [ ] Use `SLACK_BOT_TOKEN` with `chat:write` only as a manual fallback when no
+      stored OAuth token is available.
 - [ ] Verify an `@bek` mention posts a reply in the originating thread.
 - [ ] Verify an approval button click reaches `/api/slack/interactivity`, maps
       the Slack user to a Bek principal, and posts the decision/final answer.
 - [ ] Use `BEK_STORAGE=postgres` before real Slack retries matter; Slack
       delivery dedupe is persisted in the Bek snapshot.
-- [ ] Blocked: store exchanged bot tokens in the credential broker before broad
-      real installs.
-- [ ] Blocked: persist Slack workspace, channel, team, and user/principal
-      mappings.
+- [ ] Blocked for hosted beta: replace local env-key token custody with managed
+      KMS/secret-manager storage, rotation, revocation, and access audit.
+- [ ] Blocked: persist full Slack channel sync and user/principal mappings.
 
 ## GitHub And Repo Work
 
@@ -106,4 +108,6 @@ the current OSS spine.
 - [ ] Back up Postgres and object storage once persistent mode is enabled.
 - [ ] Rotate Slack, GitHub, model-provider, MCP, and sandbox credentials on a
       defined schedule.
+- [ ] Rotate `BEK_CREDENTIAL_MASTER_KEY` only with a tested decrypt/re-encrypt
+      migration for stored local-vault envelopes.
 - [ ] Run `pnpm format:check` and `pnpm check` before release.

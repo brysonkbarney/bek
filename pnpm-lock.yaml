@@ -28,6 +28,9 @@ importers:
       "@bek/core":
         specifier: workspace:*
         version: link:../../packages/core
+      "@bek/credentials":
+        specifier: workspace:*
+        version: link:../../packages/credentials
       "@bek/db":
         specifier: workspace:*
         version: link:../../packages/db

@@ -90,6 +90,66 @@ describe("Bek snapshot persistence mapping", () => {
     );
   });
 
+  it("round-trips connector installs and credential metadata", () => {
+    const snapshot: BekSnapshot = {
+      ...createSeedSnapshot("2026-01-02T03:04:05.000Z"),
+      connectorInstalls: [
+        {
+          id: "connector_slack_T123",
+          orgId: "org_demo",
+          kind: "slack",
+          provider: "slack",
+          externalId: "T123",
+          displayName: "Redo",
+          status: "active",
+          metadata: {
+            appId: "A123",
+            teamId: "T123",
+            scopes: ["app_mentions:read", "chat:write"],
+          },
+          createdAt: "2026-01-02T03:04:05.000Z",
+          updatedAt: "2026-01-02T03:04:06.000Z",
+        },
+      ],
+      credentials: [
+        {
+          id: "credential_slack_bot_T123",
+          orgId: "org_demo",
+          connectorInstallId: "connector_slack_T123",
+          name: "Slack bot token",
+          provider: "slack",
+          externalAccountId: "T123",
+          secretRef: "bek-local-vault:slack:T123:bot",
+          status: "active",
+          scopeSummary: "app_mentions:read,chat:write",
+          metadata: {
+            vaultEnvelope: {
+              type: "bek.credential_metadata.envelope",
+              version: 1,
+              algorithm: "AES-256-GCM",
+              keyId: "local",
+              nonce: "nonce",
+              tag: "tag",
+              ciphertext: "ciphertext",
+              createdAt: "2026-01-02T03:04:05.000Z",
+            },
+          },
+          createdAt: "2026-01-02T03:04:05.000Z",
+          updatedAt: "2026-01-02T03:04:06.000Z",
+        },
+      ],
+    };
+
+    const rows = snapshotToRows(snapshot);
+
+    expect(rows.connectorInstalls).toHaveLength(1);
+    expect(rows.credentials).toHaveLength(1);
+    expect(rows.credentials[0]!.secretRef).toBe(
+      "bek-local-vault:slack:T123:bot",
+    );
+    expect(rowsToSnapshot(rows)).toEqual(snapshot);
+  });
+
   it("rejects snapshots with multiple visible agents", () => {
     const rows = snapshotToRows(createSeedSnapshot());
     rows.agents.push({

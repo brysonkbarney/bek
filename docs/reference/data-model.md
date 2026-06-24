@@ -20,7 +20,10 @@ Migration-safe UUID plan:
 - `principals`: humans, the Bek agent principal, service accounts, integrations, and system actors.
 - `agents`: one visible Slack teammate per org. The schema enforces one agent row per org and `@bek` as the visible handle.
 - `capability_profiles`: internal routing profiles for answer, coding, incident, support, data, and workflow modes.
-- `places`: governed locations such as Slack channels, DMs, GitHub repos, projects, and system scopes.
+- `places`: governed locations such as Slack channels, DMs, GitHub repos,
+  projects, and system scopes. Slack channel scopes may carry
+  `metadata.teamId` so inbound Slack callbacks are matched by workspace plus
+  channel, not channel ID alone.
 
 ## Governance Tables
 
@@ -37,7 +40,9 @@ Migration-safe UUID plan:
 - `ingress_deliveries`: idempotency records for Slack events, slash commands,
   and interactivity callbacks, keyed uniquely per org.
 - `connector_installs`: Slack, GitHub, model provider, MCP, sandbox, and custom connector installs.
-- `credential_metadata`: secret broker references and rotation metadata only; raw secrets do not belong in Postgres.
+- `credential_metadata`: secret broker references, encrypted local vault
+  envelopes, and rotation metadata only; raw plaintext secrets do not belong in
+  Postgres.
 - `audit_events`: append-only side-effect and governance log entries.
 - `model_usage`, `tool_usage`: cost, latency, decision, and execution accounting for model calls and tool calls.
 
@@ -90,4 +95,9 @@ Seed the current demo workspace into the migrated database:
 DATABASE_URL=postgres://bek:bek@localhost:54329/bek pnpm db:seed
 ```
 
-The seed command replaces the persisted rows for the current `BekSnapshot` domain in that org: org, principals, the single `@bek` agent, capability profiles, places, access bundles, grants, policies, runs, events, and approvals. The API uses this repository when `BEK_STORAGE=postgres` or a `DATABASE_URL`-backed Postgres mode is selected.
+The seed command replaces the persisted rows for the current `BekSnapshot`
+domain in that org: org, principals, the single `@bek` agent, capability
+profiles, places, access bundles, grants, policies, connector installs,
+credential metadata, runs, events, and approvals. The API uses this repository
+when `BEK_STORAGE=postgres` or a `DATABASE_URL`-backed Postgres mode is
+selected.

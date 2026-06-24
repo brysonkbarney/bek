@@ -5,6 +5,8 @@ import {
   accessBundles,
   agents,
   approvals,
+  connectorInstalls,
+  credentialMetadata,
   grants,
   ingressDeliveries,
   orgs,
@@ -41,6 +43,8 @@ describe("Bek schema", () => {
       runEvents,
       approvals,
       ingressDeliveries,
+      connectorInstalls,
+      credentialMetadata,
     ].map((table) => getTableConfig(table).name);
 
     expect(tableNames).toEqual([
@@ -54,6 +58,8 @@ describe("Bek schema", () => {
       "run_events",
       "approvals",
       "ingress_deliveries",
+      "connector_installs",
+      "credential_metadata",
     ]);
   });
 

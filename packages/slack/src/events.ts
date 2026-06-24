@@ -1,6 +1,7 @@
 export interface NormalizedSlackInteraction {
   type: "mention" | "reaction" | "url_verification" | "unknown";
   channelId?: string | undefined;
+  teamId?: string | undefined;
   userId?: string | undefined;
   text?: string | undefined;
   reaction?: string | undefined;
@@ -25,6 +26,8 @@ export function normalizeSlackEvent(
   if (!event) {
     return { type: "unknown" };
   }
+  const teamId =
+    stringValue(record.team_id) ?? nestedString(record, "team", "id");
   if (typeof event.bot_id === "string" || event.subtype === "bot_message") {
     return { type: "unknown" };
   }
@@ -32,6 +35,7 @@ export function normalizeSlackEvent(
     return {
       type: "mention",
       channelId: typeof event.channel === "string" ? event.channel : undefined,
+      teamId,
       userId: typeof event.user === "string" ? event.user : undefined,
       text: typeof event.text === "string" ? event.text : undefined,
       threadTs: slackThreadTs(event),
@@ -45,6 +49,7 @@ export function normalizeSlackEvent(
         "string"
           ? ((event.item as Record<string, unknown>).channel as string)
           : undefined,
+      teamId,
       userId: typeof event.user === "string" ? event.user : undefined,
       reaction: typeof event.reaction === "string" ? event.reaction : undefined,
       threadTs: slackThreadTs(event.item),
@@ -63,4 +68,16 @@ function slackThreadTs(value: unknown): string | undefined {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function nestedString(
+  payload: Record<string, unknown>,
+  parent: string,
+  child: string,
+): string | undefined {
+  const value = payload[parent];
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  return stringValue((value as Record<string, unknown>)[child]);
 }

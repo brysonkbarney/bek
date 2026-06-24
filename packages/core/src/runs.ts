@@ -25,6 +25,7 @@ export function createRun(
   input: CreateRunInput,
   now = new Date().toISOString(),
 ): Run {
+  const prompt = redactSecrets(input.prompt);
   return {
     id: createId("run"),
     orgId: input.orgId,
@@ -32,14 +33,11 @@ export function createRun(
     requesterPrincipalId: input.requesterPrincipalId,
     placeScopeId: input.placeScopeId,
     trigger: input.trigger,
-    prompt: input.prompt,
+    prompt,
     status: "queued",
     modelPolicyId: input.modelPolicy.id,
     runtimeProfileId: input.runtimeProfile.id,
-    estimatedCostCents: estimatePromptCostCents(
-      input.prompt,
-      input.modelPolicy,
-    ),
+    estimatedCostCents: estimatePromptCostCents(prompt, input.modelPolicy),
     actualCostCents: 0,
     createdAt: now,
     updatedAt: now,

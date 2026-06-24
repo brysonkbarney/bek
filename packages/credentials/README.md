@@ -1,8 +1,9 @@
 # @bek/credentials
 
 Credential and secret-handling foundations for Bek. This package deliberately
-does not integrate with the API yet; it exposes primitives that API, worker,
-runtime, and connector code can adopt once those surfaces are ready.
+keeps secret-handling primitives provider-neutral. The API uses these primitives
+for the local Slack OAuth token vault, and the worker, runtime, and connector
+surfaces can adopt the same lease/redaction/audit patterns as they mature.
 
 ## What Lives Here
 
@@ -25,7 +26,7 @@ import {
 
 const cipher = createAesGcmCredentialMetadataCipher({
   keyId: "local-key-v1",
-  key: process.env.BEK_CREDENTIAL_METADATA_KEY!,
+  key: process.env.BEK_CREDENTIAL_MASTER_KEY!,
 });
 
 const credential = {

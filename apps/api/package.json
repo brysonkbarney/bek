@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@bek/core": "workspace:*",
+    "@bek/credentials": "workspace:*",
     "@bek/db": "workspace:*",
     "@bek/runtime": "workspace:*",
     "@bek/slack": "workspace:*",

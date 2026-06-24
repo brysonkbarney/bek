@@ -21,7 +21,8 @@ apps/api
   optional Postgres snapshot repository
   Slack event endpoint
   Slack OAuth state and code exchange
-  Slack Web API outbound posting with SLACK_BOT_TOKEN
+  local encrypted Slack install-token vault
+  Slack Web API outbound posting with stored OAuth tokens or SLACK_BOT_TOKEN
   run creation
   approvals
   policy evaluation
@@ -56,13 +57,14 @@ packages/mcp-gateway
    locks, migrations, and multi-process idempotency.
 2. Harden worker-local into durable queue-backed workers with claim, heartbeat,
    retry, cancellation, approval resume, and run settlement across processes.
-3. Add credential-vault persistence for Slack installs and durable outbound
-   Slack delivery retries.
+3. Harden local credential-vault persistence toward managed KMS/broker custody
+   and durable outbound Slack delivery retries.
 4. Add GitHub App installation and repo grants.
 5. Connect local Docker sandbox execution into the worker runtime path.
 6. Add OpenCode adapter.
 7. Add MCP registry and tool proxy.
-8. Add credential broker.
+8. Add hosted credential broker leases for GitHub, model, MCP, and sandbox
+   credentials.
 9. Wire audit export and eval dataset generation into the admin/API surfaces.
 
 ## Non-Negotiable Invariants

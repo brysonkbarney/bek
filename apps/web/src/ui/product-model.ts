@@ -114,6 +114,17 @@ export function setupChecklistFromStatus(status: SetupStatus): Array<{
       route: "/settings",
     },
     {
+      id: "slack-install",
+      label: "Connect the Slack workspace",
+      detail: slackInstallSetupDetail(status),
+      complete: Boolean(
+        status.slackInstalled &&
+        status.slackInstallStatus === "active" &&
+        status.slackTokenStored,
+      ),
+      route: "/connectors",
+    },
+    {
       id: "slack-channels",
       label: "Choose at least one pilot Slack channel",
       detail: `${status.slackChannels} channel scope${
@@ -210,10 +221,24 @@ export function connectorSummaries(data: Bootstrap): Array<{
   const hasGitHub = grantResources.some((resource) =>
     resource.startsWith("github:"),
   );
-  const hasSlack = data.places.some((place) => place.provider === "slack");
+  const slackInstall = data.connectorInstalls.find(
+    (install) => install.kind === "slack" && install.provider === "slack",
+  );
+  const slackInstallActive = slackInstall?.status === "active";
+  const slackCredential = data.credentials.find(
+    (credential) =>
+      slackInstallActive &&
+      credential.provider === "slack" &&
+      credential.status === "active" &&
+      (credential.connectorInstallId === slackInstall?.id ||
+        credential.externalAccountId === slackInstall?.externalId),
+  );
   const hasSandbox = grantResources.some((resource) =>
     resource.startsWith("sandbox:"),
   );
+  const slackPlaceCount = data.places.filter(
+    (place) => place.provider === "slack",
+  ).length;
   const githubGrantCount = grantResources.filter((resource) =>
     resource.startsWith("github:"),
   ).length;
@@ -228,13 +253,33 @@ export function connectorSummaries(data: Bootstrap): Array<{
     {
       id: "slack",
       name: "Slack",
-      status: hasSlack ? "connected" : "not connected",
-      detail: hasSlack
-        ? `${data.places.length} channel scopes`
-        : "Install Bek in Slack to create runs.",
-      metric: `${data.places.length} scopes`,
-      route: "/channels",
-      actionLabel: "Manage channels",
+      status: slackInstall
+        ? !slackInstallActive
+          ? slackInstall.status
+          : slackCredential
+            ? "connected"
+            : "needs token"
+        : slackPlaceCount > 0
+          ? "scopes only"
+          : "not connected",
+      detail: slackInstall
+        ? slackInstallActive
+          ? slackCredential
+            ? `${slackInstall.displayName} workspace, ${slackPlaceCount} channel scopes`
+            : `${slackInstall.displayName} workspace is active, but no Slack bot token is stored.`
+          : `${slackInstall.displayName} workspace install is ${slackInstall.status}.`
+        : slackPlaceCount > 0
+          ? "Channel scopes are seeded, but no Slack workspace install is stored."
+          : "Install Bek in Slack to create runs.",
+      metric: slackInstall?.externalId ?? `${slackPlaceCount} scopes`,
+      route:
+        slackInstallActive && slackCredential ? "/channels" : "/connectors",
+      actionLabel:
+        slackInstallActive && slackCredential
+          ? "Manage channels"
+          : slackInstall
+            ? "Review install"
+            : "Install Slack",
     },
     {
       id: "github",
@@ -290,6 +335,22 @@ export function connectorSummaries(data: Bootstrap): Array<{
       actionLabel: "Review runtime",
     },
   ];
+}
+
+function slackInstallSetupDetail(status: SetupStatus): string {
+  if (!status.slackInstalled) {
+    return "Install Bek and store a Slack bot token before real workspace use.";
+  }
+  const workspace =
+    status.slackWorkspaceName ?? status.slackWorkspaceId ?? "Slack";
+  const installStatus = status.slackInstallStatus ?? "connected";
+  if (installStatus !== "active") {
+    return `${workspace} install is ${installStatus}.`;
+  }
+  if (!status.slackTokenStored) {
+    return `${workspace} is active, but no Slack bot token is stored.`;
+  }
+  return `${workspace} is active with a stored bot token.`;
 }
 
 export const setupSteps = [
