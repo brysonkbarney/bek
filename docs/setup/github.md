@@ -47,6 +47,9 @@ GITHUB_APP_WEBHOOK_SECRET=...
 GITHUB_APP_INSTALLATION_ID=456789
 ```
 
+`GITHUB_WEBHOOK_SECRET` is still accepted as a deprecated alias while older
+local installs migrate, but new templates use `GITHUB_APP_WEBHOOK_SECRET`.
+
 Optional OAuth fields can be configured later if the app adds user-facing install or callback flows:
 
 ```bash
