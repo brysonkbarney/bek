@@ -9,6 +9,9 @@ Bek should launch in stages. The current repo is good enough to show the product
 - API supports seeded runs, approvals, audit events, policy evaluation, Slack event ingress, Slack OAuth state/exchange, admin auth when configured, signed Slack request verification, and Postgres-backed snapshot persistence when configured.
 - API can run in `BEK_RUN_ADVANCEMENT=worker_local` mode, where API/Slack-created runs are enqueued, drained through the local worker runtime service, paused for approvals, resumed after approval, and reflected back into run status/events.
 - Slack events, slash commands, and interactivity callbacks persist delivery keys in the Bek snapshot so retries dedupe across API app instances and Postgres-backed restarts.
+- Slack outbound posting can use `SLACK_BOT_TOKEN` to post thread replies,
+  approval buttons, approval decisions, final answers, and delivery diagnostics
+  back into the run timeline.
 - Tests cover policy deny precedence, wildcard scoping, Slack signature tamper/replay, approval tamper/self-approval/double approval/expiry, API behavior, model routing, MCP manifest generation, and redaction.
 - DB, runtime, sandbox, model-router, MCP, Slack, core, API, and web package contracts exist.
 - Release candidates should pass `pnpm format:check` and `pnpm check` before
@@ -54,6 +57,9 @@ These product items block broad design-partner rollout, not a code-only release 
 - Worker-local mode owns API/Slack run advancement in-process for the local product loop.
 - Durable queue-backed worker owns claim, heartbeat, retry, cancellation, approval resume, and run settlement across API/worker restarts.
 - Slack delivery dedupe is snapshot-persisted for events, slash commands, and interactivity.
+- Slack Web API posting works for local/self-hosted deployments with
+  `SLACK_BOT_TOKEN`; hosted installs still need vaulted bot-token storage and
+  durable outbound delivery retries.
 - API has typed errors and request IDs.
 - Docker Compose starts all local dependencies.
 - GitHub App package can validate config, verify webhooks, parse repo resources, and generate PR proposals without network calls.
@@ -96,8 +102,9 @@ These product items block broad design-partner rollout, not a code-only release 
 - Postgres persistence has row-level command writes, locks, backups, and
   tenant-isolation coverage beyond the current snapshot mode.
 - Durable queue/worker replaces the in-process queue and handles claim, heartbeat, retry, cancellation, approval resume, and run settlement across multiple API/worker instances.
-- Slack OAuth install stores bot/workspace metadata securely.
-- Slack message posting and approval buttons work end to end.
+- Slack OAuth install stores bot/workspace metadata and tokens securely.
+- Slack message posting and approval buttons use vaulted install tokens and
+  durable retry/idempotency tracking.
 - GitHub App install, repo permissions, branch creation, and draft PR flow work through approval gates.
 - Docker sandbox is implemented for local/self-hosted; hosted deploy uses Vercel Sandbox or E2B microVM adapter.
 - Credential broker leases short-lived capabilities; no runtime receives durable provider secrets.

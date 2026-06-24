@@ -26,7 +26,7 @@ This repository is a working OSS product spine for Bek. It runs locally without 
 - Hono API with seeded Bek workspace data, admin-token gating, Slack event ingress, run creation, approvals, audit events, and policy evaluation.
 - React + TanStack admin app with setup, channels, access bundles, runs, approvals, connectors, model policy, memory stance, audit, and settings.
 - Core TypeScript domain package with policy, approval, redaction, run, and security tests.
-- Slack helpers with fail-closed signature verification, OAuth state, OAuth code exchange, slash-command parsing, approval interactions, and message rendering.
+- Slack helpers with fail-closed signature verification, OAuth state, OAuth code exchange, slash-command parsing, approval interactions, message rendering, and optional Web API posting when `SLACK_BOT_TOKEN` is set.
 - In-process `worker_local` run advancement for local/API/Slack flows, including runtime events, policy approvals, runtime-requested approvals, resume after approval, and final run cost/status.
 - Model-router and MCP-gateway packages with provider-neutral routing/tool-manifest tests.
 - Runtime and sandbox contract packages for AI SDK, OpenCode, Docker, Vercel Sandbox, and E2B style adapters.
@@ -109,18 +109,18 @@ Bek's local demo works without Slack, GitHub, model-provider, MCP, or sandbox
 credentials. Real workspace operation requires credentials owned by the
 operator:
 
-| Area            | Required before real use                                                                   |
-| --------------- | ------------------------------------------------------------------------------------------ |
-| Slack           | Signing secret, OAuth client, public HTTPS callback URL; token storage before live posting |
-| GitHub          | GitHub App ID, private key, webhook secret, installation permissions                       |
-| Model providers | Provider key or private gateway credential                                                 |
-| MCP             | Server registry, tool credentials, schema review process                                   |
-| Sandbox         | Docker local policy or hosted microVM provider credentials                                 |
+| Area            | Required before real use                                                             |
+| --------------- | ------------------------------------------------------------------------------------ |
+| Slack           | Signing secret, bot token with `chat:write`, OAuth client, public HTTPS callback URL |
+| GitHub          | GitHub App ID, private key, webhook secret, installation permissions                 |
+| Model providers | Provider key or private gateway credential                                           |
+| MCP             | Server registry, tool credentials, schema review process                             |
+| Sandbox         | Docker local policy or hosted microVM provider credentials                           |
 
 Several of these surfaces are contract foundations today, not production
-integrations. The local worker bridge is executable, but hosted production
-still needs durable queue-backed workers, token vaulting, live Slack posting,
-and real repo/sandbox adapters. See
+integrations. The local worker bridge is executable and self-hosted Slack
+posting can use `SLACK_BOT_TOKEN`, but hosted production still needs durable
+queue-backed workers, token vaulting, and real repo/sandbox adapters. See
 [Launch Readiness](./docs/launch-readiness.md) before using Bek in a real
 workspace.
 

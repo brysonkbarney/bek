@@ -55,14 +55,14 @@ Even in hosted Bek, admins should own:
 ## Current Status
 
 Hosted Bek is not yet generally available. The public launch path still needs
-real Slack install, persistent storage, provider adapters, sandbox hardening,
-usage ledger, tenant isolation, credential broker integration, and security
-review.
+managed Slack install token storage, persistent storage, provider adapters,
+sandbox hardening, usage ledger, tenant isolation, credential broker
+integration, and security review.
 
 ## Hosted Beta Entry Criteria
 
-- Slack OAuth exchange, bot token storage, message posting, and approval buttons
-  work end to end.
+- Slack OAuth exchange stores bot tokens securely; message posting and approval
+  buttons use vaulted install tokens with durable delivery tracking.
 - GitHub App installation, repo-scoped tokens, branch creation, and draft PRs
   are gated by approval.
 - Persistent Postgres, queue, object storage, and audit export are active.

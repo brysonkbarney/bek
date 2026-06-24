@@ -16,7 +16,8 @@
 - Slack install flow.
 - Signed event verification.
 - Mention/reaction handlers.
-- Thread replies and approval buttons.
+- Thread replies, approval buttons, approval decisions, and final answers with
+  `SLACK_BOT_TOKEN`.
 - Channel access bundle setup.
 
 ## 0.3 GitHub And Sandbox

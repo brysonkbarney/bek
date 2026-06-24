@@ -46,7 +46,9 @@ The regular `.env.example` keeps host-machine URLs for local Node development.
 The Docker template sets `BEK_SLACK_OAUTH_EXCHANGE=false` so Slack callbacks
 validate state without exchanging codes until you opt in. Set it to `true` when
 you specifically want to verify OAuth exchange; Bek still redacts the returned
-bot token and does not store it yet.
+bot token and does not store it yet. Set `SLACK_BOT_TOKEN` in `.env.docker` to
+enable outbound `chat:write` replies, approval buttons, approval decisions, and
+final answers.
 
 ## Start Dependencies Only
 
@@ -109,8 +111,8 @@ docker compose --profile app down -v
 - `packages/worker` includes a deterministic local runner for demos and
   verification, but not yet a long-running durable queue daemon backed by
   Valkey/Postgres.
-- Slack OAuth code exchange is available, but bot-token vault storage, live
-  model routing, GitHub writes, MCP transports, and hardened sandbox execution
-  are not production-ready.
+- Slack OAuth code exchange and `SLACK_BOT_TOKEN` posting are available, but
+  bot-token vault storage, live model routing, GitHub writes, MCP transports,
+  and hardened sandbox execution are not production-ready.
 - Do not reuse the example Postgres, MinIO, or admin-token values in shared
   deployments.

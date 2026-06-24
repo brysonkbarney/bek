@@ -11,12 +11,14 @@ review.
 - Seeded in-memory store and Drizzle/Postgres snapshot repository.
 - Slack Events API, slash command, interactivity, OAuth-state, and OAuth code
   exchange foundations.
+- Slack Web API posting through `SLACK_BOT_TOKEN` for local/self-hosted
+  deployments.
 - Access bundle policy, approvals, run events, redaction, and cost primitives.
 - GitHub App, model-router, MCP gateway, worker, runtime, and sandbox contracts.
 
 Out of scope for this starter: production hosting, live provider credentials,
-Slack bot-token vault storage and posting, real GitHub writes, live MCP tool
-execution, and hosted sandbox implementation.
+Slack bot-token vault storage, real GitHub writes, live MCP tool execution, and
+hosted sandbox implementation.
 
 ## Primary Assets
 
@@ -34,16 +36,17 @@ execution, and hosted sandbox implementation.
 
 ## Trust Boundaries
 
-| Boundary                   | Current control                                                      | Open production questions                                                      |
-| -------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Slack to API callbacks     | HMAC signature verification and 5-minute replay window.              | Durable event dedupe, bot token storage, Slack team mapping.                   |
-| Browser admin app to API   | CORS allowlist and optional bearer token, mandatory in production.   | Real admin identity, RBAC, session management, audit completeness.             |
-| API to store               | In-memory local store or Postgres snapshot repository.               | Row-level command persistence, transactional audit, tenant isolation, backups. |
-| API/worker to GitHub       | Local config, signature, token, fake-client, and workflow contracts. | Installation token broker and isolated repo work execution.                    |
-| Runtime to model providers | Model route and cost primitives.                                     | Provider adapters, credential broker, usage accounting.                        |
-| Runtime to MCP tools       | Manifest, schema hash, quarantine, and proxy request contracts.      | Live transport, credential scope, output redaction.                            |
-| Runtime to sandbox         | Docker policy and fake provider contracts.                           | Hosted microVM isolation, egress enforcement, artifact scanning.               |
-| Worker queue to execution  | In-memory queue contract reloads state on claim.                     | Durable claims, retries, cancellation, idempotent side effects.                |
+| Boundary                   | Current control                                                       | Open production questions                                                      |
+| -------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Slack to API callbacks     | HMAC signature verification and 5-minute replay window.               | Durable event dedupe, bot token storage, Slack team mapping.                   |
+| API to Slack Web API       | Optional `SLACK_BOT_TOKEN`, typed client, and best-effort run events. | Vaulted install tokens, durable outbound retries, delivery idempotency.        |
+| Browser admin app to API   | CORS allowlist and optional bearer token, mandatory in production.    | Real admin identity, RBAC, session management, audit completeness.             |
+| API to store               | In-memory local store or Postgres snapshot repository.                | Row-level command persistence, transactional audit, tenant isolation, backups. |
+| API/worker to GitHub       | Local config, signature, token, fake-client, and workflow contracts.  | Installation token broker and isolated repo work execution.                    |
+| Runtime to model providers | Model route and cost primitives.                                      | Provider adapters, credential broker, usage accounting.                        |
+| Runtime to MCP tools       | Manifest, schema hash, quarantine, and proxy request contracts.       | Live transport, credential scope, output redaction.                            |
+| Runtime to sandbox         | Docker policy and fake provider contracts.                            | Hosted microVM isolation, egress enforcement, artifact scanning.               |
+| Worker queue to execution  | In-memory queue contract reloads state on claim.                      | Durable claims, retries, cancellation, idempotent side effects.                |
 
 ## Runtime Entry Points
 

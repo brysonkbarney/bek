@@ -38,6 +38,11 @@ the current OSS spine.
 - [ ] Set OAuth variables before testing `/api/slack/install`.
 - [ ] Set `BEK_SLACK_OAUTH_EXCHANGE=true` outside production when testing real
       OAuth code exchange.
+- [ ] Set `SLACK_BOT_TOKEN` with `chat:write` before expecting Bek to post
+      thread replies, approval buttons, decisions, or final answers.
+- [ ] Verify an `@bek` mention posts a reply in the originating thread.
+- [ ] Verify an approval button click reaches `/api/slack/interactivity`, maps
+      the Slack user to a Bek principal, and posts the decision/final answer.
 - [ ] Use `BEK_STORAGE=postgres` before real Slack retries matter; Slack
       delivery dedupe is persisted in the Bek snapshot.
 - [ ] Blocked: store exchanged bot tokens in the credential broker before broad

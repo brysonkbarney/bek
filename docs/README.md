@@ -30,16 +30,18 @@ The repository currently ships a working local product spine:
   persistence.
 - React admin console for setup, channels, access bundles, runs, approvals,
   connectors, model policy, memory stance, audit, and settings.
-- Slack event, command, interactivity, signature, OAuth-state, and OAuth code
-  exchange foundations; Slack delivery dedupe is snapshot-persisted, while
-  exchanged install tokens are redacted and not stored yet.
+- Slack event, command, interactivity, signature, OAuth-state, OAuth code
+  exchange, and optional Web API posting foundations; Slack delivery dedupe is
+  snapshot-persisted, while exchanged install tokens are redacted and not
+  stored yet.
 - GitHub App, model-router, MCP gateway, worker, runtime, sandbox, and
   Drizzle/Postgres contracts.
 - Docker Compose for local Postgres, Valkey, and MinIO dependencies.
 
-It is not production-ready yet. Slack bot-token storage, Slack Web API posting,
-GitHub writes, live MCP proxying, model-provider calls, durable worker
-execution, and production sandboxing are not wired end to end.
+It is not production-ready yet. Slack posting can use `SLACK_BOT_TOKEN` in
+self-hosted/local deployments, but Slack bot-token vault storage, GitHub
+writes, live MCP proxying, model-provider calls, durable worker execution, and
+production sandboxing are not wired end to end.
 
 ## Credential Requirements
 
@@ -51,6 +53,7 @@ checklist when moving beyond the seeded demo.
 | Local admin demo             | None                                                                                 | Works with seeded data.                                                                                                           |
 | Signed Slack callbacks       | `SLACK_SIGNING_SECRET`, public HTTPS URL                                             | Events, commands, and interactivity verify signatures.                                                                            |
 | Slack OAuth install/callback | `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_STATE_SECRET`, `SLACK_REDIRECT_URI` | Redirect/state validation works; code exchange is explicit locally and default in production, but token vault storage is pending. |
+| Slack Web API posting        | `SLACK_BOT_TOKEN` with `chat:write`                                                  | Optional self-hosted/local posting of thread replies, approval buttons, decisions, and final answers.                             |
 | Slack approvals              | `BEK_SLACK_USER_PRINCIPAL_MAP` for local mapping                                     | Parsed approval buttons can decide seeded approvals.                                                                              |
 | GitHub App workflow          | `GITHUB_APP_ID`, private key, webhook secret                                         | Validation and local workflow contracts exist; no real writes.                                                                    |
 | Model providers              | Provider key or gateway credential                                                   | Routing and cost primitives exist; no external model calls.                                                                       |

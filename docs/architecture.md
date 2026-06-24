@@ -21,6 +21,7 @@ apps/api
   optional Postgres snapshot repository
   Slack event endpoint
   Slack OAuth state and code exchange
+  Slack Web API outbound posting with SLACK_BOT_TOKEN
   run creation
   approvals
   policy evaluation
@@ -37,6 +38,7 @@ packages/slack
   event normalization
   OAuth state and exchange helpers
   message rendering
+  HTTP and fake Slack Web API clients
 
 packages/db
   Drizzle/Postgres schema and snapshot repository
@@ -52,9 +54,10 @@ packages/mcp-gateway
 
 1. Harden Postgres persistence from snapshot writes toward row-level commands,
    locks, migrations, and multi-process idempotency.
-2. Wire API-created runs into the worker service instead of only the local
-   smoke/demo flow.
-3. Add credential-vault persistence for Slack installs and real message posting.
+2. Harden worker-local into durable queue-backed workers with claim, heartbeat,
+   retry, cancellation, approval resume, and run settlement across processes.
+3. Add credential-vault persistence for Slack installs and durable outbound
+   Slack delivery retries.
 4. Add GitHub App installation and repo grants.
 5. Connect local Docker sandbox execution into the worker runtime path.
 6. Add OpenCode adapter.

@@ -203,19 +203,22 @@ authorization: Bearer YOUR_TOKEN
 Slack callback routes remain public so Slack can reach them, but they still
 verify Slack signatures outside unsigned local demo mode.
 
-## Optional Slack Callback Test
+## Optional Slack Callback And Posting Test
 
 For real Slack callback testing, expose the API with an HTTPS tunnel and set:
 
 ```bash
 export SLACK_SIGNING_SECRET=...
 export SLACK_REDIRECT_URI=https://YOUR-TUNNEL.example.com/api/slack/oauth/callback
+export SLACK_BOT_TOKEN=xoxb-...
 ```
 
 Use the same tunnel base URL in the Slack app's Events API, slash command, and
 interactivity request URLs. `BEK_PUBLIC_URL` is listed in `.env.example` as an
 operator reference value, but the current API uses explicit Slack callback
-settings such as `SLACK_REDIRECT_URI`.
+settings such as `SLACK_REDIRECT_URI`. `SLACK_BOT_TOKEN` enables thread
+replies, approval buttons, approval decisions, and final answers through
+`chat:write`.
 
 Unsigned Slack payloads are only for local experiments:
 
@@ -240,9 +243,9 @@ pnpm check
 
 ## Current Product Limits
 
-- Slack OAuth redirect, callback state validation, and explicit/prod OAuth code
-  exchange exist. Bot token vault storage and live Slack posting are still
-  blocked on the credential broker.
+- Slack OAuth redirect, callback state validation, explicit/prod OAuth code
+  exchange, and optional `SLACK_BOT_TOKEN` posting exist. Bot token vault
+  storage for hosted installs is still blocked on the credential broker.
 - Persistent storage exists as a schema/repository package and the API can use
   it with `BEK_STORAGE=postgres` plus `DATABASE_URL`. The default local mode is
   still in-memory for zero-credential demos.

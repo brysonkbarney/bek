@@ -14,12 +14,14 @@ import {
   parseSlackCommand,
   parseSlackInteraction,
   redactSlackInstallRecord,
+  type SlackWebApiClient,
   verifySlackOAuthState,
   verifySlackSignature,
 } from "@bek/slack";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
+import { createSlackOutboundDelivery } from "./slack-outbound";
 import {
   LocalWorkerController,
   runAdvancementModeFromEnv,
@@ -28,6 +30,7 @@ import {
 
 export interface CreateAppOptions {
   runAdvancement?: RunAdvancementMode | undefined;
+  slackClient?: SlackWebApiClient | undefined;
 }
 
 type CreateStoreRunInput = Parameters<BekStore["createRun"]>[0];
@@ -42,6 +45,9 @@ export function createApp(
     store,
     options.runAdvancement ?? runAdvancementModeFromEnv(),
   );
+  const slackOutbound = createSlackOutboundDelivery(store, {
+    slackClient: options.slackClient,
+  });
   app.use(
     "*",
     cors({
@@ -130,6 +136,15 @@ export function createApp(
         store.removeIngressDelivery(deliveryKey, { recordChange: false });
       }
       throw error;
+    }
+  }
+
+  async function flushSlackOutboundChanges() {
+    try {
+      await store.flushChanges();
+    } catch {
+      // Slack delivery diagnostics are best-effort. Ingress dedupe and run state
+      // have already been flushed before outbound posting starts.
     }
   }
 
@@ -579,6 +594,11 @@ export function createApp(
       });
     }
     await flushChangesWithDeliveryRollback(interactionKey);
+    await slackOutbound.deliverApprovalDecision(approval.id, {
+      channelId: interaction.channelId,
+      threadTs: interaction.messageTs,
+    });
+    await flushSlackOutboundChanges();
 
     return c.json({
       ...buildSlackEphemeralResponse({
@@ -675,6 +695,10 @@ export function createApp(
       });
     }
     await flushChangesWithDeliveryRollback(commandKey);
+    await slackOutbound.deliverRunOutcome(run.id, {
+      channelId: command.channelId,
+    });
+    await flushSlackOutboundChanges();
 
     return c.json(response);
   });
@@ -746,6 +770,11 @@ export function createApp(
         });
       }
       await flushChangesWithDeliveryRollback(eventKey);
+      await slackOutbound.deliverRunOutcome(run.id, {
+        channelId: event.channelId,
+        threadTs: event.threadTs,
+      });
+      await flushSlackOutboundChanges();
       return c.json({ ok: true, runId: run.id });
     }
     if (eventKey) {

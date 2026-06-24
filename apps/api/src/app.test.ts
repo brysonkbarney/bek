@@ -1,6 +1,9 @@
 import {
   createSlackOAuthState,
   createSlackSignature,
+  FakeSlackWebApiClient,
+  parseSlackApprovalActionValue,
+  type SlackActionsBlock,
   verifySlackOAuthState,
 } from "@bek/slack";
 import { BekStore } from "@bek/core";
@@ -13,6 +16,7 @@ const managedEnvKeys = [
   "BEK_SLACK_OAUTH_EXCHANGE",
   "BEK_SLACK_USER_PRINCIPAL_MAP",
   "SLACK_BOT_SCOPES",
+  "SLACK_BOT_TOKEN",
   "SLACK_CLIENT_ID",
   "SLACK_CLIENT_SECRET",
   "SLACK_REDIRECT_URI",
@@ -1530,6 +1534,171 @@ describe("Bek API", () => {
     });
   });
 
+  it("posts final Slack replies for app mentions without reposting retries", async () => {
+    const slackClient = new FakeSlackWebApiClient();
+    const app = createApp(new BekStore(), { slackClient });
+    const payload = {
+      event_id: "EvOutboundFinal",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek hello from Slack",
+        ts: "1710000000.000001",
+      },
+    };
+
+    const first = await app.request("/api/slack/events", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    expect(first.status).toBe(200);
+    const firstJson = (await first.json()) as { runId: string };
+
+    expect(slackClient.postMessageCalls).toHaveLength(1);
+    expect(slackClient.postMessageCalls[0]).toMatchObject({
+      channel: "C_CHECKOUT",
+      thread_ts: "1710000000.000001",
+      text: expect.stringContaining("Bek finished."),
+    });
+    expect(JSON.stringify(slackClient.postMessageCalls[0]!.blocks)).toContain(
+      firstJson.runId,
+    );
+
+    const retry = await app.request("/api/slack/events", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    expect(retry.status).toBe(200);
+    await expect(retry.json()).resolves.toMatchObject({
+      deduped: true,
+      runId: firstJson.runId,
+    });
+    expect(slackClient.postMessageCalls).toHaveLength(1);
+  });
+
+  it("posts worker completion output for Slack-created runs", async () => {
+    const slackClient = new FakeSlackWebApiClient();
+    const app = createApp(new BekStore(), {
+      runAdvancement: "worker_local",
+      slackClient,
+    });
+    const payload = {
+      event_id: "EvWorkerOutboundFinal",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek summarize the rollout",
+        ts: "1710000000.000010",
+      },
+    };
+
+    const res = await app.request("/api/slack/events", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    const json = (await res.json()) as { runId: string };
+
+    expect(res.status).toBe(200);
+    expect(slackClient.postMessageCalls).toHaveLength(1);
+    expect(slackClient.postMessageCalls[0]).toMatchObject({
+      channel: "C_CHECKOUT",
+      thread_ts: "1710000000.000010",
+      text: expect.stringContaining("Bek local worker completed"),
+    });
+    expect(JSON.stringify(slackClient.postMessageCalls[0]!.blocks)).toContain(
+      json.runId,
+    );
+  });
+
+  it("posts approval-needed Slack buttons for paused worker runs", async () => {
+    const slackClient = new FakeSlackWebApiClient();
+    const app = createApp(new BekStore(), {
+      runAdvancement: "worker_local",
+      slackClient,
+    });
+    const payload = {
+      event_id: "EvApprovalOutbound",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek ask for approval before touching anything",
+        ts: "1710000000.000020",
+      },
+    };
+
+    const res = await app.request("/api/slack/events", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    const json = (await res.json()) as { runId: string };
+
+    expect(res.status).toBe(200);
+    expect(slackClient.postMessageCalls).toHaveLength(1);
+    const approvalMessage = slackClient.postMessageCalls[0]!;
+    expect(approvalMessage).toMatchObject({
+      channel: "C_CHECKOUT",
+      thread_ts: "1710000000.000020",
+      text: "Bek needs approval for local.approval.",
+    });
+    const actions = approvalMessage.blocks?.find(
+      (block) => block.type === "actions",
+    ) as SlackActionsBlock | undefined;
+    expect(actions).toBeTruthy();
+    expect(
+      parseSlackApprovalActionValue(actions!.elements[0]!.value),
+    ).toMatchObject({
+      runId: json.runId,
+      action: "local.approval",
+      approvalId: expect.any(String),
+      payloadHash: expect.any(String),
+    });
+  });
+
+  it("records Slack outbound failures without failing accepted events", async () => {
+    const slackClient = new FakeSlackWebApiClient({ failWith: "ratelimited" });
+    const app = createApp(new BekStore(), { slackClient });
+    const payload = {
+      event_id: "EvOutboundFailure",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek hello while Slack is flaky",
+        ts: "1710000000.000030",
+      },
+    };
+
+    const res = await app.request("/api/slack/events", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    const json = (await res.json()) as { runId: string };
+
+    expect(res.status).toBe(200);
+    expect(slackClient.postMessageCalls).toHaveLength(1);
+    await expect(
+      expectJson(app, `/api/runs/${json.runId}`),
+    ).resolves.toMatchObject({
+      events: expect.arrayContaining([
+        expect.objectContaining({
+          message: expect.stringContaining(
+            "Slack final_answer message failed: ratelimited.",
+          ),
+          data: expect.objectContaining({
+            slackOutbound: expect.objectContaining({
+              ok: false,
+              error: "ratelimited",
+              channel: "C_CHECKOUT",
+            }),
+          }),
+        }),
+      ]),
+    });
+  });
+
   it("does not dedupe Slack event retries before persistence succeeds", async () => {
     let flushes = 0;
     const store = new BekStore(undefined, {
@@ -1631,13 +1800,18 @@ describe("Bek API", () => {
     process.env.BEK_SLACK_USER_PRINCIPAL_MAP = JSON.stringify({
       U_APPROVER: "principal_admin",
     });
-    const app = createApp();
-    const { approval } = await createPrApproval(app, "@bek open a Slack PR");
+    const slackClient = new FakeSlackWebApiClient();
+    const app = createApp(new BekStore(), { slackClient });
+    const { run, approval } = await createPrApproval(
+      app,
+      "@bek open a Slack PR",
+    );
     const payload = {
       type: "block_actions",
       user: { id: "U_APPROVER" },
       channel: { id: "C_CHECKOUT" },
       team: { id: "T_DEMO" },
+      container: { message_ts: "1710000000.000040" },
       actions: [
         {
           action_id: "bek.approval.approve",
@@ -1670,6 +1844,17 @@ describe("Bek API", () => {
         decidedByPrincipalId: "principal_admin",
       },
     });
+    expect(slackClient.postMessageCalls).toHaveLength(2);
+    expect(slackClient.postMessageCalls[0]).toMatchObject({
+      channel: "C_CHECKOUT",
+      thread_ts: "1710000000.000040",
+      text: `Bek approved the request for ${run.id}.`,
+    });
+    expect(slackClient.postMessageCalls[1]).toMatchObject({
+      channel: "C_CHECKOUT",
+      thread_ts: "1710000000.000040",
+      text: expect.stringContaining("Bek finished."),
+    });
 
     const retry = await app.request("/api/slack/interactivity", {
       method: "POST",
@@ -1685,6 +1870,7 @@ describe("Bek API", () => {
       ok: true,
       deduped: true,
     });
+    expect(slackClient.postMessageCalls).toHaveLength(2);
   });
 
   it("validates slash commands and dedupes Slack command retries", async () => {
@@ -1802,7 +1988,8 @@ describe("Bek API", () => {
   });
 
   it("creates a local run for configured Slack slash commands", async () => {
-    const app = createApp();
+    const slackClient = new FakeSlackWebApiClient();
+    const app = createApp(new BekStore(), { slackClient });
     const rawBody = slackForm({
       command: "/bek",
       channel_id: "C_CHECKOUT",
@@ -1832,6 +2019,11 @@ describe("Bek API", () => {
         trigger: "slash_command",
         prompt: "summarize the rollout",
       },
+    });
+    expect(slackClient.postMessageCalls).toHaveLength(1);
+    expect(slackClient.postMessageCalls[0]).toMatchObject({
+      channel: "C_CHECKOUT",
+      text: expect.stringContaining("Bek finished."),
     });
   });
 

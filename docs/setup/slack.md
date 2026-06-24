@@ -31,16 +31,18 @@ It can:
   `BEK_SLACK_OAUTH_EXCHANGE=true` or `NODE_ENV=production`,
 - parse Bek approval button actions and apply them when the Slack user is mapped to a Bek principal,
 - build Slack Web API message payloads for queued runs, approval requests, approval decisions, and final answers,
-- provide a typed Slack Web API client interface plus a fake in-memory client for tests,
+- post thread replies, approval buttons, approval decisions, and final answers through the Slack Web API when `SLACK_BOT_TOKEN` is set,
+- provide a typed Slack Web API client interface plus HTTP and fake in-memory clients,
 - build durable Slack ingress keys for events, slash commands, and approval interactions,
 - persist handled delivery keys in the Bek snapshot so retries dedupe across API app instances and Postgres-backed restarts.
 
 When exchange is enabled, the callback returns redacted install metadata for
-verification. Bek does not persist the bot token yet, and `SLACK_BOT_TOKEN` is
-reserved until live Slack Web API posting is wired.
+verification. Bek does not persist the exchanged bot token yet. For local or
+self-hosted posting, set `SLACK_BOT_TOKEN` from the Slack app's Bot User OAuth
+Token.
 
-It does not yet include bot token vault storage, real Slack Web API posting, or
-persistent Slack user/principal mapping.
+It does not yet include bot token vault storage or persistent Slack
+user/principal mapping.
 
 ## Create A Slack App
 
@@ -86,17 +88,28 @@ persistent Slack user/principal mapping.
 
    If admin API auth is enabled, call the install endpoint with the admin bearer token from a trusted admin surface.
 
-9. Configure slash commands and interactivity:
+9. Enable outbound posting by setting the Bot User OAuth Token:
 
-   ```txt
-   Slash command request URL: https://YOUR-TUNNEL.example.com/api/slack/commands
-   Interactivity request URL: https://YOUR-TUNNEL.example.com/api/slack/interactivity
+   ```bash
+   export SLACK_BOT_TOKEN=xoxb-...
    ```
 
-   Bek approval buttons use action IDs
-   `bek.approval.approve` or `bek.approval.deny` and a button `value` JSON
-   object containing `approvalId`, `payloadHash`, and optional run/action
-   context. The parser still accepts the older pipe-delimited local test value.
+   The token needs `chat:write`; the default `SLACK_BOT_SCOPES` includes it.
+   Bek posts in the originating channel or thread after the accepted run or
+   approval decision has been persisted. If Slack posting fails, the request is
+   still accepted and the run timeline records the delivery error.
+
+10. Configure slash commands and interactivity:
+
+```txt
+Slash command request URL: https://YOUR-TUNNEL.example.com/api/slack/commands
+Interactivity request URL: https://YOUR-TUNNEL.example.com/api/slack/interactivity
+```
+
+Bek approval buttons use action IDs
+`bek.approval.approve` or `bek.approval.deny` and a button `value` JSON
+object containing `approvalId`, `payloadHash`, and optional run/action
+context. The parser still accepts the older pipe-delimited local test value.
 
 ## Local Tunnel
 
@@ -142,6 +155,5 @@ Before inviting Bek broadly, decide:
 ## Launch Blockers
 
 - Bot token storage through a credential broker.
-- Thread replies and real Slack Web API message posting.
 - Persistent Slack user/principal mapping.
 - Admin UI for channel discovery and bundle attachment.
