@@ -1,6 +1,9 @@
-import { redactSecrets, redactUnknown } from "@bek/core";
+import { createId, redactSecrets, redactUnknown } from "@bek/core";
 import type { RuntimeResult, RunWorkItem } from "@bek/runtime";
 import type {
+  ClaimRunWorkDecision,
+  ExpireWorkerLeasesDecision,
+  HeartbeatRunWorkDecision,
   WorkerApprovalGate,
   WorkerDeadLetterRecord,
   WorkerEvent,
@@ -11,7 +14,7 @@ import type {
   WorkerWorkRecord,
   WorkerWorkStatus,
 } from "@bek/worker";
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, lte, sql } from "drizzle-orm";
 import type { BekDb } from "./client";
 import {
   workerDeadLetters,
@@ -22,11 +25,30 @@ import {
   type WorkerWorkRecordRow,
 } from "./schema";
 
-type MutationDb = Pick<BekDb, "insert">;
+type MutationDb = Pick<BekDb, "insert" | "select" | "update">;
 
 export interface WorkerQueueRepository {
   readSnapshot(orgId: string): Promise<WorkerSnapshot>;
   saveSnapshot(orgId: string, snapshot: WorkerSnapshot): Promise<void>;
+}
+
+export interface ClaimPersistedWorkerWorkInput {
+  orgId: string;
+  workerId: string;
+  leaseMs: number;
+  now?: string | undefined;
+  leaseId?: string | undefined;
+}
+
+export interface HeartbeatPersistedWorkerLeaseInput {
+  leaseId: string;
+  extendByMs?: number | undefined;
+  now?: string | undefined;
+}
+
+export interface ExpirePersistedWorkerLeasesInput {
+  orgId: string;
+  now?: string | undefined;
 }
 
 export interface WorkerSnapshotRows {
@@ -76,6 +98,204 @@ export class DrizzleWorkerQueueRepository implements WorkerQueueRepository {
       await upsertWorkerQueueRows(db, rows);
     });
   }
+
+  async claimNextAvailable(
+    input: ClaimPersistedWorkerWorkInput,
+  ): Promise<ClaimRunWorkDecision> {
+    if (input.leaseMs <= 0) {
+      throw new Error("leaseMs must be positive.");
+    }
+
+    const now = toDate(input.now ?? new Date().toISOString());
+
+    return this.db.transaction(async (tx) => {
+      await expirePersistedWorkerLeases(tx as MutationDb, input.orgId, now);
+
+      const [row] = await tx
+        .select()
+        .from(workerWorkRecords)
+        .where(
+          and(
+            eq(workerWorkRecords.orgId, input.orgId),
+            eq(workerWorkRecords.status, "queued"),
+            lte(workerWorkRecords.availableAt, now),
+          ),
+        )
+        .orderBy(
+          asc(workerWorkRecords.availableAt),
+          asc(workerWorkRecords.sequence),
+          asc(workerWorkRecords.id),
+        )
+        .limit(1)
+        .for("update", { skipLocked: true });
+
+      if (!row) {
+        return { decision: "empty", reason: "no_available_work" };
+      }
+
+      const lease = createPersistedWorkerLease(row, {
+        workerId: input.workerId,
+        leaseMs: input.leaseMs,
+        leaseId: input.leaseId,
+        now,
+      });
+      const [claimed] = await tx
+        .update(workerWorkRecords)
+        .set({
+          status: "claimed",
+          attemptState: "claimed",
+          leaseId: lease.id,
+          leaseWorkerId: lease.workerId,
+          leaseClaimedAt: now,
+          leaseHeartbeatAt: now,
+          leaseExpiresAt: toDate(lease.expiresAt),
+          updatedAt: now,
+        })
+        .where(eq(workerWorkRecords.id, row.id))
+        .returning();
+
+      return {
+        decision: "claimed",
+        lease,
+        record: workerRecordFromRow(claimed ?? row),
+      };
+    });
+  }
+
+  async heartbeatLease(
+    input: HeartbeatPersistedWorkerLeaseInput,
+  ): Promise<HeartbeatRunWorkDecision> {
+    const now = toDate(input.now ?? new Date().toISOString());
+
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(workerWorkRecords)
+        .where(eq(workerWorkRecords.leaseId, input.leaseId))
+        .limit(1)
+        .for("update");
+
+      if (!row) {
+        return { decision: "not_found", reason: "Unknown worker lease." };
+      }
+      if (row.status !== "claimed" || !row.leaseId) {
+        return {
+          decision: "lost_lease",
+          reason: `Work is ${row.status}, not claimed.`,
+        };
+      }
+      if (
+        !row.leaseExpiresAt ||
+        row.leaseExpiresAt.getTime() <= now.getTime()
+      ) {
+        await expirePersistedWorkerLeases(tx as MutationDb, row.orgId, now);
+        return { decision: "lost_lease", reason: "Worker lease expired." };
+      }
+      if (row.cancelRequestedAt) {
+        return {
+          decision: "cancel",
+          reason: row.cancelReason ?? "Run cancellation requested.",
+          record: workerRecordFromRow(row),
+        };
+      }
+
+      const extendByMs =
+        input.extendByMs ??
+        row.leaseExpiresAt.getTime() -
+          (row.leaseClaimedAt ?? row.updatedAt).getTime();
+      if (extendByMs <= 0) {
+        throw new Error("extendByMs must be positive.");
+      }
+      const expiresAt = addMs(now, extendByMs);
+      const [updated] = await tx
+        .update(workerWorkRecords)
+        .set({
+          leaseHeartbeatAt: now,
+          leaseExpiresAt: expiresAt,
+          updatedAt: now,
+        })
+        .where(eq(workerWorkRecords.id, row.id))
+        .returning();
+      const record = workerRecordFromRow(updated ?? row);
+      if (!record.lease) {
+        return { decision: "lost_lease", reason: "Worker lease is missing." };
+      }
+
+      return { decision: "continue", lease: record.lease, record };
+    });
+  }
+
+  async expireLeases(
+    input: ExpirePersistedWorkerLeasesInput,
+  ): Promise<ExpireWorkerLeasesDecision> {
+    const records = await this.db.transaction((tx) =>
+      expirePersistedWorkerLeases(
+        tx as MutationDb,
+        input.orgId,
+        toDate(input.now ?? new Date().toISOString()),
+      ),
+    );
+
+    if (records.length === 0) {
+      return { decision: "none", records: [] };
+    }
+
+    return { decision: "expired", records };
+  }
+}
+
+async function expirePersistedWorkerLeases(
+  db: MutationDb,
+  orgId: string,
+  now: Date,
+): Promise<WorkerWorkRecord[]> {
+  const cancelledRows = await db
+    .update(workerWorkRecords)
+    .set({
+      status: "cancelled",
+      attemptState: "cancelled",
+      leaseId: null,
+      leaseWorkerId: null,
+      leaseClaimedAt: null,
+      leaseHeartbeatAt: null,
+      leaseExpiresAt: null,
+      terminalReason: sql`coalesce(${workerWorkRecords.cancelReason}, 'Run cancellation requested.')`,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(workerWorkRecords.orgId, orgId),
+        eq(workerWorkRecords.status, "claimed"),
+        isNotNull(workerWorkRecords.leaseExpiresAt),
+        lte(workerWorkRecords.leaseExpiresAt, now),
+        isNotNull(workerWorkRecords.cancelRequestedAt),
+      ),
+    )
+    .returning();
+
+  const requeuedRows = await db
+    .update(workerWorkRecords)
+    .set({
+      status: "queued",
+      attemptState: "queued",
+      leaseId: null,
+      leaseWorkerId: null,
+      leaseClaimedAt: null,
+      leaseHeartbeatAt: null,
+      leaseExpiresAt: null,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(workerWorkRecords.orgId, orgId),
+        eq(workerWorkRecords.status, "claimed"),
+        isNotNull(workerWorkRecords.leaseExpiresAt),
+        lte(workerWorkRecords.leaseExpiresAt, now),
+      ),
+    )
+    .returning();
+
+  return [...cancelledRows, ...requeuedRows].map(workerRecordFromRow);
 }
 
 export function workerSnapshotToRows(
@@ -239,7 +459,7 @@ function workerRecordToRow(
   const lease = record.lease;
   const approval = record.approval;
   return {
-    id: record.id,
+    id: toWorkerStorageId(orgId, record.id),
     orgId,
     runId: record.item.runId,
     sequence: record.sequence,
@@ -252,7 +472,7 @@ function workerRecordToRow(
     attemptState: record.attemptState,
     availableAt: toDate(record.availableAt),
     enqueuedAt: toDate(record.item.enqueuedAt),
-    leaseId: lease?.id ?? null,
+    leaseId: lease ? toWorkerStorageId(orgId, lease.id) : null,
     leaseWorkerId: lease?.workerId ?? null,
     leaseClaimedAt: lease ? toDate(lease.claimedAt) : null,
     leaseHeartbeatAt: lease ? toDate(lease.heartbeatAt) : null,
@@ -264,7 +484,7 @@ function workerRecordToRow(
     approvalStatus: approval?.status ?? null,
     approvalCreatedAt: approval ? toDate(approval.createdAt) : null,
     approvalExpiresAt: approval ? toDate(approval.expiresAt) : null,
-    retryOf: record.retryOf ?? null,
+    retryOf: record.retryOf ? toWorkerStorageId(orgId, record.retryOf) : null,
     cancelRequestedAt: record.cancelRequestedAt
       ? toDate(record.cancelRequestedAt)
       : null,
@@ -285,9 +505,9 @@ function deadLetterToRow(
   deadLetter: WorkerDeadLetterRecord,
 ): WorkerDeadLetterRow {
   return {
-    id: deadLetter.id,
+    id: toWorkerStorageId(orgId, deadLetter.id),
     orgId,
-    workId: deadLetter.workId,
+    workId: toWorkerStorageId(orgId, deadLetter.workId),
     runId: deadLetter.item.runId,
     sequence: deadLetter.sequence,
     idempotencyKey: deadLetter.idempotencyKey,
@@ -302,21 +522,19 @@ function deadLetterToRow(
 
 function workerEventToRow(orgId: string, event: WorkerEvent): WorkerEventRow {
   return {
-    id: event.id,
+    id: toWorkerStorageId(orgId, event.id),
     orgId,
     runId: event.runId,
     workId:
       typeof event.data?.workerRecordId === "string"
-        ? event.data.workerRecordId
+        ? toWorkerStorageId(orgId, event.data.workerRecordId)
         : null,
     sequence: event.sequence,
     type: event.type,
     attempt: event.attempt ?? null,
     traceId: event.traceId ?? null,
     message: redactSecrets(event.message),
-    data: event.data
-      ? (redactUnknown(event.data) as Record<string, unknown>)
-      : {},
+    data: normalizeWorkerEventData(orgId, event.data),
     createdAt: toDate(event.createdAt),
   };
 }
@@ -324,7 +542,7 @@ function workerEventToRow(orgId: string, event: WorkerEvent): WorkerEventRow {
 function workerRecordFromRow(row: WorkerWorkRecordRow): WorkerWorkRecord {
   const item = row.item as RunWorkItem;
   const record: WorkerWorkRecord = {
-    id: row.id,
+    id: fromWorkerStorageId(row.orgId, row.id),
     sequence: row.sequence,
     idempotencyKey: row.idempotencyKey,
     item,
@@ -344,7 +562,7 @@ function workerRecordFromRow(row: WorkerWorkRecordRow): WorkerWorkRecord {
     record.approval = approval;
   }
   if (row.retryOf) {
-    record.retryOf = row.retryOf;
+    record.retryOf = fromWorkerStorageId(row.orgId, row.retryOf);
   }
   if (row.cancelRequestedAt) {
     record.cancelRequestedAt = toIso(row.cancelRequestedAt);
@@ -362,12 +580,35 @@ function workerRecordFromRow(row: WorkerWorkRecordRow): WorkerWorkRecord {
   return record;
 }
 
+function createPersistedWorkerLease(
+  row: WorkerWorkRecordRow,
+  input: {
+    workerId: string;
+    leaseMs: number;
+    now: Date;
+    leaseId?: string | undefined;
+  },
+): WorkerLease {
+  return {
+    id: input.leaseId ?? createId("lease"),
+    idempotencyKey: row.idempotencyKey,
+    workerId: input.workerId,
+    orgId: row.orgId,
+    runId: row.runId,
+    attempt: row.attempt,
+    traceId: row.traceId,
+    claimedAt: input.now.toISOString(),
+    heartbeatAt: input.now.toISOString(),
+    expiresAt: addMs(input.now, input.leaseMs).toISOString(),
+  };
+}
+
 function leaseFromRow(row: WorkerWorkRecordRow): WorkerLease | undefined {
   if (!row.leaseId) {
     return undefined;
   }
   return {
-    id: row.leaseId,
+    id: fromWorkerStorageId(row.orgId, row.leaseId),
     idempotencyKey: row.idempotencyKey,
     workerId: row.leaseWorkerId ?? "worker_unknown",
     orgId: row.orgId,
@@ -399,9 +640,9 @@ function approvalFromRow(
 
 function deadLetterFromRow(row: WorkerDeadLetterRow): WorkerDeadLetterRecord {
   return {
-    id: row.id,
+    id: fromWorkerStorageId(row.orgId, row.id),
     sequence: row.sequence,
-    workId: row.workId,
+    workId: fromWorkerStorageId(row.orgId, row.workId),
     idempotencyKey: row.idempotencyKey,
     item: row.item as RunWorkItem,
     reason: row.reason,
@@ -413,7 +654,7 @@ function deadLetterFromRow(row: WorkerDeadLetterRow): WorkerDeadLetterRecord {
 
 function workerEventFromRow(row: WorkerEventRow): WorkerEvent {
   const event: WorkerEvent = {
-    id: row.id,
+    id: fromWorkerStorageId(row.orgId, row.id),
     sequence: row.sequence,
     type: row.type as WorkerEventType,
     orgId: row.orgId,
@@ -428,7 +669,7 @@ function workerEventFromRow(row: WorkerEventRow): WorkerEvent {
     event.traceId = row.traceId;
   }
   if (row.data && Object.keys(row.data).length > 0) {
-    event.data = row.data;
+    event.data = denormalizeWorkerEventData(row.orgId, row.data);
   }
   return event;
 }
@@ -441,4 +682,48 @@ function toIso(value: Date | string): string {
   return value instanceof Date
     ? value.toISOString()
     : new Date(value).toISOString();
+}
+
+function addMs(value: Date, ms: number): Date {
+  return new Date(value.getTime() + ms);
+}
+
+function toWorkerStorageId(orgId: string, id: string): string {
+  const prefix = `${orgId}:`;
+  return id.startsWith(prefix) ? id : `${prefix}${id}`;
+}
+
+function fromWorkerStorageId(orgId: string, id: string): string {
+  const prefix = `${orgId}:`;
+  return id.startsWith(prefix) ? id.slice(prefix.length) : id;
+}
+
+function normalizeWorkerEventData(
+  orgId: string,
+  data: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  if (!data) {
+    return {};
+  }
+  const redacted = redactUnknown(data) as Record<string, unknown>;
+  if (typeof redacted.workerRecordId === "string") {
+    return {
+      ...redacted,
+      workerRecordId: toWorkerStorageId(orgId, redacted.workerRecordId),
+    };
+  }
+  return redacted;
+}
+
+function denormalizeWorkerEventData(
+  orgId: string,
+  data: Record<string, unknown>,
+): Record<string, unknown> {
+  if (typeof data.workerRecordId === "string") {
+    return {
+      ...data,
+      workerRecordId: fromWorkerStorageId(orgId, data.workerRecordId),
+    };
+  }
+  return data;
 }

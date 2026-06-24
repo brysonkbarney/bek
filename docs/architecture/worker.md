@@ -11,9 +11,13 @@ restarts.
 
 This is restart-safe self-hosting durability, not the final hosted worker fleet.
 Postgres snapshot writes are idempotent merge-upserts so duplicate flushes and
-stale snapshot writers do not delete live queue rows, but hosted production
-still needs daemonized workers, row-level transactional claims with `FOR UPDATE
-SKIP LOCKED` or an equivalent queue backend, lease sweepers, daemonized outbox
+stale snapshot writers do not delete live queue rows. The Postgres repository
+also exposes row-level claim, heartbeat, and lease-expiry primitives using
+transactional locks for the future daemon path, with optional integration tests
+behind `BEK_DB_INTEGRATION_DATABASE_URL`.
+
+Hosted production still needs those primitives wired into daemonized workers,
+transactional settlement/redrive/approval operations, daemonized outbox
 dispatch, metrics, autoscaling, and tenant-isolation hardening. The Slack outbox
 is the first durable side-effect outbox; GitHub, Linear, MCP, artifact, and
 other external writes still need the same pattern.
@@ -73,6 +77,15 @@ as the persisted row, preventing an older snapshot from reopening or unclaiming
 newer work. Dead letters and worker events are append-only idempotent inserts;
 database uniqueness covers one dead letter per `(org_id, work_id)` and one
 worker event per `(org_id, sequence)`.
+
+`DrizzleWorkerQueueRepository.claimNextAvailable`,
+`heartbeatLease`, and `expireLeases` are the first daemon-oriented Postgres
+operations. They lock candidate rows transactionally, claim only due queued
+work, extend active leases, requeue expired work, and terminally cancel expired
+work that already had a cancellation request. The current API bridge does not
+yet use these async primitives; it still hydrates a local queue and persists
+snapshots. This keeps the local product loop simple while making the database
+contract testable before the worker daemon is swapped in.
 
 - `enqueue` stores active work idempotently by
   `run_attempt:{orgId}:{runId}:{attempt}`. The same key is copied onto leases
@@ -166,9 +179,11 @@ diagnostics by delivery attempt.
 
 - Daemonized worker processes that run outside request handlers and own claim,
   heartbeat, lease expiry, cancellation, retry, approval resume, and settlement.
-- Row-level queue claims for worker records and outbound deliveries, using
-  `FOR UPDATE SKIP LOCKED`, advisory locks, or an equivalent queue backend
-  instead of snapshot read/mutate/write drains.
+- Wire the row-level worker claim primitives into daemon processes, then add
+  transactional settlement, retry, redrive, approval resume, and event
+  projection so request handlers no longer drain local snapshots.
+- Row-level claims for outbound deliveries, using `FOR UPDATE SKIP LOCKED`,
+  advisory locks, or an equivalent queue backend instead of in-process drains.
 - Lease sweepers and watchdogs that return expired worker attempts and stale
   Slack `delivering` rows to retryable state.
 - Durable model-usage persistence and billed-cost reconciliation for AI SDK
