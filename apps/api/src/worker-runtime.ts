@@ -54,8 +54,8 @@ export class LocalWorkerController {
   private readonly queue: InMemoryWorkerQueue | SnapshotPersistedWorkerQueue;
   private readonly service: WorkerRuntimeService;
   private readonly modelUsageSink: ModelUsageSink | undefined;
-  private modelUsageQueue: Promise<void> = Promise.resolve();
-  private modelUsageError: Error | undefined;
+  private readonly pendingModelUsageWrites: ModelUsageWrite[] = [];
+  private modelUsageFlush: Promise<void> | undefined;
 
   constructor(
     store: BekStore,
@@ -187,12 +187,15 @@ export class LocalWorkerController {
   }
 
   async flushModelUsageChanges(): Promise<void> {
-    await this.modelUsageQueue;
-    if (this.modelUsageError) {
-      const error = this.modelUsageError;
-      this.modelUsageError = undefined;
-      throw error;
+    if (!this.modelUsageSink || this.pendingModelUsageWrites.length === 0) {
+      return;
     }
+    if (!this.modelUsageFlush) {
+      this.modelUsageFlush = this.flushPendingModelUsageWrites().finally(() => {
+        this.modelUsageFlush = undefined;
+      });
+    }
+    await this.modelUsageFlush;
   }
 
   private applyProcessedDecision(decision: ProcessNextRunWorkDecision): void {
@@ -313,17 +316,19 @@ export class LocalWorkerController {
     if (!this.modelUsageSink) {
       return;
     }
-    this.modelUsageQueue = this.modelUsageQueue
-      .then(async () => {
-        if (this.modelUsageError) {
-          return;
-        }
+    this.pendingModelUsageWrites.push(input);
+  }
+
+  private async flushPendingModelUsageWrites(): Promise<void> {
+    while (this.pendingModelUsageWrites.length > 0) {
+      const input = this.pendingModelUsageWrites[0]!;
+      try {
         await this.modelUsageSink?.recordModelUsage(input);
-      })
-      .catch((error: unknown) => {
-        this.modelUsageError =
-          error instanceof Error ? error : new Error(String(error));
-      });
+        this.pendingModelUsageWrites.shift();
+      } catch (error: unknown) {
+        throw error instanceof Error ? error : new Error(String(error));
+      }
+    }
   }
 
   private approvalFromWorkerRecord(

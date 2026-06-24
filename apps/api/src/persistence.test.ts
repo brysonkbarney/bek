@@ -82,7 +82,7 @@ describe("API persistence bootstrap", () => {
     );
 
     expect(write).toMatchObject({
-      id: "usage_event_appended_model",
+      id: "usage_event_worker_model",
       orgId: run.orgId,
       runId: run.id,
       runEventId: "event_appended_model",
@@ -103,6 +103,52 @@ describe("API persistence bootstrap", () => {
       }),
       createdAt: "2026-01-02T03:04:06.000Z",
     });
+  });
+
+  it("keeps model usage ids stable when a worker event is replayed into a new run event", () => {
+    const snapshot = createSeedSnapshot("2026-01-02T03:04:05.000Z");
+    const run = snapshot.runs[0]!;
+    const first = modelUsageWriteFromRunEvent(
+      {
+        id: "event_projection_1",
+        orgId: run.orgId,
+        runId: run.id,
+        type: "run.status_changed",
+        message: "Model completed.",
+        data: {
+          workerEventId: "event_worker_replayed",
+          workerEventType: "model.completed",
+          provider: "openai",
+          model: "openai/gpt-5.4",
+          usage: { input: 1, output: 2, total: 3 },
+        },
+        createdAt: "2026-01-02T03:04:06.000Z",
+      },
+      run,
+    );
+    const replay = modelUsageWriteFromRunEvent(
+      {
+        id: "event_projection_2",
+        orgId: run.orgId,
+        runId: run.id,
+        type: "run.status_changed",
+        message: "Model completed again.",
+        data: {
+          workerEventId: "event_worker_replayed",
+          workerEventType: "model.completed",
+          provider: "openai",
+          model: "openai/gpt-5.4",
+          usage: { input: 1, output: 2, total: 3 },
+        },
+        createdAt: "2026-01-02T03:04:07.000Z",
+      },
+      run,
+    );
+
+    expect(first?.id).toBe("usage_event_worker_replayed");
+    expect(replay?.id).toBe(first?.id);
+    expect(first?.runEventId).toBe("event_projection_1");
+    expect(replay?.runEventId).toBe("event_projection_2");
   });
 
   it("maps failed model.completed attempts when the route is only in attempt metadata", () => {

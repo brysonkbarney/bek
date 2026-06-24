@@ -62,6 +62,12 @@ those events into `model_usage` and `/api/model-usage` prefers the durable
 ledger summary. In memory mode, `/api/model-usage` falls back to run-level
 totals and marks the response with `source: "runs"`.
 
+The API buffers model-usage writes until after run-event persistence has
+flushed, so `model_usage.run_event_id` does not race its foreign-keyed
+`run_events` row. Usage rows use the original worker event ID when present,
+which keeps duplicate worker-event projection idempotent even if a run event is
+recreated during repair or replay.
+
 `actualCostCents` is a local estimated actual calculated from response usage and
 Bek's benchmark pricing; it is not a provider invoice amount. Billed-cost
 reconciliation against Vercel AI Gateway or provider dashboards stays as a

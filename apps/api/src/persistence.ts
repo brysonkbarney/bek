@@ -323,9 +323,10 @@ export function modelUsageWriteFromRunEvent(
     inputTokens + outputTokens,
   );
   const metadata = usageMetadata(data);
+  const usageEventId = readString(data.workerEventId) ?? event.id;
 
   return compactUsageWrite({
-    id: `usage_${event.id}`,
+    id: `usage_${usageEventId}`,
     orgId: event.orgId,
     runId: event.runId,
     runEventId: event.id,

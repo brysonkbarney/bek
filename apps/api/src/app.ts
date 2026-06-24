@@ -202,13 +202,14 @@ export function createApp(
     try {
       await workerController.flushChanges();
       await store.flushChanges();
-      await workerController.flushModelUsageChanges();
     } catch (error) {
       if (deliveryKey) {
         store.removeIngressDelivery(deliveryKey, { recordChange: false });
       }
       throw error;
     }
+
+    await workerController.flushModelUsageChanges();
   }
 
   async function flushSlackOutboundChanges() {
