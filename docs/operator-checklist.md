@@ -20,6 +20,15 @@ the current OSS spine.
 
 - [ ] Start local dependencies with `docker compose up -d`.
 - [ ] Confirm Postgres, Valkey, and MinIO are healthy with `docker compose ps`.
+- [ ] Copy `.env.docker.example` to `.env.docker`, replace
+      `BEK_ADMIN_API_TOKEN`, and set `BEK_CREDENTIAL_MASTER_KEY` before Slack
+      OAuth token storage matters.
+- [ ] Run `docker compose --env-file .env.docker --profile app run --rm --build migrate`
+      before first app startup and after pulling schema changes.
+- [ ] Start the containerized app with
+      `docker compose --env-file .env.docker --profile app up -d --build`.
+- [ ] Confirm the admin console and API health at `http://localhost:5173` and
+      `http://localhost:4317/health`.
 - [ ] Run `DATABASE_URL=postgres://bek:bek@localhost:54329/bek pnpm db:migrate`
       when testing the Drizzle schema.
 - [ ] Run `DATABASE_URL=postgres://bek:bek@localhost:54329/bek pnpm db:seed`
@@ -90,7 +99,11 @@ the current OSS spine.
 ## Runtime And Sandbox
 
 - [ ] Keep runtime profiles internal; users should only see `@bek`.
-- [ ] Use Docker only for local or trusted single-tenant self-hosted execution.
+- [ ] Leave `BEK_SANDBOX_PROVIDER=none` for Docker Compose unless executable
+      sandboxing has been intentionally provisioned.
+- [ ] Use `BEK_SANDBOX_PROVIDER=docker-local` only for local or trusted
+      single-tenant self-hosted execution with reviewed Docker CLI/socket
+      access.
 - [ ] Use hosted microVM isolation for multitenant hosted execution.
 - [ ] Deny metadata, private-network, control-plane, and arbitrary egress by
       default.

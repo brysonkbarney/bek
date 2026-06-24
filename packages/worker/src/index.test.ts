@@ -2,6 +2,7 @@ import { createSeedSnapshot, type ApprovalRequest } from "@bek/core";
 import {
   createRunWorkItem,
   type RuntimeAdapter,
+  type RuntimeModelRoute,
   type RuntimeResult,
 } from "@bek/runtime";
 import { FakeSandboxProvider } from "@bek/sandbox";
@@ -679,6 +680,106 @@ describe("worker runtime service", () => {
         "worker.completed",
       ]),
     );
+  });
+
+  it("passes deterministic model budget preflight metadata to runtime adapters", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_service_budget",
+    });
+    const modelPolicy = snapshot.modelPolicies.find(
+      (policy) => policy.id === run.modelPolicyId,
+    );
+    if (!modelPolicy) {
+      throw new Error("Expected model policy.");
+    }
+    modelPolicy.perRunBudgetCents = 3;
+
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_service_budget",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+
+    let selectedModelRoute: RuntimeModelRoute | undefined;
+    const adapter: RuntimeAdapter = {
+      id: "ai-sdk-local-stub",
+      kind: "ai_sdk",
+      canRun: () => true,
+      async start(input) {
+        selectedModelRoute = input.modelRoute;
+        return completedResult();
+      },
+      async resume() {
+        throw new Error("Unexpected resume.");
+      },
+      async cancel() {
+        throw new Error("Unexpected cancel.");
+      },
+    };
+
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [adapter],
+      workerId: "worker_service",
+      now: () => baseNow,
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    expect(selectedModelRoute).toMatchObject({
+      provider: "openai",
+      model: "openai/gpt-5.4",
+      estimatedCostCents: 4,
+      budget: {
+        decision: "over_budget",
+        budgetCents: 3,
+        estimatedCostCents: 4,
+        remainingBudgetCents: -1,
+        estimatedInputTokens: 7,
+        estimatedOutputTokens: 1_024,
+      },
+    });
+
+    const events = queue.read().events;
+    const budgetChecked = events.find(
+      (event) => event.type === "budget.checked",
+    );
+    expect(budgetChecked).toMatchObject({
+      type: "budget.checked",
+      data: {
+        provider: "openai",
+        model: "openai/gpt-5.4",
+        estimatedCostCents: 4,
+        budgetDecision: "over_budget",
+        budgetCents: 3,
+        remainingBudgetCents: -1,
+      },
+    });
+    const runtimeSelected = events.find(
+      (event) => event.type === "runtime.selected",
+    );
+    expect(runtimeSelected).toMatchObject({
+      type: "runtime.selected",
+      data: {
+        adapterId: "ai-sdk-local-stub",
+        runtimeKind: "ai_sdk",
+        provider: "openai",
+        model: "openai/gpt-5.4",
+        estimatedCostCents: 4,
+        budgetDecision: "over_budget",
+      },
+    });
   });
 
   it("creates and destroys sandbox leases for sandbox runtime adapters", async () => {

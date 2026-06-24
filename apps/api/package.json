@@ -16,6 +16,7 @@
     "@bek/core": "workspace:*",
     "@bek/credentials": "workspace:*",
     "@bek/db": "workspace:*",
+    "@bek/github": "workspace:*",
     "@bek/runtime": "workspace:*",
     "@bek/slack": "workspace:*",
     "@bek/worker": "workspace:*",

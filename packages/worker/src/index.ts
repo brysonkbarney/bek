@@ -4,6 +4,7 @@ import {
   type RunWorkItem,
   type RuntimeAdapter,
   type RuntimeAdapterKind,
+  type RuntimeModelBudgetPreflight,
   type RuntimeModelRoute,
   type RuntimeObservabilityEvent,
   type RuntimeObservabilityEventType,
@@ -1519,6 +1520,7 @@ export class WorkerRuntimeService {
     approval?: ApprovalRequest | undefined;
   }> {
     let requestedApproval: ApprovalRequest | undefined;
+    this.emitBudgetCheckedEvent(claim.lease.id, context.modelRoute);
     const sandbox = await this.createSandboxContext(
       claim.lease.id,
       claim.record,
@@ -1544,7 +1546,7 @@ export class WorkerRuntimeService {
           data: {
             adapterId: adapter.id,
             runtimeKind: adapter.kind,
-            model: context.modelRoute.model,
+            ...modelRouteEventData(context.modelRoute),
           },
         },
         now: this.time(),
@@ -1632,6 +1634,24 @@ export class WorkerRuntimeService {
       input.sandbox = clone(sandbox);
     }
     return input;
+  }
+
+  private emitBudgetCheckedEvent(
+    leaseId: string,
+    modelRoute: RuntimeModelRoute,
+  ): void {
+    if (!modelRoute.budget) {
+      return;
+    }
+    this.queue.emitRuntimeEvent({
+      leaseId,
+      event: {
+        type: "budget.checked",
+        message: `Budget preflight for ${modelRoute.model} is ${modelRoute.budget.decision}.`,
+        data: modelRouteEventData(modelRoute),
+      },
+      now: this.time(),
+    });
   }
 
   private async createSandboxContext(
@@ -1774,9 +1794,13 @@ export class WorkerRuntimeService {
 
     const accessBundles = bundlesForPlace(snapshot.accessBundles, place);
     const grants = accessBundles.flatMap((bundle) => bundle.grants);
-    const modelRoute =
+    const modelRoute = withModelRouteBudgetPreflight(
       this.modelRouteProvider?.({ modelPolicy, runtimeProfile, run }) ??
-      defaultModelRoute(modelPolicy, runtimeProfile);
+        defaultModelRoute(modelPolicy, runtimeProfile),
+      modelPolicy,
+      runtimeProfile,
+      run,
+    );
 
     return {
       snapshot,
@@ -1914,7 +1938,7 @@ export function createDeterministicLocalRuntimeAdapter(
       await input.emit({
         type: "model.requested",
         message: `Local model route ${input.modelRoute.model} requested.`,
-        data: { provider: input.modelRoute.provider },
+        data: modelRouteEventData(input.modelRoute),
       });
       await input.emit({
         type: "model.completed",
@@ -2198,20 +2222,110 @@ function truncateForWorkerOutput(value: string, maxLength = 4_000): string {
   return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }
 
+const estimatedPromptCharactersPerToken = 4;
+const estimatedOutputTokensByRuntimeKind = {
+  ai_sdk: 1_024,
+  opencode: 4_096,
+  langgraph: 2_048,
+  external: 1_024,
+} satisfies Record<RuntimeAdapterKind, number>;
+
 function defaultModelRoute(
   modelPolicy: ModelPolicy,
   runtimeProfile: RuntimeProfile,
 ): RuntimeModelRoute {
-  const separatorIndex = modelPolicy.defaultModel.indexOf("/");
-  const provider =
-    separatorIndex > 0
-      ? modelPolicy.defaultModel.slice(0, separatorIndex)
-      : "local";
   return {
-    provider,
+    provider: providerFromModel(modelPolicy.defaultModel),
     model: modelPolicy.defaultModel,
     reason: `Using ${modelPolicy.name} for ${runtimeProfile.name}.`,
   };
+}
+
+function withModelRouteBudgetPreflight(
+  route: RuntimeModelRoute,
+  modelPolicy: ModelPolicy,
+  runtimeProfile: RuntimeProfile,
+  run: Run,
+): RuntimeModelRoute {
+  const estimatedCostCents = normalizeEstimatedCostCents(
+    route.estimatedCostCents ??
+      route.budget?.estimatedCostCents ??
+      run.estimatedCostCents,
+  );
+  return {
+    ...route,
+    estimatedCostCents,
+    budget:
+      route.budget ??
+      createRuntimeModelBudgetPreflight({
+        modelPolicy,
+        runtimeProfile,
+        run,
+        estimatedCostCents,
+      }),
+  };
+}
+
+function createRuntimeModelBudgetPreflight(input: {
+  modelPolicy: ModelPolicy;
+  runtimeProfile: RuntimeProfile;
+  run: Run;
+  estimatedCostCents: number;
+}): RuntimeModelBudgetPreflight {
+  const remainingBudgetCents =
+    input.modelPolicy.perRunBudgetCents - input.estimatedCostCents;
+  return {
+    decision: remainingBudgetCents >= 0 ? "within_budget" : "over_budget",
+    budgetCents: input.modelPolicy.perRunBudgetCents,
+    estimatedCostCents: input.estimatedCostCents,
+    remainingBudgetCents,
+    estimatedInputTokens: estimateRunInputTokens(input.run),
+    estimatedOutputTokens: estimateRuntimeOutputTokens(input.runtimeProfile),
+  };
+}
+
+function estimateRunInputTokens(run: Run): number {
+  const trimmedPrompt = run.prompt.trim();
+  if (trimmedPrompt.length === 0) {
+    return 0;
+  }
+  return Math.ceil(trimmedPrompt.length / estimatedPromptCharactersPerToken);
+}
+
+function estimateRuntimeOutputTokens(runtimeProfile: RuntimeProfile): number {
+  return estimatedOutputTokensByRuntimeKind[runtimeProfile.runtimeKind];
+}
+
+function normalizeEstimatedCostCents(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.ceil(value));
+}
+
+function providerFromModel(model: string): string {
+  const separatorIndex = model.indexOf("/");
+  const provider =
+    separatorIndex > 0 ? model.slice(0, separatorIndex) : "local";
+  return provider;
+}
+
+function modelRouteEventData(
+  route: RuntimeModelRoute,
+): Record<string, unknown> {
+  const data: Record<string, unknown> = {
+    provider: route.provider,
+    model: route.model,
+  };
+  if (route.estimatedCostCents !== undefined) {
+    data.estimatedCostCents = route.estimatedCostCents;
+  }
+  if (route.budget) {
+    data.budgetDecision = route.budget.decision;
+    data.budgetCents = route.budget.budgetCents;
+    data.remainingBudgetCents = route.budget.remainingBudgetCents;
+  }
+  return data;
 }
 
 function localFinalText(input: RuntimeStartInput): string {

@@ -15,9 +15,10 @@ The current foundation provides local helpers only:
 - Local branch, commit, and draft PR workflow plan objects.
 - A draft PR workflow execution contract that leases a token, validates it, passes the secret token only to the execution client, and returns redacted lease metadata.
 - A fake in-memory GitHub client for tests and local product flows.
+- An admin setup preview route that validates GitHub App env, parses repo grants, and previews repo-scoped installation token requests without calling GitHub.
 - Webhook delivery dedupe key helpers and normalized `installation`, `pull_request`, and `check_run` events.
 
-It does not call GitHub, exchange real installation tokens, clone repositories, push branches, open pull requests against GitHub, or handle webhook deliveries in the API yet.
+It does not call GitHub, exchange real installation tokens, clone repositories, push branches, open pull requests against GitHub, or process GitHub webhook deliveries in the API yet.
 
 ## GitHub App Settings
 
@@ -43,6 +44,7 @@ Use these variables for the app runtime or worker that will eventually receive w
 GITHUB_APP_ID=12345
 GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
 GITHUB_APP_WEBHOOK_SECRET=...
+GITHUB_APP_INSTALLATION_ID=456789
 ```
 
 Optional OAuth fields can be configured later if the app adds user-facing install or callback flows:
@@ -53,6 +55,33 @@ GITHUB_APP_CLIENT_SECRET=...
 ```
 
 Do not commit GitHub private keys, webhook secrets, installation tokens, or personal access tokens. Prefer a secrets manager for shared environments.
+
+## Admin Validation Route
+
+Bek exposes a bounded admin-only setup preview at:
+
+```bash
+GET /api/setup/github
+```
+
+The route performs local validation only. It:
+
+- Validates `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, and `GITHUB_APP_WEBHOOK_SECRET` with the shared GitHub config helper.
+- Reads GitHub grants from access bundles and parses canonical repo resources such as `github:redohq/checkout`.
+- Merges required installation permissions for the granted capabilities.
+- Returns a repo-scoped installation token request preview using `GITHUB_APP_INSTALLATION_ID`.
+- Includes the draft PR workflow/proposal preview for repos that grant `github.pr`.
+- Returns `networkCalls: "none"` and never returns private keys, webhook secrets, or token secrets.
+
+For one-off validation against a specific installation id, pass a query parameter:
+
+```bash
+curl http://localhost:4317/api/setup/github?installationId=456789
+```
+
+If `BEK_ADMIN_API_TOKEN` is configured, include `Authorization: Bearer ...` just like other `/api/*` admin routes.
+
+Wildcard policy grants such as `github:redohq/*` are reported separately as invalid for this endpoint because GitHub installation token requests are repo-scoped.
 
 ## Resource Format
 

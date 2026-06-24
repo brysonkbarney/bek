@@ -19,6 +19,13 @@ const managedEnvKeys = [
   "BEK_SANDBOX_PROVIDER",
   "BEK_SLACK_OAUTH_EXCHANGE",
   "BEK_SLACK_USER_PRINCIPAL_MAP",
+  "GITHUB_APP_CLIENT_ID",
+  "GITHUB_APP_CLIENT_SECRET",
+  "GITHUB_APP_ID",
+  "GITHUB_APP_INSTALLATION_ID",
+  "GITHUB_APP_PRIVATE_KEY",
+  "GITHUB_APP_WEBHOOK_SECRET",
+  "GITHUB_WEBHOOK_SECRET",
   "SLACK_BOT_SCOPES",
   "SLACK_BOT_TOKEN",
   "SLACK_CLIENT_ID",
@@ -35,6 +42,8 @@ for (const key of managedEnvKeys) {
 }
 
 const testCredentialMasterKey = `hex:${"7".repeat(64)}`;
+const testGitHubPrivateKey =
+  "-----BEGIN RSA PRIVATE KEY-----\\nabc123\\n-----END RSA PRIVATE KEY-----";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -84,6 +93,16 @@ function configureFakeSlackOAuth() {
   process.env.SLACK_REDIRECT_URI =
     "http://localhost:4317/api/slack/oauth/callback";
   process.env.SLACK_STATE_SECRET = "fake-state-secret";
+}
+
+function clearGitHubEnv() {
+  delete process.env.GITHUB_APP_CLIENT_ID;
+  delete process.env.GITHUB_APP_CLIENT_SECRET;
+  delete process.env.GITHUB_APP_ID;
+  delete process.env.GITHUB_APP_INSTALLATION_ID;
+  delete process.env.GITHUB_APP_PRIVATE_KEY;
+  delete process.env.GITHUB_APP_WEBHOOK_SECRET;
+  delete process.env.GITHUB_WEBHOOK_SECRET;
 }
 
 async function createPrApproval(
@@ -194,6 +213,200 @@ describe("Bek API", () => {
       visibleHandle: "@bek",
       singleVisibleAgent: true,
       readyForLocalDemo: true,
+    });
+  });
+
+  it("reports GitHub setup gaps without leaking configured secret values", async () => {
+    clearGitHubEnv();
+    process.env.GITHUB_APP_ID = "not-a-number";
+    process.env.GITHUB_APP_PRIVATE_KEY = "definitely-secret";
+
+    const res = await createApp().request("/api/setup/github");
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      ok: boolean;
+      appConfig: {
+        ok: boolean;
+        privateKeyConfigured: boolean;
+        errors: string[];
+      };
+      installation: { configured: boolean; errors: string[] };
+      githubGrantCount: number;
+      validRepoGrantCount: number;
+      repositories: Array<{
+        repository: { resource: string };
+        requiredPermissions: Record<string, string>;
+        installationTokenRequestPreview: unknown;
+      }>;
+      networkCalls: string;
+    };
+
+    expect(json.ok).toBe(false);
+    expect(json.appConfig).toMatchObject({
+      ok: false,
+      privateKeyConfigured: true,
+      errors: expect.arrayContaining([
+        "GITHUB_APP_ID must be a positive integer string.",
+        "GITHUB_APP_PRIVATE_KEY must be a PEM private key.",
+        "GITHUB_APP_WEBHOOK_SECRET is required.",
+      ]),
+    });
+    expect(json.installation).toMatchObject({
+      configured: false,
+      errors: [
+        "GITHUB_APP_INSTALLATION_ID or installationId query parameter is required for installation-token previews.",
+      ],
+    });
+    expect(json.githubGrantCount).toBe(2);
+    expect(json.validRepoGrantCount).toBe(2);
+    expect(json.repositories).toHaveLength(1);
+    expect(json.repositories[0]).toMatchObject({
+      repository: { resource: "github:redohq/checkout" },
+      requiredPermissions: {
+        contents: "write",
+        metadata: "read",
+        pull_requests: "write",
+      },
+      installationTokenRequestPreview: null,
+    });
+    expect(json.networkCalls).toBe("none");
+    expect(JSON.stringify(json)).not.toContain("definitely-secret");
+  });
+
+  it("previews GitHub repo grants and installation token requests without network calls", async () => {
+    clearGitHubEnv();
+    process.env.GITHUB_APP_ID = "12345";
+    process.env.GITHUB_APP_INSTALLATION_ID = "999";
+    process.env.GITHUB_APP_PRIVATE_KEY = testGitHubPrivateKey;
+    process.env.GITHUB_APP_WEBHOOK_SECRET = "a-webhook-secret-with-length";
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const res = await createApp().request(
+      "/api/setup/github?installationId=456",
+    );
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      ok: boolean;
+      appConfig: { ok: boolean; appId: string | null };
+      installation: {
+        configured: boolean;
+        source: "query" | "env" | null;
+        installationId: string | null;
+      };
+      repositories: Array<{
+        repository: { resource: string; fullName: string };
+        grants: Array<{ capability: string }>;
+        requiredPermissions: Record<string, string>;
+        installationTokenRequestPreview: {
+          installationId: string;
+          repository: { resource: string };
+          permissions: Record<string, string>;
+        };
+        draftPullRequestWorkflowPreview: {
+          steps: string[];
+          pullRequestProposal: {
+            capability: string;
+            approval: { action: string; risk: string; required: boolean };
+          };
+          approvalHashInput: {
+            action: string;
+            installationId: string | null;
+          };
+        };
+      }>;
+    };
+
+    expect(json).toMatchObject({
+      ok: true,
+      appConfig: { ok: true, appId: "12345" },
+      installation: {
+        configured: true,
+        source: "query",
+        installationId: "456",
+      },
+    });
+    expect(json.repositories).toHaveLength(1);
+    expect(json.repositories[0]).toMatchObject({
+      repository: {
+        resource: "github:redohq/checkout",
+        fullName: "redohq/checkout",
+      },
+      requiredPermissions: {
+        contents: "write",
+        metadata: "read",
+        pull_requests: "write",
+      },
+      installationTokenRequestPreview: {
+        installationId: "456",
+        repository: { resource: "github:redohq/checkout" },
+        permissions: {
+          contents: "write",
+          metadata: "read",
+          pull_requests: "write",
+        },
+      },
+      draftPullRequestWorkflowPreview: {
+        steps: [
+          "mint_installation_token",
+          "create_branch",
+          "commit_changes",
+          "open_draft_pull_request",
+        ],
+        pullRequestProposal: {
+          capability: "github.pr",
+          approval: {
+            action: "github.pr",
+            risk: "write_external",
+            required: true,
+          },
+        },
+        approvalHashInput: {
+          action: "github.pr",
+          installationId: "456",
+        },
+      },
+    });
+    expect(
+      json.repositories[0]!.grants.map((grant) => grant.capability),
+    ).toEqual(expect.arrayContaining(["github.read", "github.pr"]));
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(JSON.stringify(json)).not.toContain("abc123");
+    expect(JSON.stringify(json)).not.toContain("a-webhook-secret-with-length");
+  });
+
+  it("separates GitHub grants that cannot become repo-scoped token requests", async () => {
+    clearGitHubEnv();
+    process.env.GITHUB_APP_ID = "12345";
+    process.env.GITHUB_APP_INSTALLATION_ID = "456";
+    process.env.GITHUB_APP_PRIVATE_KEY = testGitHubPrivateKey;
+    process.env.GITHUB_APP_WEBHOOK_SECRET = "a-webhook-secret-with-length";
+    const store = new BekStore();
+    const bundle = store.createAccessBundle({
+      name: "Org-wide GitHub",
+      description: "Wildcard policy grant that is not repo-scoped.",
+    });
+    store.createGrant(bundle.id, {
+      capability: "github.read",
+      resource: "github:redohq/*",
+      decision: "allow",
+      risk: "read_internal",
+      requiresApproval: false,
+    });
+
+    const res = await createApp(store).request("/api/setup/github");
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: false,
+      invalidGrantCount: 1,
+      invalidGrants: [
+        expect.objectContaining({
+          resource: "github:redohq/*",
+          errors: ["GitHub repo must be a valid repository name."],
+        }),
+      ],
     });
   });
 

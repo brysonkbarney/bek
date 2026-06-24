@@ -20,6 +20,20 @@ jobs:
     timeout-minutes: 20
     env:
       CI: true
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: bek
+          POSTGRES_PASSWORD: bek
+          POSTGRES_DB: bek
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bek -d bek"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -55,6 +69,16 @@ jobs:
 
       - name: Smoke
         run: pnpm smoke
+
+      - name: Migrate Postgres
+        run: pnpm db:migrate
+        env:
+          DATABASE_URL: postgres://bek:bek@localhost:5432/bek
+
+      - name: Smoke Postgres worker queue
+        run: BEK_SMOKE_API_PORT=4318 BEK_SMOKE_STORAGE=postgres BEK_SMOKE_WORKER_QUEUE_BACKEND=postgres pnpm smoke
+        env:
+          DATABASE_URL: postgres://bek:bek@localhost:5432/bek
 
   dependency-review:
     if: github.event_name == 'pull_request'

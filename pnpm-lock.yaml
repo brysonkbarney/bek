@@ -34,6 +34,9 @@ importers:
       "@bek/db":
         specifier: workspace:*
         version: link:../../packages/db
+      "@bek/github":
+        specifier: workspace:*
+        version: link:../../packages/github
       "@bek/runtime":
         specifier: workspace:*
         version: link:../../packages/runtime

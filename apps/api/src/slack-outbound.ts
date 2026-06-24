@@ -3,6 +3,7 @@ import {
   type BekStore,
   type BekSnapshot,
   type CredentialRecord,
+  redactSecrets,
   type Run,
   type RunEvent,
 } from "@bek/core";
@@ -26,6 +27,8 @@ export interface SlackOutboundDeliveryOptions {
   slackClient?: SlackWebApiClient | undefined;
   env?: NodeJS.ProcessEnv | undefined;
   credentialVault?: LocalCredentialVault | undefined;
+  maxPostAttempts?: number | undefined;
+  retryDelayMs?: number | undefined;
 }
 
 export interface SlackOutboundTarget {
@@ -40,9 +43,43 @@ interface ResolvedSlackOutboundTarget {
   teamId?: string | undefined;
 }
 
+type SlackOutboundFailureCategory =
+  | "auth"
+  | "channel"
+  | "config"
+  | "payload"
+  | "rate_limited"
+  | "transient"
+  | "unknown";
+
+interface SlackOutboundFailureClassification {
+  category: SlackOutboundFailureCategory;
+  retryable: boolean;
+}
+
+interface SlackOutboundAttemptDiagnostic {
+  attempt: number;
+  ok: boolean;
+  error?: string | undefined;
+  failureCategory?: SlackOutboundFailureCategory | undefined;
+  retryable?: boolean | undefined;
+}
+
+interface SlackOutboundPostResult {
+  result: SlackWebApiMessageResult;
+  attempts: SlackOutboundAttemptDiagnostic[];
+}
+
+const defaultSlackPostMaxAttempts = 3;
+const defaultSlackPostRetryDelayMs = 100;
+const maximumSlackPostAttempts = 5;
+const maxSlackOutboundErrorLength = 300;
+
 export class SlackOutboundDelivery {
   private readonly env: NodeJS.ProcessEnv;
   private readonly credentialVault: LocalCredentialVault | undefined;
+  private readonly maxPostAttempts: number;
+  private readonly retryDelayMs: number;
 
   constructor(
     private readonly store: BekStore,
@@ -52,6 +89,14 @@ export class SlackOutboundDelivery {
     this.env = options.env ?? process.env;
     this.credentialVault =
       options.credentialVault ?? createLocalCredentialVaultFromEnv(this.env);
+    this.maxPostAttempts = normalizePositiveInteger(
+      options.maxPostAttempts,
+      defaultSlackPostMaxAttempts,
+    );
+    this.retryDelayMs = normalizeNonNegativeInteger(
+      options.retryDelayMs,
+      defaultSlackPostRetryDelayMs,
+    );
   }
 
   get configured(): boolean {
@@ -220,18 +265,40 @@ export class SlackOutboundDelivery {
       return;
     }
 
-    let result: SlackWebApiMessageResult;
-    try {
-      result = await client.postMessage(
-        slackPostMessageInput(input.target, input.message),
-      );
-    } catch (error) {
-      result = {
-        ok: false,
-        error: error instanceof Error ? error.message : "Slack client threw.",
-      };
+    const delivery = await this.postMessageWithRetry(
+      client,
+      slackPostMessageInput(input.target, input.message),
+    );
+    this.recordDeliveryResult(input.run, input.kind, input.target, delivery);
+  }
+
+  private async postMessageWithRetry(
+    client: SlackWebApiClient,
+    message: SlackPostMessageInput,
+  ): Promise<SlackOutboundPostResult> {
+    const attempts: SlackOutboundAttemptDiagnostic[] = [];
+
+    for (let attempt = 1; attempt <= this.maxPostAttempts; attempt += 1) {
+      const result = await postSlackMessageOnce(client, message);
+      const diagnostic = slackOutboundAttemptDiagnostic(attempt, result);
+      attempts.push(diagnostic);
+
+      if (result.ok) {
+        return { result, attempts };
+      }
+
+      if (!diagnostic.retryable || attempt >= this.maxPostAttempts) {
+        return { result, attempts };
+      }
+
+      await sleep(this.retryDelayMs * attempt);
     }
-    this.recordDeliveryResult(input.run, input.kind, input.target, result);
+
+    const fallback: SlackWebApiMessageResult = {
+      ok: false,
+      error: "Slack outbound delivery was not attempted.",
+    };
+    return { result: fallback, attempts };
   }
 
   private resolveClient(
@@ -294,14 +361,15 @@ export class SlackOutboundDelivery {
     run: Run,
     kind: string,
     target: ResolvedSlackOutboundTarget,
-    result: SlackWebApiMessageResult,
+    delivery: SlackOutboundPostResult,
   ): void {
+    const result = delivery.result;
+    const attemptCount = Math.max(delivery.attempts.length, 1);
+    const finalAttempt = delivery.attempts.at(-1);
     this.store.appendRunEvent({
       runId: run.id,
       type: "run.status_changed",
-      message: result.ok
-        ? `Slack ${kind} message posted.`
-        : `Slack ${kind} message failed: ${result.error}.`,
+      message: slackOutboundDeliveryMessage(kind, delivery),
       data: compactRecord({
         slackOutbound: compactRecord({
           kind,
@@ -309,7 +377,14 @@ export class SlackOutboundDelivery {
           channel: result.ok ? result.channel : target.channelId,
           threadTs: target.threadTs,
           ts: result.ok ? result.ts : undefined,
-          error: result.ok ? undefined : result.error,
+          attempts: attemptCount,
+          retried: attemptCount > 1 ? true : undefined,
+          error: result.ok ? undefined : finalAttempt?.error,
+          failureCategory: result.ok
+            ? undefined
+            : finalAttempt?.failureCategory,
+          retryable: result.ok ? undefined : finalAttempt?.retryable,
+          attemptLog: attemptCount > 1 ? delivery.attempts : undefined,
         }),
       }),
     });
@@ -324,6 +399,145 @@ export function createSlackOutboundDelivery(
     return new SlackOutboundDelivery(store, options.slackClient, options);
   }
   return new SlackOutboundDelivery(store, undefined, options);
+}
+
+async function postSlackMessageOnce(
+  client: SlackWebApiClient,
+  message: SlackPostMessageInput,
+): Promise<SlackWebApiMessageResult> {
+  try {
+    return await client.postMessage(message);
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Slack client threw.",
+    };
+  }
+}
+
+function slackOutboundAttemptDiagnostic(
+  attempt: number,
+  result: SlackWebApiMessageResult,
+): SlackOutboundAttemptDiagnostic {
+  if (result.ok) {
+    return { attempt, ok: true };
+  }
+
+  const classification = classifySlackOutboundFailure(result.error);
+  return {
+    attempt,
+    ok: false,
+    error: sanitizeSlackOutboundError(result.error),
+    failureCategory: classification.category,
+    retryable: classification.retryable,
+  };
+}
+
+function slackOutboundDeliveryMessage(
+  kind: string,
+  delivery: SlackOutboundPostResult,
+): string {
+  const attemptCount = Math.max(delivery.attempts.length, 1);
+  if (delivery.result.ok) {
+    return attemptCount > 1
+      ? `Slack ${kind} message posted after ${attemptCount} attempts.`
+      : `Slack ${kind} message posted.`;
+  }
+
+  const finalError =
+    delivery.attempts.at(-1)?.error ??
+    sanitizeSlackOutboundError(delivery.result.error);
+  const suffix = finalError.endsWith(".") ? finalError : `${finalError}.`;
+  return attemptCount > 1
+    ? `Slack ${kind} message failed after ${attemptCount} attempts: ${suffix}`
+    : `Slack ${kind} message failed: ${suffix}`;
+}
+
+function classifySlackOutboundFailure(
+  error: string,
+): SlackOutboundFailureClassification {
+  const normalized = error.toLowerCase();
+
+  if (
+    /rate[_ -]?limit|ratelimited|too_many_requests|http\s+429\b/.test(
+      normalized,
+    )
+  ) {
+    return { category: "rate_limited", retryable: false };
+  }
+
+  if (
+    /http\s+(500|502|503|504)\b|timeout|timed out|fetch failed|network|econnreset|econnrefused|ehostunreach|enetunreach|etimedout|socket hang up|temporarily unavailable|service_unavailable|server_error|internal_error|non-json|invalid response/.test(
+      normalized,
+    )
+  ) {
+    return { category: "transient", retryable: true };
+  }
+
+  if (
+    /invalid_auth|not_authed|token_revoked|account_inactive|missing_scope|no_permission/.test(
+      normalized,
+    )
+  ) {
+    return { category: "auth", retryable: false };
+  }
+
+  if (
+    /channel_not_found|not_in_channel|is_archived|method_not_supported_for_channel|restricted_action/.test(
+      normalized,
+    )
+  ) {
+    return { category: "channel", retryable: false };
+  }
+
+  if (/slack bot token is missing|token is missing/.test(normalized)) {
+    return { category: "config", retryable: false };
+  }
+
+  if (
+    /invalid_blocks|invalid_attachments|invalid_json|invalid_post_type|invalid_charset|msg_too_long|no_text|too_many_attachments/.test(
+      normalized,
+    )
+  ) {
+    return { category: "payload", retryable: false };
+  }
+
+  return { category: "unknown", retryable: false };
+}
+
+function sanitizeSlackOutboundError(error: string): string {
+  const redacted = redactSecrets(error).replace(/\s+/g, " ").trim();
+  const fallback = redacted || "Slack Web API call failed.";
+  return fallback.length > maxSlackOutboundErrorLength
+    ? `${fallback.slice(0, maxSlackOutboundErrorLength)}...`
+    : fallback;
+}
+
+function normalizePositiveInteger(
+  value: number | undefined,
+  fallback: number,
+): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(maximumSlackPostAttempts, Math.max(1, Math.floor(value)));
+}
+
+function normalizeNonNegativeInteger(
+  value: number | undefined,
+  fallback: number,
+): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(0, Math.floor(value));
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function slackPostMessageInput(

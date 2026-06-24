@@ -7,6 +7,7 @@ import {
   redactUnknown,
 } from "@bek/core";
 import type {
+  CapabilityGrant,
   BekSnapshot,
   ConnectorInstall,
   CredentialRecord,
@@ -14,6 +15,15 @@ import type {
   Run,
   RunEvent,
 } from "@bek/core";
+import {
+  createGitHubDraftPullRequestWorkflowPlan,
+  createGitHubInstallationTokenRequest,
+  parseGitHubRepoResource,
+  validateGitHubAppConfig,
+  type GitHubInstallationPermissionAccess,
+  type GitHubInstallationTokenPermissions,
+  type GitHubRepoResource,
+} from "@bek/github";
 import {
   buildSlackCommandErrorResponse,
   buildSlackCommandDurableKey,
@@ -301,6 +311,15 @@ export function createApp(
   );
   app.get("/api/connectors/slack", (c) =>
     c.json(slackInstallSummaries(store.read())),
+  );
+  app.get("/api/setup/github", (c) =>
+    c.json(
+      githubSetupPreview(
+        store.read(),
+        c.req.query("installationId"),
+        process.env.GITHUB_APP_INSTALLATION_ID,
+      ),
+    ),
   );
   app.post("/api/channels", async (c) => {
     const body = createChannelSchema.parse(await c.req.json());
@@ -1560,6 +1579,352 @@ function slackInstallSummaries(snapshot: BekSnapshot) {
     });
 }
 
+type GitHubGrantCapability = Extract<
+  CapabilityGrant["capability"],
+  "github.read" | "github.branch" | "github.pr"
+>;
+
+interface GitHubGrantSetupSummary {
+  bundleId: string;
+  bundleName: string;
+  grantId: string;
+  capability: GitHubGrantCapability;
+  resource: string;
+  decision: CapabilityGrant["decision"];
+  risk: CapabilityGrant["risk"];
+  requiresApproval: boolean;
+}
+
+interface GitHubRepoGrantGroup {
+  repository: GitHubRepoResource;
+  grants: GitHubGrantSetupSummary[];
+}
+
+function githubSetupPreview(
+  snapshot: BekSnapshot,
+  queryInstallationId: string | undefined,
+  envInstallationId: string | undefined,
+) {
+  const appValidation = validateGitHubAppConfig(process.env);
+  const appConfig = githubAppConfigSummary(appValidation);
+  const installation = githubInstallationSummary(
+    queryInstallationId,
+    envInstallationId,
+  );
+  const grantPreview = githubRepoGrantPreview(snapshot);
+  const repositories = grantPreview.repositories.map((group) =>
+    githubRepositorySetupPreview(group, installation.installationId),
+  );
+  const errors = [
+    ...appConfig.errors,
+    ...installation.errors,
+    ...(repositories.length === 0
+      ? [
+          "At least one canonical GitHub repo grant is required for a repo-scoped setup preview.",
+        ]
+      : []),
+    ...grantPreview.invalidGrants.flatMap((grant) => grant.errors),
+  ];
+
+  return {
+    ok:
+      errors.length === 0 &&
+      appConfig.ok &&
+      installation.configured &&
+      repositories.length > 0,
+    appConfig,
+    installation,
+    githubGrantCount: grantPreview.githubGrantCount,
+    validRepoGrantCount: grantPreview.validRepoGrantCount,
+    invalidGrantCount: grantPreview.invalidGrants.length,
+    repositories,
+    invalidGrants: grantPreview.invalidGrants,
+    errors,
+    networkCalls: "none",
+  };
+}
+
+function githubAppConfigSummary(
+  validation: ReturnType<typeof validateGitHubAppConfig>,
+) {
+  return {
+    ok: validation.ok,
+    appId: validation.ok ? validation.config.appId : null,
+    privateKeyConfigured: Boolean(process.env.GITHUB_APP_PRIVATE_KEY?.trim()),
+    webhookSecretConfigured: Boolean(
+      (
+        process.env.GITHUB_APP_WEBHOOK_SECRET ??
+        process.env.GITHUB_WEBHOOK_SECRET
+      )?.trim(),
+    ),
+    legacyWebhookSecretConfigured: Boolean(
+      !process.env.GITHUB_APP_WEBHOOK_SECRET?.trim() &&
+      process.env.GITHUB_WEBHOOK_SECRET?.trim(),
+    ),
+    clientIdConfigured: Boolean(process.env.GITHUB_APP_CLIENT_ID?.trim()),
+    clientSecretConfigured: Boolean(
+      process.env.GITHUB_APP_CLIENT_SECRET?.trim(),
+    ),
+    errors: validation.errors,
+    warnings: validation.warnings,
+  };
+}
+
+function githubInstallationSummary(
+  queryInstallationId: string | undefined,
+  envInstallationId: string | undefined,
+) {
+  const queryValue = queryInstallationId?.trim();
+  const envValue = envInstallationId?.trim();
+  const rawInstallationId = queryValue || envValue;
+  const source = queryValue ? "query" : envValue ? "env" : null;
+
+  if (!rawInstallationId) {
+    return {
+      configured: false,
+      source,
+      installationId: null,
+      errors: [
+        "GITHUB_APP_INSTALLATION_ID or installationId query parameter is required for installation-token previews.",
+      ],
+    };
+  }
+
+  try {
+    const request = createGitHubInstallationTokenRequest({
+      installationId: rawInstallationId,
+      permissions: {},
+    });
+    return {
+      configured: true,
+      source,
+      installationId: request.installationId,
+      errors: [],
+    };
+  } catch (error) {
+    return {
+      configured: true,
+      source,
+      installationId: null,
+      errors: [errorMessage(error)],
+    };
+  }
+}
+
+function githubRepoGrantPreview(snapshot: BekSnapshot) {
+  const repositories = new Map<string, GitHubRepoGrantGroup>();
+  const invalidGrants: Array<GitHubGrantSetupSummary & { errors: string[] }> =
+    [];
+  let githubGrantCount = 0;
+  let validRepoGrantCount = 0;
+
+  for (const bundle of snapshot.accessBundles) {
+    for (const grant of bundle.grants) {
+      if (!isGitHubGrantCapability(grant.capability)) {
+        continue;
+      }
+      githubGrantCount += 1;
+      const summary: GitHubGrantSetupSummary = {
+        bundleId: bundle.id,
+        bundleName: bundle.name,
+        grantId: grant.id,
+        capability: grant.capability,
+        resource: grant.resource,
+        decision: grant.decision,
+        risk: grant.risk,
+        requiresApproval: grant.requiresApproval,
+      };
+
+      try {
+        const repository = parseGitHubRepoResource(grant.resource);
+        const existing = repositories.get(repository.resource);
+        if (existing) {
+          existing.grants.push(summary);
+        } else {
+          repositories.set(repository.resource, {
+            repository,
+            grants: [summary],
+          });
+        }
+        validRepoGrantCount += 1;
+      } catch (error) {
+        invalidGrants.push({
+          ...summary,
+          errors: [errorMessage(error)],
+        });
+      }
+    }
+  }
+
+  return {
+    githubGrantCount,
+    validRepoGrantCount,
+    invalidGrants,
+    repositories: [...repositories.values()].sort((left, right) =>
+      left.repository.resource.localeCompare(right.repository.resource),
+    ),
+  };
+}
+
+function githubRepositorySetupPreview(
+  group: GitHubRepoGrantGroup,
+  installationId: string | null,
+) {
+  const requiredPermissions = requiredGitHubPermissionsForGrants(group);
+  const installationTokenRequestPreview = installationId
+    ? createGitHubInstallationTokenRequest({
+        installationId,
+        repository: group.repository,
+        permissions: requiredPermissions,
+      })
+    : null;
+  const draftPullRequestWorkflowPreview = group.grants.some(
+    (grant) => grant.capability === "github.pr",
+  )
+    ? githubDraftPullRequestWorkflowPreview(group.repository, installationId)
+    : null;
+
+  return {
+    repository: group.repository,
+    grants: group.grants.sort((left, right) =>
+      left.grantId.localeCompare(right.grantId),
+    ),
+    requiredPermissions,
+    installationTokenRequestPreview,
+    draftPullRequestWorkflowPreview,
+  };
+}
+
+function githubDraftPullRequestWorkflowPreview(
+  repository: GitHubRepoResource,
+  installationId: string | null,
+) {
+  const plan = createGitHubDraftPullRequestWorkflowPlan({
+    repository,
+    installationId: installationId ?? "1",
+    title: "Bek setup preview",
+    body: "Preview only. The API does not call GitHub from this route.",
+    baseBranch: "main",
+    headBranch: "bek/setup-preview",
+    commitMessage: "Bek setup preview",
+    changes: [
+      {
+        path: ".bek/github-setup-preview.txt",
+        content: "preview only\n",
+      },
+    ],
+  });
+
+  return {
+    type: plan.type,
+    visibleAgentHandle: plan.visibleAgentHandle,
+    resource: plan.resource,
+    steps: plan.steps,
+    tokenRequestPermissions: plan.tokenRequest.permissions,
+    pullRequestProposal: {
+      type: plan.pullRequest.type,
+      capability: plan.pullRequest.capability,
+      resource: plan.pullRequest.resource,
+      draft: plan.pullRequest.draft,
+      baseBranch: plan.pullRequest.baseBranch,
+      headBranch: plan.pullRequest.headBranch,
+      approval: plan.pullRequest.approval,
+    },
+    approvalHashInput: {
+      type: plan.approvalHashInput.type,
+      version: plan.approvalHashInput.version,
+      action: plan.approvalHashInput.action,
+      resource: plan.approvalHashInput.resource,
+      repository: plan.approvalHashInput.repository,
+      installationId,
+    },
+  };
+}
+
+function requiredGitHubPermissionsForGrants(
+  group: GitHubRepoGrantGroup,
+): GitHubInstallationTokenPermissions {
+  return group.grants.reduce<GitHubInstallationTokenPermissions>(
+    (permissions, grant) =>
+      mergeGitHubPermissions(
+        permissions,
+        requiredGitHubPermissionsForCapability(
+          grant.capability,
+          group.repository,
+        ),
+      ),
+    {},
+  );
+}
+
+function requiredGitHubPermissionsForCapability(
+  capability: GitHubGrantCapability,
+  repository: GitHubRepoResource,
+): GitHubInstallationTokenPermissions {
+  if (capability === "github.pr") {
+    return createGitHubDraftPullRequestWorkflowPlan({
+      repository,
+      installationId: "1",
+      title: "Bek setup preview",
+      headBranch: "bek/setup-preview",
+      commitMessage: "Bek setup preview",
+      changes: [
+        { path: ".bek/github-setup-preview.txt", content: "preview\n" },
+      ],
+    }).tokenRequest.permissions;
+  }
+
+  return createGitHubInstallationTokenRequest({
+    installationId: "1",
+    repository,
+    permissions:
+      capability === "github.branch"
+        ? { contents: "write", metadata: "read" }
+        : { contents: "read", metadata: "read" },
+  }).permissions;
+}
+
+function mergeGitHubPermissions(
+  target: GitHubInstallationTokenPermissions,
+  source: GitHubInstallationTokenPermissions,
+): GitHubInstallationTokenPermissions {
+  for (const [name, access] of Object.entries(source) as Array<
+    [
+      keyof GitHubInstallationTokenPermissions,
+      GitHubInstallationPermissionAccess | undefined,
+    ]
+  >) {
+    if (!access) {
+      continue;
+    }
+    const permissionName = name as keyof GitHubInstallationTokenPermissions;
+    const current = target[permissionName];
+    if (
+      !current ||
+      permissionAccessRank(access) > permissionAccessRank(current)
+    ) {
+      target[permissionName] = access;
+    }
+  }
+  return target;
+}
+
+function permissionAccessRank(
+  access: GitHubInstallationPermissionAccess,
+): number {
+  return access === "write" ? 2 : 1;
+}
+
+function isGitHubGrantCapability(
+  capability: CapabilityGrant["capability"],
+): capability is GitHubGrantCapability {
+  return (
+    capability === "github.read" ||
+    capability === "github.branch" ||
+    capability === "github.pr"
+  );
+}
+
 function latestSlackInstall(
   snapshot: BekSnapshot,
 ): ConnectorInstall | undefined {
@@ -1827,6 +2192,10 @@ function slackPrincipalIdForUser(slackUserId?: string | undefined) {
   return typeof principalId === "string" && principalId.length > 0
     ? principalId
     : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function safeIdPart(value: string): string {

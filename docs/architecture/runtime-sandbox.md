@@ -3,9 +3,10 @@
 Status: implementation in progress. Bek has runtime/sandbox contracts, a local
 Docker sandbox provider, and a worker runtime adapter that can create a sandbox
 lease, execute a command, collect an optional artifact, emit sandbox timeline
-events, and destroy the lease. The current sandbox runtime command is a
-controlled placeholder; full OpenCode repo checkout/edit/test/PR orchestration
-is the next integration layer.
+events, and destroy the lease. Worker runtime routing now attaches deterministic
+selected-model cost and budget preflight metadata to runtime inputs. The current
+sandbox runtime command is a controlled placeholder; full OpenCode repo
+checkout/edit/test/PR orchestration is the next integration layer.
 
 Bek has one visible Slack teammate, `@bek`. Runtime profiles, model providers,
 coding agents, sandboxes, and tool bundles are internal control-plane choices
@@ -43,7 +44,7 @@ Slack event or API request
   -> durable queue receives a run work item
   -> worker claims one attempt
   -> worker reloads org/place/access/model/runtime state
-  -> policy and budget are evaluated
+  -> policy and deterministic per-run budget preflight are evaluated
   -> runtime adapter is selected
   -> optional sandbox lease is created
   -> runtime requests model/tool/sandbox actions through Bek gateways
@@ -114,7 +115,7 @@ interface RuntimeAdapter {
 The adapter receives:
 
 - run metadata and prompt/context selected by the worker,
-- selected model route and per-run budget,
+- selected model route with estimatedCostCents and per-run budget preflight,
 - a Bek tool proxy instead of raw tool credentials,
 - a sandbox lease reference when code execution is allowed,
 - an approval callback for proposed side effects,
@@ -351,7 +352,7 @@ Event payloads should include:
 - `orgId`, `runId`, `attempt`, `traceId`,
 - place and requester IDs,
 - runtime adapter ID and sandbox provider ID,
-- model route and cost counters,
+- model route, deterministic preflight cost counters, and budget decision,
 - policy decision, risk, approval ID, and grant ID,
 - command/tool name and resource,
 - artifact IDs and content hashes,
@@ -360,6 +361,13 @@ Event payloads should include:
 Event payloads must not include raw secrets, full provider responses with hidden
 reasoning, unredacted environment variables, or full source files unless the
 artifact ACL permits it.
+
+Budget preflight data is deterministic routing metadata derived before the
+runtime starts. It lets adapters and audit events agree on the selected model,
+estimated cost, configured per-run budget, remaining budget, and rough prompt
+and output token estimates. It is not live provider accounting; real adapters
+must still reconcile actual token usage and billed cost from provider responses
+into the durable model usage ledger.
 
 ## First Implementation Steps
 
