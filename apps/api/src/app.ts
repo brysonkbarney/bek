@@ -97,6 +97,7 @@ export function createApp(
   const slackOutbound = createSlackOutboundDelivery(store, {
     slackClient: options.slackClient,
   });
+  const rateLimitBuckets = new Map<string, RateLimitBucket>();
   app.use(
     "*",
     cors({
@@ -135,6 +136,20 @@ export function createApp(
       });
     }
 
+    await next();
+  });
+  app.use("/api/*", async (c, next) => {
+    if (c.req.raw.method === "OPTIONS") {
+      await next();
+      return;
+    }
+    const result = consumeRateLimit(rateLimitBuckets, c);
+    if (!result.allowed) {
+      return rateLimitExceeded(c, result);
+    }
+    c.header("x-ratelimit-limit", String(result.limit));
+    c.header("x-ratelimit-remaining", String(result.remaining));
+    c.header("x-ratelimit-reset", String(Math.ceil(result.resetAt / 1000)));
     await next();
   });
   app.use("/api/*", async (c, next) => {
@@ -2317,6 +2332,23 @@ function isAllowedAdminOrigin(origin: string): boolean {
 }
 
 const defaultMaxRequestBodyBytes = 256 * 1024;
+const defaultRateLimitMaxRequests = 600;
+const defaultRateLimitWindowMs = 60_000;
+const maxRateLimitBuckets = 1_000;
+
+interface RateLimitBucket {
+  count: number;
+  resetAt: number;
+}
+
+interface RateLimitDecision {
+  allowed: boolean;
+  limit: number;
+  remaining: number;
+  resetAt: number;
+  retryAfterSeconds: number;
+  windowMs: number;
+}
 
 function maxRequestBodyBytes(
   value = process.env.BEK_MAX_REQUEST_BODY_BYTES,
@@ -2381,6 +2413,129 @@ async function readRequestBodyWithinLimit(
 
   const bytes = concatUint8Arrays(chunks, totalBytes);
   return { ok: true, text: new TextDecoder().decode(bytes) };
+}
+
+function consumeRateLimit(
+  buckets: Map<string, RateLimitBucket>,
+  c: Context,
+  now = Date.now(),
+): RateLimitDecision {
+  const config = rateLimitConfig();
+  if (!config.enabled) {
+    return {
+      allowed: true,
+      limit: config.maxRequests,
+      remaining: config.maxRequests,
+      resetAt: now + config.windowMs,
+      retryAfterSeconds: 0,
+      windowMs: config.windowMs,
+    };
+  }
+
+  if (buckets.size > maxRateLimitBuckets) {
+    pruneExpiredRateLimitBuckets(buckets, now);
+  }
+
+  const key = rateLimitKey(c);
+  const current = buckets.get(key);
+  const bucket =
+    current && current.resetAt > now
+      ? current
+      : { count: 0, resetAt: now + config.windowMs };
+  bucket.count += 1;
+  buckets.set(key, bucket);
+
+  const remaining = Math.max(0, config.maxRequests - bucket.count);
+  const retryAfterSeconds = Math.max(
+    1,
+    Math.ceil((bucket.resetAt - now) / 1000),
+  );
+  return {
+    allowed: bucket.count <= config.maxRequests,
+    limit: config.maxRequests,
+    remaining,
+    resetAt: bucket.resetAt,
+    retryAfterSeconds,
+    windowMs: config.windowMs,
+  };
+}
+
+function rateLimitConfig(): {
+  enabled: boolean;
+  maxRequests: number;
+  windowMs: number;
+} {
+  const maxRequests = parsePositiveInteger(
+    process.env.BEK_RATE_LIMIT_MAX_REQUESTS,
+    defaultRateLimitMaxRequests,
+  );
+  return {
+    enabled: maxRequests > 0,
+    maxRequests,
+    windowMs: parsePositiveInteger(
+      process.env.BEK_RATE_LIMIT_WINDOW_MS,
+      defaultRateLimitWindowMs,
+    ),
+  };
+}
+
+function parsePositiveInteger(
+  value: string | undefined,
+  fallback: number,
+): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function pruneExpiredRateLimitBuckets(
+  buckets: Map<string, RateLimitBucket>,
+  now: number,
+) {
+  for (const [key, bucket] of buckets.entries()) {
+    if (bucket.resetAt <= now) {
+      buckets.delete(key);
+    }
+  }
+}
+
+function rateLimitKey(c: Context): string {
+  const routeClass = isSlackPublicCallback(c.req.path) ? "slack" : "api";
+  return `${routeClass}:${requestPeerKey(c)}`;
+}
+
+function requestPeerKey(c: Context): string {
+  if (process.env.BEK_TRUST_PROXY_HEADERS !== "true") {
+    return "direct";
+  }
+  const forwardedFor = c.req.header("x-forwarded-for")?.split(",")[0]?.trim();
+  return (
+    forwardedFor ||
+    c.req.header("x-real-ip") ||
+    c.req.header("cf-connecting-ip") ||
+    "direct"
+  );
+}
+
+function rateLimitExceeded(c: Context, decision: RateLimitDecision) {
+  if (isSlackPublicCallback(c.req.path)) {
+    markSlackNoRetry(c);
+  }
+  c.header("retry-after", String(decision.retryAfterSeconds));
+  c.header("x-ratelimit-limit", String(decision.limit));
+  c.header("x-ratelimit-remaining", "0");
+  c.header("x-ratelimit-reset", String(Math.ceil(decision.resetAt / 1000)));
+  return c.json(
+    {
+      error: "Too many requests.",
+      limit: decision.limit,
+      retryAfterSeconds: decision.retryAfterSeconds,
+      windowMs: decision.windowMs,
+    },
+    429,
+  );
 }
 
 function concatUint8Arrays(

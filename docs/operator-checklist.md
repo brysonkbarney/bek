@@ -144,6 +144,9 @@ the current OSS spine.
 - [ ] Set `BEK_ADMIN_ORIGINS` to explicit admin-console origins.
 - [ ] Set `BEK_MAX_REQUEST_BODY_BYTES` to the smallest value that still covers
       expected Slack callbacks, admin actions, and provider webhooks.
+- [ ] Keep `BEK_RATE_LIMIT_MAX_REQUESTS` enabled, and set
+      `BEK_TRUST_PROXY_HEADERS=true` only behind a trusted proxy that overwrites
+      client IP headers.
 - [ ] Review [Security Policy](../SECURITY.md) and
       [security entry points](./security/threat-model-entry-points.md).
 - [ ] Confirm request IDs, audit events, and run timelines are sufficient for

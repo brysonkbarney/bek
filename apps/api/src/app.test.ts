@@ -19,6 +19,8 @@ const managedEnvKeys = [
   "BEK_CREDENTIAL_KEY_ID",
   "BEK_CREDENTIAL_MASTER_KEY",
   "BEK_MAX_REQUEST_BODY_BYTES",
+  "BEK_RATE_LIMIT_MAX_REQUESTS",
+  "BEK_RATE_LIMIT_WINDOW_MS",
   "BEK_RUN_ADVANCEMENT",
   "BEK_SANDBOX_PROVIDER",
   "BEK_SLACK_BACKGROUND_DRAIN",
@@ -273,6 +275,78 @@ describe("Bek API", () => {
       maxBytes: 64,
     });
     expect(store.read().runs).toHaveLength(beforeRuns);
+  });
+
+  it("rate limits repeated admin API requests from the same peer", async () => {
+    process.env.BEK_RATE_LIMIT_MAX_REQUESTS = "2";
+    process.env.BEK_RATE_LIMIT_WINDOW_MS = "60000";
+    const app = createApp();
+
+    const first = await app.request("/api/bootstrap");
+    const second = await app.request("/api/bootstrap");
+    const limited = await app.request("/api/bootstrap");
+
+    expect(first.status).toBe(200);
+    expect(first.headers.get("x-ratelimit-remaining")).toBe("1");
+    expect(second.status).toBe(200);
+    expect(second.headers.get("x-ratelimit-remaining")).toBe("0");
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toBe("60");
+    await expect(limited.json()).resolves.toMatchObject({
+      error: "Too many requests.",
+      limit: 2,
+      retryAfterSeconds: 60,
+      windowMs: 60000,
+    });
+  });
+
+  it("rate limits Slack callbacks without asking Slack to retry", async () => {
+    process.env.BEK_RATE_LIMIT_MAX_REQUESTS = "1";
+    process.env.BEK_RATE_LIMIT_WINDOW_MS = "60000";
+    mapSlackTestUser();
+    const store = new BekStore();
+    const app = createApp(store);
+    const firstBody = JSON.stringify({
+      event_id: "EvRateLimitedFirst",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek first",
+      },
+    });
+    const secondBody = JSON.stringify({
+      event_id: "EvRateLimitedSecond",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek second",
+      },
+    });
+
+    const first = await app.request("/api/slack/events", {
+      method: "POST",
+      body: firstBody,
+      headers: signedSlackHeaders(firstBody),
+    });
+    const limited = await app.request("/api/slack/events", {
+      method: "POST",
+      body: secondBody,
+      headers: signedSlackHeaders(secondBody),
+    });
+
+    expect(first.status).toBe(200);
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("x-slack-no-retry")).toBe("1");
+    await expect(limited.json()).resolves.toMatchObject({
+      error: "Too many requests.",
+      limit: 1,
+      retryAfterSeconds: 60,
+    });
+    expect(store.read().runs.map((run) => run.prompt)).not.toContain(
+      "@bek second",
+    );
   });
 
   it("allows local dev admin origins when Vite falls back to another port", async () => {
