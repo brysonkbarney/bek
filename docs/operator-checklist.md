@@ -58,8 +58,16 @@ the current OSS spine.
 - [ ] Verify an `@bek` mention posts a reply in the originating thread.
 - [ ] Verify an approval button click reaches `/api/slack/interactivity`, maps
       the Slack user to a Bek principal, and posts the decision/final answer.
+- [ ] Confirm Slack callbacks return after durable ingress/run/outbound state is
+      persisted, before Slack Web API posting. Use `GET /api/outbound/slack` to
+      inspect queued deliveries and `POST /api/outbound/slack/drain` to retry
+      them manually.
+- [ ] In `BEK_RUN_ADVANCEMENT=worker_local` mode, use `POST /api/worker/drain`
+      to process queued run work; the endpoint also queues Slack follow-up
+      messages for completed/paused runs and drains the Slack outbox.
 - [ ] Use `BEK_STORAGE=postgres` before real Slack retries matter; Slack
-      delivery dedupe is persisted in the Bek snapshot.
+      ingress dedupe and outbound delivery intents are persisted in the Bek
+      snapshot.
 - [ ] Blocked for hosted beta: replace local env-key token custody with managed
       KMS/secret-manager storage, rotation, revocation, and access audit.
 - [ ] Blocked: persist full Slack channel sync and user/principal mappings.

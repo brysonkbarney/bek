@@ -90,6 +90,40 @@ describe("Bek snapshot persistence mapping", () => {
     );
   });
 
+  it("round-trips durable outbound delivery records", () => {
+    const snapshot: BekSnapshot = {
+      ...createSeedSnapshot("2026-01-02T03:04:05.000Z"),
+      outboundDeliveries: [
+        {
+          id: "outbound_slack_run",
+          orgId: "org_demo",
+          provider: "slack",
+          kind: "slack.run_outcome",
+          key: "slack:run_outcome:run_demo:C_CHECKOUT",
+          status: "queued",
+          runId: "run_demo",
+          target: {
+            channelId: "C_CHECKOUT",
+            teamId: "T123",
+          },
+          payload: {
+            text: "Bek queued this run.",
+          },
+          attempts: 1,
+          maxAttempts: 3,
+          lastError: "temporary timeout",
+          nextAttemptAt: "2026-01-02T03:05:05.000Z",
+          createdAt: "2026-01-02T03:04:05.000Z",
+          updatedAt: "2026-01-02T03:04:06.000Z",
+        },
+      ],
+    };
+
+    expect(rowsToSnapshot(snapshotToRows(snapshot)).outboundDeliveries).toEqual(
+      snapshot.outboundDeliveries,
+    );
+  });
+
   it("round-trips connector installs and credential metadata", () => {
     const snapshot: BekSnapshot = {
       ...createSeedSnapshot("2026-01-02T03:04:05.000Z"),

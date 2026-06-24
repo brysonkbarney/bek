@@ -29,6 +29,13 @@
       "when": 1782337744319,
       "tag": "0003_aromatic_punisher",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1782338978707,
+      "tag": "0004_skinny_glorian",
+      "breakpoints": true
     }
   ]
 }

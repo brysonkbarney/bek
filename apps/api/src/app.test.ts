@@ -4,6 +4,9 @@ import {
   FakeSlackWebApiClient,
   parseSlackApprovalActionValue,
   type SlackActionsBlock,
+  type SlackWebApiClient,
+  type SlackWebApiMessageResult,
+  type SlackPostMessageInput,
   verifySlackOAuthState,
 } from "@bek/slack";
 import { BekStore, createSeedSnapshot } from "@bek/core";
@@ -17,6 +20,7 @@ const managedEnvKeys = [
   "BEK_CREDENTIAL_MASTER_KEY",
   "BEK_RUN_ADVANCEMENT",
   "BEK_SANDBOX_PROVIDER",
+  "BEK_SLACK_BACKGROUND_DRAIN",
   "BEK_SLACK_OAUTH_EXCHANGE",
   "BEK_SLACK_USER_PRINCIPAL_MAP",
   "GITHUB_APP_CLIENT_ID",
@@ -57,6 +61,26 @@ afterEach(() => {
 });
 
 type ApprovalSummary = { id: string; payloadHash: string; status: string };
+
+class BlockingSlackWebApiClient implements SlackWebApiClient {
+  readonly postMessageCalls: SlackPostMessageInput[] = [];
+
+  async postMessage(input: SlackPostMessageInput) {
+    this.postMessageCalls.push(input);
+    return new Promise<SlackWebApiMessageResult>(() => {
+      // Intentionally unresolved to prove Slack ingress does not wait on
+      // outbound Slack Web API delivery.
+    });
+  }
+
+  async updateMessage(): Promise<SlackWebApiMessageResult> {
+    return new Promise<SlackWebApiMessageResult>(() => {});
+  }
+
+  async postEphemeral(): Promise<SlackWebApiMessageResult> {
+    return new Promise<SlackWebApiMessageResult>(() => {});
+  }
+}
 
 function signedSlackHeaders(
   rawBody: string,
@@ -2508,7 +2532,52 @@ describe("Bek API", () => {
     expect(slackClient.postMessageCalls).toHaveLength(1);
   });
 
+  it("acknowledges Slack events before outbound Slack delivery", async () => {
+    process.env.BEK_SLACK_BACKGROUND_DRAIN = "false";
+    const slackClient = new BlockingSlackWebApiClient();
+    const app = createApp(new BekStore(), { slackClient });
+    const payload = {
+      event_id: "EvFastAck",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek do not wait on Slack posting",
+        ts: "1710000000.000009",
+      },
+    };
+
+    const res = await Promise.race([
+      app.request("/api/slack/events", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+      new Promise<"timeout">((resolve) =>
+        setTimeout(() => resolve("timeout"), 50),
+      ),
+    ]);
+
+    expect(res).not.toBe("timeout");
+    expect((res as Response).status).toBe(200);
+    await expect((res as Response).json()).resolves.toMatchObject({
+      ok: true,
+      runId: expect.any(String),
+    });
+    expect(slackClient.postMessageCalls).toHaveLength(0);
+    await expect(expectJson(app, "/api/outbound/slack")).resolves.toMatchObject(
+      {
+        deliveries: [
+          expect.objectContaining({
+            status: "queued",
+            kind: "slack.run_outcome",
+          }),
+        ],
+      },
+    );
+  });
+
   it("posts worker completion output for Slack-created runs", async () => {
+    process.env.BEK_SLACK_BACKGROUND_DRAIN = "false";
     const slackClient = new FakeSlackWebApiClient();
     const app = createApp(new BekStore(), {
       runAdvancement: "worker_local",
@@ -2532,13 +2601,21 @@ describe("Bek API", () => {
     const json = (await res.json()) as { runId: string };
 
     expect(res.status).toBe(200);
-    expect(slackClient.postMessageCalls).toHaveLength(1);
-    expect(slackClient.postMessageCalls[0]).toMatchObject({
+    expect(slackClient.postMessageCalls).toHaveLength(0);
+
+    const drain = await app.request("/api/worker/drain", {
+      method: "POST",
+      body: JSON.stringify({}),
+      headers: { "content-type": "application/json" },
+    });
+    expect(drain.status).toBe(200);
+    expect(slackClient.postMessageCalls).toHaveLength(2);
+    expect(slackClient.postMessageCalls[1]).toMatchObject({
       channel: "C_CHECKOUT",
       thread_ts: "1710000000.000010",
       text: expect.stringContaining("Bek local worker completed"),
     });
-    expect(JSON.stringify(slackClient.postMessageCalls[0]!.blocks)).toContain(
+    expect(JSON.stringify(slackClient.postMessageCalls[1]!.blocks)).toContain(
       json.runId,
     );
   });
@@ -2632,6 +2709,7 @@ describe("Bek API", () => {
   });
 
   it("posts approval-needed Slack buttons for paused worker runs", async () => {
+    process.env.BEK_SLACK_BACKGROUND_DRAIN = "false";
     const slackClient = new FakeSlackWebApiClient();
     const app = createApp(new BekStore(), {
       runAdvancement: "worker_local",
@@ -2655,8 +2733,16 @@ describe("Bek API", () => {
     const json = (await res.json()) as { runId: string };
 
     expect(res.status).toBe(200);
-    expect(slackClient.postMessageCalls).toHaveLength(1);
-    const approvalMessage = slackClient.postMessageCalls[0]!;
+    expect(slackClient.postMessageCalls).toHaveLength(0);
+
+    const drain = await app.request("/api/worker/drain", {
+      method: "POST",
+      body: JSON.stringify({}),
+      headers: { "content-type": "application/json" },
+    });
+    expect(drain.status).toBe(200);
+    expect(slackClient.postMessageCalls).toHaveLength(2);
+    const approvalMessage = slackClient.postMessageCalls[1]!;
     expect(approvalMessage).toMatchObject({
       channel: "C_CHECKOUT",
       thread_ts: "1710000000.000020",
@@ -2816,6 +2902,7 @@ describe("Bek API", () => {
   });
 
   it("applies mapped Slack approval button decisions", async () => {
+    process.env.BEK_SLACK_BACKGROUND_DRAIN = "false";
     process.env.BEK_SLACK_USER_PRINCIPAL_MAP = JSON.stringify({
       U_APPROVER: "principal_admin",
     });
@@ -2863,6 +2950,14 @@ describe("Bek API", () => {
         decidedByPrincipalId: "principal_admin",
       },
     });
+    expect(slackClient.postMessageCalls).toHaveLength(0);
+
+    const drain = await app.request("/api/outbound/slack/drain", {
+      method: "POST",
+      body: JSON.stringify({}),
+      headers: { "content-type": "application/json" },
+    });
+    expect(drain.status).toBe(200);
     expect(slackClient.postMessageCalls).toHaveLength(2);
     expect(slackClient.postMessageCalls[0]).toMatchObject({
       channel: "C_CHECKOUT",

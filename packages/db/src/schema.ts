@@ -680,6 +680,46 @@ export const ingressDeliveries = pgTable(
   ],
 );
 
+export const outboundDeliveries = pgTable(
+  "outbound_deliveries",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull(),
+    kind: text("kind").notNull(),
+    key: text("key").notNull(),
+    status: text("status").notNull(),
+    target: jsonObject("target"),
+    payload: jsonObject("payload"),
+    attempts: integer("attempts").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(5),
+    runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
+    approvalId: text("approval_id").references(() => approvals.id, {
+      onDelete: "set null",
+    }),
+    lastError: text("last_error"),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("outbound_deliveries_org_key_unique").on(
+      table.orgId,
+      table.key,
+    ),
+    index("outbound_deliveries_due_idx").on(
+      table.orgId,
+      table.status,
+      table.nextAttemptAt,
+    ),
+    index("outbound_deliveries_run_idx").on(table.runId),
+    index("outbound_deliveries_approval_idx").on(table.approvalId),
+  ],
+);
+
 export const modelUsage = pgTable(
   "model_usage",
   {
@@ -909,6 +949,7 @@ export const orgsRelations = relations(orgs, ({ one, many }) => ({
   credentialMetadata: many(credentialMetadata),
   auditEvents: many(auditEvents),
   ingressDeliveries: many(ingressDeliveries),
+  outboundDeliveries: many(outboundDeliveries),
   workerWorkRecords: many(workerWorkRecords),
   workerDeadLetters: many(workerDeadLetters),
   workerEvents: many(workerEvents),
@@ -1071,6 +1112,7 @@ export const runsRelations = relations(runs, ({ one, many }) => ({
   modelUsage: many(modelUsage),
   toolUsage: many(toolUsage),
   ingressDeliveries: many(ingressDeliveries),
+  outboundDeliveries: many(outboundDeliveries),
   workerWorkRecords: many(workerWorkRecords),
   workerEvents: many(workerEvents),
 }));
@@ -1110,6 +1152,24 @@ export const ingressDeliveriesRelations = relations(
     }),
     approval: one(approvals, {
       fields: [ingressDeliveries.approvalId],
+      references: [approvals.id],
+    }),
+  }),
+);
+
+export const outboundDeliveriesRelations = relations(
+  outboundDeliveries,
+  ({ one }) => ({
+    org: one(orgs, {
+      fields: [outboundDeliveries.orgId],
+      references: [orgs.id],
+    }),
+    run: one(runs, {
+      fields: [outboundDeliveries.runId],
+      references: [runs.id],
+    }),
+    approval: one(approvals, {
+      fields: [outboundDeliveries.approvalId],
       references: [approvals.id],
     }),
   }),
@@ -1273,6 +1333,10 @@ export type AuditEventRow = InferSelectModel<typeof auditEvents>;
 export type NewAuditEventRow = InferInsertModel<typeof auditEvents>;
 export type IngressDeliveryRow = InferSelectModel<typeof ingressDeliveries>;
 export type NewIngressDeliveryRow = InferInsertModel<typeof ingressDeliveries>;
+export type OutboundDeliveryRow = InferSelectModel<typeof outboundDeliveries>;
+export type NewOutboundDeliveryRow = InferInsertModel<
+  typeof outboundDeliveries
+>;
 export type ModelUsageRow = InferSelectModel<typeof modelUsage>;
 export type NewModelUsageRow = InferInsertModel<typeof modelUsage>;
 export type WorkerWorkRecordRow = InferSelectModel<typeof workerWorkRecords>;

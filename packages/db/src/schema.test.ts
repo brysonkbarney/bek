@@ -10,6 +10,7 @@ import {
   grants,
   ingressDeliveries,
   orgs,
+  outboundDeliveries,
   principals,
   runEvents,
   runs,
@@ -46,6 +47,7 @@ describe("Bek schema", () => {
       runEvents,
       approvals,
       ingressDeliveries,
+      outboundDeliveries,
       connectorInstalls,
       credentialMetadata,
       workerWorkRecords,
@@ -64,6 +66,7 @@ describe("Bek schema", () => {
       "run_events",
       "approvals",
       "ingress_deliveries",
+      "outbound_deliveries",
       "connector_installs",
       "credential_metadata",
       "worker_work_records",
@@ -84,6 +87,13 @@ describe("Bek schema", () => {
     expect(indexNames(approvals)).toContain("approvals_org_status_idx");
     expect(indexNames(ingressDeliveries)).toContain(
       "ingress_deliveries_org_key_unique",
+    );
+    expect(indexNames(outboundDeliveries)).toEqual(
+      expect.arrayContaining([
+        "outbound_deliveries_org_key_unique",
+        "outbound_deliveries_due_idx",
+        "outbound_deliveries_run_idx",
+      ]),
     );
     expect(indexNames(workerWorkRecords)).toEqual(
       expect.arrayContaining([

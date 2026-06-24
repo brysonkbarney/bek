@@ -18,6 +18,8 @@ import type {
   IngressDelivery,
   IngressDeliveryKind,
   ModelPolicy,
+  OutboundDelivery,
+  OutboundDeliveryKind,
   PlaceScope,
   Run,
   RunEvent,
@@ -93,6 +95,31 @@ export interface UpsertCredentialInput {
 
 export interface RemoveIngressDeliveryOptions {
   recordChange?: boolean | undefined;
+}
+
+export interface EnqueueOutboundDeliveryInput {
+  key: string;
+  kind: OutboundDeliveryKind;
+  target: Record<string, unknown>;
+  payload: Record<string, unknown>;
+  runId?: string | undefined;
+  approvalId?: string | undefined;
+  maxAttempts?: number | undefined;
+  now?: string | undefined;
+}
+
+export interface ListDueOutboundDeliveriesInput {
+  provider?: OutboundDelivery["provider"] | undefined;
+  now?: string | undefined;
+  limit?: number | undefined;
+}
+
+export interface FailOutboundDeliveryInput {
+  id: string;
+  error: string;
+  retryable?: boolean | undefined;
+  retryDelayMs?: number | undefined;
+  now?: string | undefined;
 }
 
 export interface BekStoreOptions {
@@ -845,6 +872,132 @@ export class BekStore {
     return removed;
   }
 
+  enqueueOutboundDelivery(
+    input: EnqueueOutboundDeliveryInput,
+  ): OutboundDelivery {
+    const now = input.now ?? new Date().toISOString();
+    const existing = this.snapshot.outboundDeliveries.find(
+      (candidate) => candidate.key === input.key,
+    );
+    if (existing) {
+      existing.kind = input.kind;
+      existing.target = redactedRecord(input.target) ?? {};
+      existing.payload = redactedRecord(input.payload) ?? {};
+      existing.maxAttempts = normalizeOutboundMaxAttempts(input.maxAttempts);
+      existing.updatedAt = now;
+      if (existing.status === "failed") {
+        existing.status = "queued";
+        existing.nextAttemptAt = now;
+        delete existing.lastError;
+      }
+      if (input.runId !== undefined) {
+        existing.runId = input.runId;
+      }
+      if (input.approvalId !== undefined) {
+        existing.approvalId = input.approvalId;
+      }
+      this.recordChange();
+      return structuredClone(existing);
+    }
+
+    const delivery: OutboundDelivery = {
+      id: createId("outbound"),
+      orgId: this.snapshot.org.id,
+      provider: "slack",
+      kind: input.kind,
+      key: input.key,
+      status: "queued",
+      target: redactedRecord(input.target) ?? {},
+      payload: redactedRecord(input.payload) ?? {},
+      attempts: 0,
+      maxAttempts: normalizeOutboundMaxAttempts(input.maxAttempts),
+      nextAttemptAt: now,
+      createdAt: now,
+      updatedAt: now,
+    };
+    if (input.runId !== undefined) {
+      delivery.runId = input.runId;
+    }
+    if (input.approvalId !== undefined) {
+      delivery.approvalId = input.approvalId;
+    }
+    this.snapshot.outboundDeliveries.unshift(delivery);
+    this.recordChange();
+    return structuredClone(delivery);
+  }
+
+  listDueOutboundDeliveries(
+    input: ListDueOutboundDeliveriesInput = {},
+  ): OutboundDelivery[] {
+    const nowMs = Date.parse(input.now ?? new Date().toISOString());
+    const limit = Math.max(1, input.limit ?? 25);
+    return this.snapshot.outboundDeliveries
+      .filter(
+        (delivery) =>
+          delivery.status === "queued" &&
+          (input.provider ? delivery.provider === input.provider : true) &&
+          Date.parse(delivery.nextAttemptAt ?? delivery.createdAt) <= nowMs,
+      )
+      .sort((a, b) =>
+        (a.nextAttemptAt ?? a.createdAt).localeCompare(
+          b.nextAttemptAt ?? b.createdAt,
+        ),
+      )
+      .slice(0, limit)
+      .map((delivery) => structuredClone(delivery));
+  }
+
+  beginOutboundDelivery(
+    id: string,
+    input: { now?: string | undefined } = {},
+  ): OutboundDelivery {
+    const delivery = this.findOutboundDelivery(id);
+    const now = input.now ?? new Date().toISOString();
+    if (delivery.status !== "queued") {
+      throw new Error("Outbound delivery is not queued.");
+    }
+    delivery.status = "delivering";
+    delivery.attempts += 1;
+    delivery.updatedAt = now;
+    delete delivery.nextAttemptAt;
+    this.recordChange();
+    return structuredClone(delivery);
+  }
+
+  completeOutboundDelivery(
+    id: string,
+    input: { now?: string | undefined } = {},
+  ): OutboundDelivery {
+    const delivery = this.findOutboundDelivery(id);
+    const now = input.now ?? new Date().toISOString();
+    delivery.status = "delivered";
+    delete delivery.lastError;
+    delete delivery.nextAttemptAt;
+    delivery.deliveredAt = now;
+    delivery.updatedAt = now;
+    this.recordChange();
+    return structuredClone(delivery);
+  }
+
+  failOutboundDelivery(input: FailOutboundDeliveryInput): OutboundDelivery {
+    const delivery = this.findOutboundDelivery(input.id);
+    const now = input.now ?? new Date().toISOString();
+    const retryable =
+      input.retryable !== false && delivery.attempts < delivery.maxAttempts;
+    delivery.status = retryable ? "queued" : "failed";
+    delivery.lastError = redactSecrets(input.error).slice(0, 500);
+    if (retryable) {
+      delivery.nextAttemptAt = new Date(
+        Date.parse(now) + Math.max(0, input.retryDelayMs ?? 1_000),
+      ).toISOString();
+    } else {
+      delete delivery.nextAttemptAt;
+    }
+    delivery.updatedAt = now;
+    this.recordChange();
+    return structuredClone(delivery);
+  }
+
   appendRunEvent(input: AppendRunEventInput): RunEvent {
     const run = this.findRun(input.runId);
     const event = createRunEvent(
@@ -898,6 +1051,16 @@ export class BekStore {
     }
     this.recordChange();
     return structuredClone(approval);
+  }
+
+  private findOutboundDelivery(id: string): OutboundDelivery {
+    const delivery = this.snapshot.outboundDeliveries.find(
+      (candidate) => candidate.id === id,
+    );
+    if (!delivery) {
+      throw new Error("Outbound delivery not found.");
+    }
+    return delivery;
   }
 
   private recordChange(): void {
@@ -1038,6 +1201,13 @@ function eventTypeForStatus(status: RunStatus): RunEvent["type"] {
     return "run.failed";
   }
   return "run.status_changed";
+}
+
+function normalizeOutboundMaxAttempts(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return 5;
+  }
+  return Math.max(1, Math.min(20, Math.floor(value)));
 }
 
 function assignOptional<T extends object, K extends keyof T>(

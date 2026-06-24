@@ -278,6 +278,36 @@ export interface IngressDelivery {
   updatedAt: ISODate;
 }
 
+export type OutboundDeliveryKind =
+  | "slack.run_outcome"
+  | "slack.approval_decision";
+
+export type OutboundDeliveryStatus =
+  | "queued"
+  | "delivering"
+  | "delivered"
+  | "failed";
+
+export interface OutboundDelivery {
+  id: string;
+  orgId: string;
+  provider: "slack";
+  kind: OutboundDeliveryKind;
+  key: string;
+  status: OutboundDeliveryStatus;
+  target: Record<string, unknown>;
+  payload: Record<string, unknown>;
+  attempts: number;
+  maxAttempts: number;
+  runId?: string;
+  approvalId?: string;
+  lastError?: string;
+  nextAttemptAt?: ISODate;
+  deliveredAt?: ISODate;
+  createdAt: ISODate;
+  updatedAt: ISODate;
+}
+
 export interface BekSnapshot {
   org: Organization;
   principals: Principal[];
@@ -294,4 +324,5 @@ export interface BekSnapshot {
   events: RunEvent[];
   approvals: ApprovalRequest[];
   ingressDeliveries: IngressDelivery[];
+  outboundDeliveries: OutboundDelivery[];
 }

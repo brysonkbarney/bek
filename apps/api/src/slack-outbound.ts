@@ -70,6 +70,20 @@ interface SlackOutboundPostResult {
   attempts: SlackOutboundAttemptDiagnostic[];
 }
 
+export interface SlackOutboundDeliveryResult {
+  attempted: boolean;
+  ok: boolean;
+  error?: string | undefined;
+  retryable?: boolean | undefined;
+}
+
+export interface SlackPreparedOutboundMessage {
+  kind: "queued" | "approval_needed" | "approval_decision" | "final_answer";
+  runId: string;
+  target: SlackOutboundTarget;
+  message: SlackMessagePayload;
+}
+
 const defaultSlackPostMaxAttempts = 3;
 const defaultSlackPostRetryDelayMs = 100;
 const maximumSlackPostAttempts = 5;
@@ -108,23 +122,33 @@ export class SlackOutboundDelivery {
   async deliverRunOutcome(
     runId: string,
     target: SlackOutboundTarget,
-  ): Promise<void> {
+  ): Promise<SlackOutboundDeliveryResult> {
+    const prepared = this.prepareRunOutcome(runId, target);
+    return prepared
+      ? this.deliverPreparedMessage(prepared)
+      : slackOutboundSkipped("Run outcome could not be prepared.");
+  }
+
+  prepareRunOutcome(
+    runId: string,
+    target: SlackOutboundTarget,
+  ): SlackPreparedOutboundMessage | undefined {
     const resolvedTarget = resolveSlackTarget(target);
     if (!resolvedTarget) {
-      return;
+      return undefined;
     }
 
     const snapshot = this.store.read();
     const run = findRun(snapshot, runId);
     if (!run) {
-      return;
+      return undefined;
     }
 
     const pendingApproval = latestPendingApproval(snapshot, run.id);
     if (run.status === "awaiting_approval" && pendingApproval) {
-      await this.postRunMessage({
+      return {
         kind: "approval_needed",
-        run,
+        runId: run.id,
         target: resolvedTarget,
         message: renderSlackApprovalNeededMessage({
           runId: run.id,
@@ -139,54 +163,50 @@ export class SlackOutboundDelivery {
             principalDisplayName(snapshot, run.requesterPrincipalId),
           ),
         }),
-      });
-      return;
+      };
     }
 
     if (run.status === "completed") {
-      await this.postRunMessage({
+      return {
         kind: "final_answer",
-        run,
+        runId: run.id,
         target: resolvedTarget,
         message: renderSlackFinalAnswerMessage({
           runId: run.id,
           answer: latestEventMessage(snapshot, run.id, "run.completed"),
         }),
-      });
-      return;
+      };
     }
 
     if (run.status === "failed") {
-      await this.postRunMessage({
+      return {
         kind: "final_answer",
-        run,
+        runId: run.id,
         target: resolvedTarget,
         message: renderSlackFinalAnswerMessage({
           runId: run.id,
           title: "Bek could not complete this.",
           answer: latestEventMessage(snapshot, run.id, "run.failed"),
         }),
-      });
-      return;
+      };
     }
 
     if (run.status === "cancelled") {
-      await this.postRunMessage({
+      return {
         kind: "final_answer",
-        run,
+        runId: run.id,
         target: resolvedTarget,
         message: renderSlackFinalAnswerMessage({
           runId: run.id,
           title: "Bek stopped.",
           answer: latestEventMessage(snapshot, run.id, "run.status_changed"),
         }),
-      });
-      return;
+      };
     }
 
-    await this.postRunMessage({
+    return {
       kind: "queued",
-      run,
+      runId: run.id,
       target: resolvedTarget,
       message: renderSlackRunQueuedMessage({
         runId: run.id,
@@ -197,16 +217,31 @@ export class SlackOutboundDelivery {
         ),
         ...optionalString("channelName", placeName(snapshot, run.placeScopeId)),
       }),
-    });
+    };
   }
 
   async deliverApprovalDecision(
     approvalId: string,
     target: SlackOutboundTarget,
-  ): Promise<void> {
+  ): Promise<SlackOutboundDeliveryResult> {
+    const prepared = this.prepareApprovalDecision(approvalId, target);
+    if (prepared.length === 0) {
+      return slackOutboundSkipped("Approval decision could not be prepared.");
+    }
+    return combineSlackDeliveryResults(
+      await Promise.all(
+        prepared.map((message) => this.deliverPreparedMessage(message)),
+      ),
+    );
+  }
+
+  prepareApprovalDecision(
+    approvalId: string,
+    target: SlackOutboundTarget,
+  ): SlackPreparedOutboundMessage[] {
     const resolvedTarget = resolveSlackTarget(target);
     if (!resolvedTarget) {
-      return;
+      return [];
     }
 
     const snapshot = this.store.read();
@@ -218,17 +253,18 @@ export class SlackOutboundDelivery {
       approval.status === "pending" ||
       approval.status === "expired"
     ) {
-      return;
+      return [];
     }
 
     const run = findRun(snapshot, approval.runId);
     if (!run) {
-      return;
+      return [];
     }
 
-    await this.postRunMessage({
+    const prepared: SlackPreparedOutboundMessage[] = [];
+    prepared.push({
       kind: "approval_decision",
-      run,
+      runId: run.id,
       target: resolvedTarget,
       message: renderSlackApprovalDecidedMessage({
         runId: run.id,
@@ -242,9 +278,9 @@ export class SlackOutboundDelivery {
     });
 
     if (approval.status === "approved" && run.status === "completed") {
-      await this.postRunMessage({
+      prepared.push({
         kind: "final_answer",
-        run,
+        runId: run.id,
         target: resolvedTarget,
         message: renderSlackFinalAnswerMessage({
           runId: run.id,
@@ -252,24 +288,45 @@ export class SlackOutboundDelivery {
         }),
       });
     }
+    return prepared;
   }
 
-  private async postRunMessage(input: {
-    kind: "queued" | "approval_needed" | "approval_decision" | "final_answer";
-    run: Run;
-    target: ResolvedSlackOutboundTarget;
-    message: SlackMessagePayload;
-  }): Promise<void> {
-    const client = this.resolveClient(input.target);
+  async deliverSavedMessage(
+    input: SlackPreparedOutboundMessage,
+  ): Promise<SlackOutboundDeliveryResult> {
+    return this.deliverPreparedMessage(input);
+  }
+
+  private async deliverPreparedMessage(
+    input: SlackPreparedOutboundMessage,
+  ): Promise<SlackOutboundDeliveryResult> {
+    const resolvedTarget = resolveSlackTarget(input.target);
+    if (!resolvedTarget) {
+      return slackOutboundSkipped(
+        "Slack outbound target is missing channel_id.",
+      );
+    }
+    const client = this.resolveClient(resolvedTarget);
     if (!client) {
-      return;
+      return slackOutboundSkipped("Slack bot token is not configured.");
+    }
+    const run = findRun(this.store.read(), input.runId);
+    if (!run) {
+      return slackOutboundSkipped("Run not found for Slack outbound delivery.");
     }
 
     const delivery = await this.postMessageWithRetry(
       client,
-      slackPostMessageInput(input.target, input.message),
+      slackPostMessageInput(resolvedTarget, input.message),
     );
-    this.recordDeliveryResult(input.run, input.kind, input.target, delivery);
+    this.recordDeliveryResult(run, input.kind, resolvedTarget, delivery);
+    const finalAttempt = delivery.attempts.at(-1);
+    return {
+      attempted: true,
+      ok: delivery.result.ok,
+      error: delivery.result.ok ? undefined : finalAttempt?.error,
+      retryable: delivery.result.ok ? undefined : finalAttempt?.retryable,
+    };
   }
 
   private async postMessageWithRetry(
@@ -399,6 +456,25 @@ export function createSlackOutboundDelivery(
     return new SlackOutboundDelivery(store, options.slackClient, options);
   }
   return new SlackOutboundDelivery(store, undefined, options);
+}
+
+function slackOutboundSkipped(error: string): SlackOutboundDeliveryResult {
+  return { attempted: false, ok: false, error, retryable: false };
+}
+
+function combineSlackDeliveryResults(
+  results: SlackOutboundDeliveryResult[],
+): SlackOutboundDeliveryResult {
+  const failed = results.find((result) => !result.ok);
+  if (!failed) {
+    return { attempted: results.some((result) => result.attempted), ok: true };
+  }
+  return {
+    attempted: results.some((result) => result.attempted),
+    ok: false,
+    error: failed.error,
+    retryable: failed.retryable,
+  };
 }
 
 async function postSlackMessageOnce(

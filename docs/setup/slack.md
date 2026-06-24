@@ -33,6 +33,7 @@ It can:
   `BEK_CREDENTIAL_MASTER_KEY` is set,
 - parse Bek approval button actions and apply them when the Slack user is mapped to a Bek principal,
 - build Slack Web API message payloads for queued runs, approval requests, approval decisions, and final answers,
+- persist outbound Slack message intents before acknowledging accepted callbacks,
 - post thread replies, approval buttons, approval decisions, and final answers through the Slack Web API with a stored OAuth token or `SLACK_BOT_TOKEN` fallback,
 - provide a typed Slack Web API client interface plus HTTP and fake in-memory clients,
 - build durable Slack ingress keys for events, slash commands, and approval interactions,
@@ -112,10 +113,22 @@ revocation workflows, or persistent Slack user/principal mapping.
    ```
 
    Stored or manual tokens need `chat:write`; the default `SLACK_BOT_SCOPES`
-   includes it. Bek posts in the originating channel or thread after the
-   accepted run or approval decision has been persisted. If Slack posting
-   fails, the request is still accepted and the run timeline records the
-   delivery error.
+   includes it. Bek acknowledges Slack callbacks after ingress, run, worker,
+   and outbound-delivery state has been persisted. Slack Web API posting runs
+   through the outbound drain path after that ACK boundary, so a slow Slack API
+   call does not consume Slack's callback response budget.
+
+   Operator endpoints:
+
+   ```txt
+   GET  /api/outbound/slack
+   POST /api/outbound/slack/drain
+   ```
+
+   The drain endpoint retries queued Slack outbound deliveries and records
+   sanitized delivery diagnostics on the run timeline. `POST /api/worker/drain`
+   also drains local worker work, queues any resulting Slack follow-up messages,
+   and drains the Slack outbox for local/self-hosted operation.
 
 10. Configure slash commands and interactivity:
 

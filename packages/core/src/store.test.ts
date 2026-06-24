@@ -412,6 +412,96 @@ describe("Bek ingress delivery state", () => {
   });
 });
 
+describe("Bek outbound delivery state", () => {
+  it("queues, retries, and completes durable Slack outbound deliveries", () => {
+    const store = new BekStore();
+    const delivery = store.enqueueOutboundDelivery({
+      key: "slack:run_outcome:run_demo:C_CHECKOUT",
+      kind: "slack.run_outcome",
+      runId: "run_demo",
+      maxAttempts: 2,
+      target: {
+        channelId: "C_CHECKOUT",
+        teamId: "T123",
+        token: "xoxb-this-secret-token-should-redact",
+      },
+      payload: {
+        text: "Bek queued this run with xoxb-this-secret-token-should-redact",
+      },
+      now: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(delivery).toMatchObject({
+      provider: "slack",
+      kind: "slack.run_outcome",
+      key: "slack:run_outcome:run_demo:C_CHECKOUT",
+      status: "queued",
+      attempts: 0,
+      maxAttempts: 2,
+      target: {
+        channelId: "C_CHECKOUT",
+        token: "[redacted:field]",
+      },
+      payload: {
+        text: "Bek queued this run with [redacted:slack-token]",
+      },
+    });
+    expect(
+      store.enqueueOutboundDelivery({
+        key: delivery.key,
+        kind: "slack.run_outcome",
+        runId: "run_demo",
+        target: { channelId: "C_CHECKOUT" },
+        payload: { text: "updated stable payload" },
+      }).id,
+    ).toBe(delivery.id);
+
+    expect(
+      store.listDueOutboundDeliveries({
+        now: "2026-01-01T00:00:00.000Z",
+      }),
+    ).toHaveLength(1);
+
+    const firstAttempt = store.beginOutboundDelivery(delivery.id, {
+      now: "2026-01-01T00:00:01.000Z",
+    });
+    expect(firstAttempt).toMatchObject({
+      status: "delivering",
+      attempts: 1,
+    });
+
+    const retry = store.failOutboundDelivery({
+      id: delivery.id,
+      error: "temporary xoxb-this-secret-token-should-redact",
+      retryDelayMs: 5_000,
+      now: "2026-01-01T00:00:02.000Z",
+    });
+    expect(retry).toMatchObject({
+      status: "queued",
+      attempts: 1,
+      lastError: "temporary [redacted:slack-token]",
+      nextAttemptAt: "2026-01-01T00:00:07.000Z",
+    });
+    expect(
+      store.listDueOutboundDeliveries({
+        now: "2026-01-01T00:00:06.000Z",
+      }),
+    ).toHaveLength(0);
+
+    store.beginOutboundDelivery(delivery.id, {
+      now: "2026-01-01T00:00:07.000Z",
+    });
+    const completed = store.completeOutboundDelivery(delivery.id, {
+      now: "2026-01-01T00:00:08.000Z",
+    });
+    expect(completed).toMatchObject({
+      status: "delivered",
+      attempts: 2,
+      deliveredAt: "2026-01-01T00:00:08.000Z",
+    });
+  });
+});
+
 describe("Bek connector and credential state", () => {
   it("upserts Slack installs and redacts credential metadata", () => {
     const store = new BekStore();

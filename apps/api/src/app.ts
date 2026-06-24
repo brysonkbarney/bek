@@ -11,6 +11,7 @@ import type {
   BekSnapshot,
   ConnectorInstall,
   CredentialRecord,
+  OutboundDelivery,
   PlaceScope,
   Run,
   RunEvent,
@@ -51,7 +52,10 @@ import {
   requireLocalCredentialVault,
   type LocalCredentialVault,
 } from "./credential-vault";
-import { createSlackOutboundDelivery } from "./slack-outbound";
+import {
+  createSlackOutboundDelivery,
+  type SlackPreparedOutboundMessage,
+} from "./slack-outbound";
 import {
   LocalWorkerController,
   runAdvancementModeFromEnv,
@@ -136,20 +140,27 @@ export function createApp(
     return c.json({ error: message }, status);
   });
 
-  async function createRunAndAdvance(input: CreateStoreRunInput) {
+  function createRunAndQueue(input: CreateStoreRunInput) {
     const run = store.createRun({
       ...input,
       advanceMode: workerController.enabled ? "worker" : "inline_stub",
     });
     if (workerController.enabled && run.status === "queued") {
       workerController.enqueueRun(run);
+    }
+    return latestRun(store, run.id);
+  }
+
+  async function createRunAndAdvance(input: CreateStoreRunInput) {
+    const run = createRunAndQueue(input);
+    if (workerController.enabled && run.status === "queued") {
       await workerController.drain({ maxItems: 10 });
       await workerController.flushChanges();
     }
     return latestRun(store, run.id);
   }
 
-  async function decideApprovalAndAdvance(
+  function decideApprovalAndQueue(
     approvalId: string,
     decision: "approved" | "denied",
     input: ApprovalDecisionBody,
@@ -159,7 +170,19 @@ export function createApp(
       advanceMode: workerController.enabled ? "worker" : "inline_stub",
     });
     if (workerController.enabled) {
-      await workerController.advanceApproval(approval);
+      workerController.queueApprovalDecision(approval);
+    }
+    return latestApproval(store, approval.id);
+  }
+
+  async function decideApprovalAndAdvance(
+    approvalId: string,
+    decision: "approved" | "denied",
+    input: ApprovalDecisionBody,
+  ) {
+    const approval = decideApprovalAndQueue(approvalId, decision, input);
+    if (workerController.enabled && approval.status === "approved") {
+      await workerController.drain({ maxItems: 10 });
       await workerController.flushChanges();
     }
     return latestApproval(store, approval.id);
@@ -167,6 +190,7 @@ export function createApp(
 
   async function flushChangesWithDeliveryRollback(deliveryKey?: string) {
     try {
+      await workerController.flushChanges();
       await store.flushChanges();
     } catch (error) {
       if (deliveryKey) {
@@ -182,6 +206,154 @@ export function createApp(
     } catch {
       // Slack delivery diagnostics are best-effort. Ingress dedupe and run state
       // have already been flushed before outbound posting starts.
+    }
+  }
+
+  function enqueueSlackPreparedMessage(
+    message: SlackPreparedOutboundMessage,
+    input: { approvalId?: string | undefined; now?: string | undefined } = {},
+  ) {
+    return store.enqueueOutboundDelivery({
+      key: slackOutboundDeliveryKey(message, input.approvalId),
+      kind:
+        message.kind === "approval_decision"
+          ? "slack.approval_decision"
+          : "slack.run_outcome",
+      runId: message.runId,
+      approvalId: input.approvalId,
+      target: slackOutboundTargetRecord(message),
+      payload: message.message as unknown as Record<string, unknown>,
+      now: input.now,
+    });
+  }
+
+  function enqueueSlackRunOutcome(
+    runId: string,
+    target: {
+      channelId?: string | undefined;
+      threadTs?: string | undefined;
+      teamId?: string | undefined;
+    },
+  ) {
+    const prepared = slackOutbound.prepareRunOutcome(runId, target);
+    return prepared ? enqueueSlackPreparedMessage(prepared) : undefined;
+  }
+
+  function enqueueSlackApprovalDecision(
+    approvalId: string,
+    target: {
+      channelId?: string | undefined;
+      threadTs?: string | undefined;
+      teamId?: string | undefined;
+    },
+  ) {
+    const nowMs = Date.now();
+    const messages = slackOutbound.prepareApprovalDecision(approvalId, target);
+    return messages.map((message, index) =>
+      enqueueSlackPreparedMessage(message, {
+        approvalId,
+        now: new Date(nowMs - messages.length + index).toISOString(),
+      }),
+    );
+  }
+
+  async function drainSlackOutboundDeliveries(
+    input: { limit?: number | undefined } = {},
+  ) {
+    const due = store.listDueOutboundDeliveries({
+      provider: "slack",
+      limit: input.limit ?? 10,
+    });
+    const results = [];
+    for (const delivery of due) {
+      const prepared = preparedSlackMessageFromOutboundDelivery(delivery);
+      const delivering = store.beginOutboundDelivery(delivery.id);
+      if (!prepared) {
+        results.push(
+          store.failOutboundDelivery({
+            id: delivery.id,
+            error:
+              "Slack outbound delivery is missing persisted run, target, or payload.",
+            retryable: false,
+          }),
+        );
+        continue;
+      }
+
+      const result = await slackOutbound.deliverSavedMessage(prepared);
+      results.push(
+        result.ok
+          ? store.completeOutboundDelivery(delivering.id)
+          : store.failOutboundDelivery({
+              id: delivering.id,
+              error: result.error ?? "Slack outbound delivery failed.",
+              retryable: result.retryable,
+              retryDelayMs: result.retryable === false ? 0 : 5_000,
+            }),
+      );
+    }
+    await flushSlackOutboundChanges();
+    return {
+      attempted: due.length,
+      deliveries: results,
+    };
+  }
+
+  async function drainWorkerAndQueueSlackOutcomes() {
+    if (!workerController.enabled) {
+      return;
+    }
+    const result = await workerController.drain({ maxItems: 10 });
+    enqueueSlackOutcomesForWorkerDrain(result);
+    await workerController.flushChanges();
+    await store.flushChanges();
+  }
+
+  let slackBackgroundWork: Promise<void> | undefined;
+  function scheduleSlackBackgroundWork() {
+    if (process.env.BEK_SLACK_BACKGROUND_DRAIN === "false") {
+      return;
+    }
+    slackBackgroundWork ??= (async () => {
+      try {
+        await drainWorkerAndQueueSlackOutcomes();
+        await drainSlackOutboundDeliveries({ limit: 25 });
+      } catch {
+        // Slack ingress has already been durably acknowledged. Operators can
+        // retry queued work from the worker and outbound drain endpoints.
+      } finally {
+        slackBackgroundWork = undefined;
+      }
+    })();
+  }
+
+  function enqueueSlackOutcomesForWorkerDrain(
+    result: Awaited<ReturnType<LocalWorkerController["drain"]>>,
+  ) {
+    const runIds = new Set<string>();
+    for (const decision of result.decisions) {
+      if (
+        decision.decision === "processed" &&
+        decision.settlement.decision !== "lost_lease"
+      ) {
+        runIds.add(decision.settlement.record.item.runId);
+      }
+    }
+    for (const runId of runIds) {
+      enqueueSlackRunOutcomesForKnownTargets(runId);
+    }
+  }
+
+  function enqueueSlackRunOutcomesForKnownTargets(runId: string) {
+    const snapshot = store.read();
+    const targets = snapshot.outboundDeliveries.filter(
+      (delivery) =>
+        delivery.provider === "slack" &&
+        delivery.kind === "slack.run_outcome" &&
+        delivery.runId === runId,
+    );
+    for (const target of targets) {
+      enqueueSlackRunOutcome(runId, slackTargetFromRecord(target.target));
     }
   }
 
@@ -484,6 +656,20 @@ export function createApp(
       queue: workerController.read(),
     }),
   );
+  app.get("/api/outbound/slack", (c) =>
+    c.json({
+      deliveries: store
+        .read()
+        .outboundDeliveries.filter((delivery) => delivery.provider === "slack"),
+    }),
+  );
+  app.post("/api/outbound/slack/drain", async (c) => {
+    const body = drainOutboundSchema.parse(
+      await c.req.json().catch(() => ({})),
+    );
+    const outbound = await drainSlackOutboundDeliveries(body);
+    return c.json({ outbound });
+  });
   app.post("/api/worker/drain", async (c) => {
     if (!workerController.enabled) {
       return c.json(
@@ -496,12 +682,15 @@ export function createApp(
     }
     const body = drainWorkerSchema.parse(await c.req.json().catch(() => ({})));
     const result = await workerController.drain(body);
+    enqueueSlackOutcomesForWorkerDrain(result);
     await workerController.flushChanges();
     await store.flushChanges();
+    const outbound = await drainSlackOutboundDeliveries({ limit: 25 });
     return c.json({
       mode: workerController.mode,
       enabled: workerController.enabled,
       result,
+      outbound,
       queue: workerController.read(),
     });
   });
@@ -949,7 +1138,7 @@ export function createApp(
       );
     }
 
-    const approval = await decideApprovalAndAdvance(
+    const approval = decideApprovalAndQueue(
       interaction.approvalId,
       interaction.decision,
       {
@@ -969,13 +1158,13 @@ export function createApp(
         },
       });
     }
-    await flushChangesWithDeliveryRollback(interactionKey);
-    await slackOutbound.deliverApprovalDecision(approval.id, {
+    enqueueSlackApprovalDecision(approval.id, {
       channelId: interaction.channelId,
       threadTs: interaction.messageTs,
       teamId: interaction.teamId,
     });
-    await flushSlackOutboundChanges();
+    await flushChangesWithDeliveryRollback(interactionKey);
+    scheduleSlackBackgroundWork();
 
     return c.json({
       ...buildSlackEphemeralResponse({
@@ -1070,7 +1259,7 @@ export function createApp(
       return c.json(response);
     }
 
-    const run = await createRunAndAdvance({
+    const run = createRunAndQueue({
       placeScopeId: place.id,
       prompt: command.text.trim() || `${command.command || "/bek"} help`,
       requesterPrincipalId: slackPrincipalIdForUser(command.userId),
@@ -1088,12 +1277,12 @@ export function createApp(
         response: { ...response },
       });
     }
-    await flushChangesWithDeliveryRollback(commandKey);
-    await slackOutbound.deliverRunOutcome(run.id, {
+    enqueueSlackRunOutcome(run.id, {
       channelId: command.channelId,
       teamId: command.teamId,
     });
-    await flushSlackOutboundChanges();
+    await flushChangesWithDeliveryRollback(commandKey);
+    scheduleSlackBackgroundWork();
 
     return c.json(response);
   });
@@ -1189,7 +1378,7 @@ export function createApp(
         }
         return c.json(response);
       }
-      const run = await createRunAndAdvance({
+      const run = createRunAndQueue({
         placeScopeId: place.id,
         prompt:
           event.text ?? `Reaction ${event.reaction ?? "agent"} triggered Bek`,
@@ -1207,13 +1396,13 @@ export function createApp(
           response: { ...response },
         });
       }
-      await flushChangesWithDeliveryRollback(eventKey);
-      await slackOutbound.deliverRunOutcome(run.id, {
+      enqueueSlackRunOutcome(run.id, {
         channelId: event.channelId,
         threadTs: event.threadTs,
         teamId: event.teamId,
       });
-      await flushSlackOutboundChanges();
+      await flushChangesWithDeliveryRollback(eventKey);
+      scheduleSlackBackgroundWork();
       return c.json(response);
     }
     const response = {
@@ -1265,6 +1454,12 @@ const createRunSchema = z
 const drainWorkerSchema = z
   .object({
     maxItems: z.number().int().min(1).max(100).optional(),
+  })
+  .strict();
+
+const drainOutboundSchema = z
+  .object({
+    limit: z.number().int().min(1).max(100).optional(),
   })
   .strict();
 
@@ -2106,6 +2301,75 @@ function duplicateSlackEventResponse(existingEvent: {
     ...(existingEvent.runId ? { runId: existingEvent.runId } : {}),
     deduped: true,
   };
+}
+
+function slackOutboundDeliveryKey(
+  message: SlackPreparedOutboundMessage,
+  approvalId?: string | undefined,
+): string {
+  const target = slackOutboundTargetRecord(message);
+  return [
+    "slack",
+    "outbound",
+    message.kind,
+    message.runId,
+    approvalId ?? "run",
+    stringValue(target.channelId) ?? "unknown-channel",
+    stringValue(target.threadTs) ?? "root",
+  ].join(":");
+}
+
+function slackOutboundTargetRecord(
+  message: SlackPreparedOutboundMessage,
+): Record<string, unknown> {
+  return {
+    channelId: message.target.channelId,
+    threadTs: message.target.threadTs,
+    teamId: message.target.teamId,
+    messageKind: message.kind,
+  };
+}
+
+function preparedSlackMessageFromOutboundDelivery(
+  delivery: OutboundDelivery,
+): SlackPreparedOutboundMessage | undefined {
+  const kind = slackPreparedMessageKind(delivery.target.messageKind);
+  const target = slackTargetFromRecord(delivery.target);
+  if (!kind || !delivery.runId || !target.channelId) {
+    return undefined;
+  }
+  return {
+    kind,
+    runId: delivery.runId,
+    target,
+    message:
+      delivery.payload as unknown as SlackPreparedOutboundMessage["message"],
+  };
+}
+
+function slackPreparedMessageKind(
+  value: unknown,
+): SlackPreparedOutboundMessage["kind"] | undefined {
+  return value === "queued" ||
+    value === "approval_needed" ||
+    value === "approval_decision" ||
+    value === "final_answer"
+    ? value
+    : undefined;
+}
+
+function slackTargetFromRecord(
+  value: Record<string, unknown>,
+): SlackPreparedOutboundMessage["target"] {
+  return {
+    channelId: stringValue(value.channelId),
+    threadTs: stringValue(value.threadTs),
+    teamId: stringValue(value.teamId),
+  };
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function missingEnv(names: string[]): string[] {

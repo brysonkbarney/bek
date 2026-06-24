@@ -28,6 +28,7 @@ export type RunAdvancementMode = "inline_stub" | "worker_local";
 
 export interface ApprovalAdvanceResult {
   resumeDecision?: ResumeAfterApprovalDecision | undefined;
+  enqueueDecision?: EnqueueRunWorkDecision | undefined;
   drain?: DrainRunWorkResult | undefined;
 }
 
@@ -108,6 +109,18 @@ export class LocalWorkerController {
   async advanceApproval(
     approval: ApprovalRequest,
   ): Promise<ApprovalAdvanceResult> {
+    const queued = this.queueApprovalDecision(approval);
+    if (approval.status !== "approved") {
+      return queued;
+    }
+
+    return {
+      ...queued,
+      drain: await this.drain({ maxItems: 10 }),
+    };
+  }
+
+  queueApprovalDecision(approval: ApprovalRequest): ApprovalAdvanceResult {
     this.assertEnabled();
     const resumeDecision = this.queue.resumeAfterApproval({
       approval,
@@ -119,17 +132,13 @@ export class LocalWorkerController {
       approval.status === "approved"
     ) {
       const run = this.findRun(approval.runId);
-      this.enqueueRun(run, "approval_granted");
+      return {
+        resumeDecision,
+        enqueueDecision: this.enqueueRun(run, "approval_granted"),
+      };
     }
 
-    if (approval.status !== "approved") {
-      return { resumeDecision };
-    }
-
-    return {
-      resumeDecision,
-      drain: await this.drain({ maxItems: 10 }),
-    };
+    return { resumeDecision };
   }
 
   cancelRun(run: Run, reason: string): CancelRunWorkDecision {

@@ -6,6 +6,7 @@ import type {
   ConnectorInstall,
   CredentialRecord,
   IngressDelivery,
+  OutboundDelivery,
   Principal,
   RunEvent,
 } from "@bek/core";
@@ -24,6 +25,7 @@ import {
   ingressDeliveries,
   modelPolicies,
   orgs,
+  outboundDeliveries,
   places,
   principals,
   runEvents,
@@ -41,6 +43,7 @@ import {
   type IngressDeliveryRow,
   type ModelPolicyRow,
   type OrganizationRow,
+  type OutboundDeliveryRow,
   type PlaceRow,
   type PrincipalRow,
   type RunEventRow,
@@ -239,6 +242,26 @@ type IngressDeliverySnapshotRow = Pick<
   | "createdAt"
   | "updatedAt"
 >;
+type OutboundDeliverySnapshotRow = Pick<
+  OutboundDeliveryRow,
+  | "id"
+  | "orgId"
+  | "provider"
+  | "kind"
+  | "key"
+  | "status"
+  | "target"
+  | "payload"
+  | "attempts"
+  | "maxAttempts"
+  | "runId"
+  | "approvalId"
+  | "lastError"
+  | "nextAttemptAt"
+  | "deliveredAt"
+  | "createdAt"
+  | "updatedAt"
+>;
 
 export interface BekSnapshotRows {
   org: OrgSnapshotRow;
@@ -258,6 +281,7 @@ export interface BekSnapshotRows {
   events: RunEventSnapshotRow[];
   approvals: ApprovalSnapshotRow[];
   ingressDeliveries: IngressDeliverySnapshotRow[];
+  outboundDeliveries: OutboundDeliverySnapshotRow[];
 }
 
 export interface BekSnapshotRepository {
@@ -296,6 +320,7 @@ export class DrizzleBekSnapshotRepository implements BekSnapshotRepository {
       eventRows,
       approvalRows,
       ingressDeliveryRows,
+      outboundDeliveryRows,
     ] = await Promise.all([
       this.db
         .select()
@@ -383,6 +408,14 @@ export class DrizzleBekSnapshotRepository implements BekSnapshotRepository {
         .from(ingressDeliveries)
         .where(eq(ingressDeliveries.orgId, orgId))
         .orderBy(desc(ingressDeliveries.createdAt), asc(ingressDeliveries.id)),
+      this.db
+        .select()
+        .from(outboundDeliveries)
+        .where(eq(outboundDeliveries.orgId, orgId))
+        .orderBy(
+          desc(outboundDeliveries.createdAt),
+          asc(outboundDeliveries.id),
+        ),
     ]);
 
     return rowsToSnapshot({
@@ -403,6 +436,7 @@ export class DrizzleBekSnapshotRepository implements BekSnapshotRepository {
       events: eventRows,
       approvals: approvalRows,
       ingressDeliveries: ingressDeliveryRows,
+      outboundDeliveries: outboundDeliveryRows,
     });
   }
 
@@ -579,6 +613,27 @@ export function snapshotToRows(
       createdAt: toDate(delivery.createdAt),
       updatedAt: toDate(delivery.updatedAt),
     })),
+    outboundDeliveries: snapshot.outboundDeliveries.map((delivery) => ({
+      id: delivery.id,
+      orgId: delivery.orgId,
+      provider: delivery.provider,
+      kind: delivery.kind,
+      key: delivery.key,
+      status: delivery.status,
+      target: delivery.target,
+      payload: delivery.payload,
+      attempts: delivery.attempts,
+      maxAttempts: delivery.maxAttempts,
+      runId: delivery.runId ?? null,
+      approvalId: delivery.approvalId ?? null,
+      lastError: delivery.lastError ?? null,
+      nextAttemptAt: delivery.nextAttemptAt
+        ? toDate(delivery.nextAttemptAt)
+        : null,
+      deliveredAt: delivery.deliveredAt ? toDate(delivery.deliveredAt) : null,
+      createdAt: toDate(delivery.createdAt),
+      updatedAt: toDate(delivery.updatedAt),
+    })),
   };
 }
 
@@ -684,6 +739,7 @@ export function rowsToSnapshot(rows: BekSnapshotRows): BekSnapshot {
     events: rows.events.map(eventFromRow),
     approvals: rows.approvals.map(approvalFromRow),
     ingressDeliveries: rows.ingressDeliveries.map(ingressDeliveryFromRow),
+    outboundDeliveries: rows.outboundDeliveries.map(outboundDeliveryFromRow),
   };
 }
 
@@ -699,6 +755,9 @@ function assertWritableSnapshot(snapshot: BekSnapshot) {
 }
 
 async function deleteCurrentSnapshotRows(db: MutationDb, orgId: string) {
+  await db
+    .delete(outboundDeliveries)
+    .where(eq(outboundDeliveries.orgId, orgId));
   await db.delete(ingressDeliveries).where(eq(ingressDeliveries.orgId, orgId));
   await db.delete(approvals).where(eq(approvals.orgId, orgId));
   await db.delete(runEvents).where(eq(runEvents.orgId, orgId));
@@ -787,6 +846,9 @@ async function insertSnapshotRows(db: MutationDb, rows: BekSnapshotRows) {
   }
   if (rows.ingressDeliveries.length > 0) {
     await db.insert(ingressDeliveries).values(rows.ingressDeliveries);
+  }
+  if (rows.outboundDeliveries.length > 0) {
+    await db.insert(outboundDeliveries).values(rows.outboundDeliveries);
   }
 }
 
@@ -965,6 +1027,41 @@ function ingressDeliveryFromRow(
   const response = nonEmptyRecord(row.response);
   if (response) {
     delivery.response = response;
+  }
+  return delivery;
+}
+
+function outboundDeliveryFromRow(
+  row: OutboundDeliverySnapshotRow,
+): OutboundDelivery {
+  const delivery: OutboundDelivery = {
+    id: row.id,
+    orgId: row.orgId,
+    provider: "slack",
+    kind: row.kind as OutboundDelivery["kind"],
+    key: row.key,
+    status: row.status as OutboundDelivery["status"],
+    target: row.target,
+    payload: row.payload,
+    attempts: row.attempts,
+    maxAttempts: row.maxAttempts,
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
+  };
+  if (row.runId) {
+    delivery.runId = row.runId;
+  }
+  if (row.approvalId) {
+    delivery.approvalId = row.approvalId;
+  }
+  if (row.lastError) {
+    delivery.lastError = row.lastError;
+  }
+  if (row.nextAttemptAt) {
+    delivery.nextAttemptAt = toIso(row.nextAttemptAt);
+  }
+  if (row.deliveredAt) {
+    delivery.deliveredAt = toIso(row.deliveredAt);
   }
   return delivery;
 }

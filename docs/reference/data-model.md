@@ -39,6 +39,9 @@ Migration-safe UUID plan:
 - `run_events`: timeline events shown to admins and users.
 - `ingress_deliveries`: idempotency records for Slack events, slash commands,
   and interactivity callbacks, keyed uniquely per org.
+- `outbound_deliveries`: durable Slack Web API message intents with stable
+  rendered payloads, retry attempts, next-attempt timestamps, and terminal
+  delivered/failed state.
 - `connector_installs`: Slack, GitHub, model provider, MCP, sandbox, and custom connector installs.
 - `credential_metadata`: secret broker references, encrypted local vault
   envelopes, and rotation metadata only; raw plaintext secrets do not belong in
