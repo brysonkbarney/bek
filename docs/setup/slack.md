@@ -154,13 +154,15 @@ BEK_DEV_UNSIGNED_SLACK=true pnpm dev:api
 
 Do not use unsigned mode in shared environments.
 
-For local approval-button testing, map Slack user IDs to seeded Bek principal IDs:
+For local Slack testing, map Slack user IDs to seeded Bek principal IDs:
 
 ```bash
-export BEK_SLACK_USER_PRINCIPAL_MAP='{"U_APPROVER":"principal_admin"}'
+export BEK_SLACK_USER_PRINCIPAL_MAP='{"U123":"principal_bryson","U_APPROVER":"principal_admin"}'
 ```
 
-Without a mapping, Bek parses the approval action but fails clearly instead of deciding the approval as the wrong actor.
+Without a mapping, Bek parses Slack mentions, slash commands, reactions, and
+approval actions but ignores or rejects the request clearly instead of creating
+or approving work as the wrong actor.
 
 ## Channel Mapping
 

@@ -1287,10 +1287,28 @@ export function createApp(
       return c.json(response);
     }
 
+    const requesterPrincipalId = slackPrincipalIdForUser(command.userId);
+    if (!requesterPrincipalId) {
+      const response = buildSlackCommandIgnoredResponse({
+        reason: slackUserMappingReason(command.userId),
+        text: slackUserMappingText(command.userId),
+      });
+      if (commandKey) {
+        store.recordIngressDelivery({
+          key: commandKey,
+          kind: "slack.command",
+          status: "ignored",
+          response: { ...response },
+        });
+        await flushChangesWithDeliveryRollback(commandKey);
+      }
+      return c.json(response);
+    }
+
     const run = createRunAndQueue({
       placeScopeId: place.id,
       prompt: command.text.trim() || `${command.command || "/bek"} help`,
-      requesterPrincipalId: slackPrincipalIdForUser(command.userId),
+      requesterPrincipalId,
       trigger: "slash_command",
       capability: "slack.read",
       resource: `slack:${place.externalId}`,
@@ -1406,10 +1424,30 @@ export function createApp(
         }
         return c.json(response);
       }
+      const requesterPrincipalId = slackPrincipalIdForUser(event.userId);
+      if (!requesterPrincipalId) {
+        const response = {
+          ok: false,
+          ignored: true,
+          reason: slackUserMappingReason(event.userId),
+        };
+        if (eventKey) {
+          store.recordIngressDelivery({
+            key: eventKey,
+            kind: "slack.event",
+            status: "ignored",
+            response: { ...response },
+          });
+          await flushChangesWithDeliveryRollback(eventKey);
+        }
+        markSlackNoRetry(c);
+        return c.json(withSlackRetryMetadata(response, retry));
+      }
       const run = createRunAndQueue({
         placeScopeId: place.id,
         prompt:
           event.text ?? `Reaction ${event.reaction ?? "agent"} triggered Bek`,
+        requesterPrincipalId,
         trigger: event.type,
         capability: "slack.read",
         resource: `slack:${place.externalId}`,
@@ -2495,6 +2533,20 @@ function slackPrincipalIdForUser(slackUserId?: string | undefined) {
   return typeof principalId === "string" && principalId.length > 0
     ? principalId
     : undefined;
+}
+
+function slackUserMappingReason(slackUserId?: string | undefined): string {
+  if (!slackUserId) {
+    return "Slack payload is missing user identity.";
+  }
+  return `Slack user ${slackUserId} is not mapped to a Bek principal.`;
+}
+
+function slackUserMappingText(slackUserId?: string | undefined): string {
+  if (!slackUserId) {
+    return "Bek could not identify the Slack user for this request.";
+  }
+  return "Bek can see this Slack request, but this Slack user is not mapped to a Bek principal yet.";
 }
 
 function errorMessage(error: unknown): string {

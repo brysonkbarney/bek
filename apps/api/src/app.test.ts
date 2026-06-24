@@ -119,6 +119,15 @@ function configureFakeSlackOAuth() {
   process.env.SLACK_STATE_SECRET = "fake-state-secret";
 }
 
+function mapSlackTestUser(
+  slackUserId = "U123",
+  principalId = "principal_bryson",
+) {
+  process.env.BEK_SLACK_USER_PRINCIPAL_MAP = JSON.stringify({
+    [slackUserId]: principalId,
+  });
+}
+
 function clearGitHubEnv() {
   delete process.env.GITHUB_APP_CLIENT_ID;
   delete process.env.GITHUB_APP_CLIENT_SECRET;
@@ -182,6 +191,7 @@ describe("Bek API", () => {
 
   it("keeps Slack callbacks public when admin auth is configured", async () => {
     process.env.BEK_ADMIN_API_TOKEN = "test-admin-token";
+    mapSlackTestUser();
     const rawBody = JSON.stringify({
       event_id: "EvAdminAuthBypass",
       event: {
@@ -1955,6 +1965,36 @@ describe("Bek API", () => {
     });
   });
 
+  it("ignores configured Slack events from unmapped users without creating runs", async () => {
+    const store = new BekStore();
+    const app = createApp(store);
+    const initialRunCount = store.read().runs.length;
+    const rawBody = JSON.stringify({
+      event_id: "EvUnmappedUser",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U_UNMAPPED",
+        text: "@bek hello",
+      },
+    });
+
+    const res = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-slack-no-retry")).toBe("1");
+    await expect(res.json()).resolves.toMatchObject({
+      ok: false,
+      ignored: true,
+      reason: "Slack user U_UNMAPPED is not mapped to a Bek principal.",
+    });
+    expect(store.read().runs).toHaveLength(initialRunCount);
+  });
+
   it("rejects Slack callbacks whose team does not match the channel scope", async () => {
     const store = new BekStore();
     const app = createApp(store);
@@ -2491,6 +2531,7 @@ describe("Bek API", () => {
   });
 
   it("dedupes Slack event IDs across API app instances sharing persisted state", async () => {
+    mapSlackTestUser();
     const store = new BekStore();
     const payload = {
       event_id: "EvRestart",
@@ -2521,6 +2562,7 @@ describe("Bek API", () => {
   });
 
   it("posts final Slack replies for app mentions without reposting retries", async () => {
+    mapSlackTestUser();
     const slackClient = new FakeSlackWebApiClient();
     const app = createApp(new BekStore(), { slackClient });
     const payload = {
@@ -2565,6 +2607,7 @@ describe("Bek API", () => {
 
   it("acknowledges Slack events before outbound Slack delivery", async () => {
     process.env.BEK_SLACK_BACKGROUND_DRAIN = "false";
+    mapSlackTestUser();
     const slackClient = new BlockingSlackWebApiClient();
     const app = createApp(new BekStore(), { slackClient });
     const payload = {
@@ -2609,6 +2652,7 @@ describe("Bek API", () => {
 
   it("posts worker completion output for Slack-created runs", async () => {
     process.env.BEK_SLACK_BACKGROUND_DRAIN = "false";
+    mapSlackTestUser();
     const slackClient = new FakeSlackWebApiClient();
     const app = createApp(new BekStore(), {
       runAdvancement: "worker_local",
@@ -2655,6 +2699,7 @@ describe("Bek API", () => {
     configureFakeSlackOAuth();
     process.env.BEK_SLACK_OAUTH_EXCHANGE = "true";
     process.env.BEK_CREDENTIAL_MASTER_KEY = testCredentialMasterKey;
+    mapSlackTestUser();
     const storedToken = "xoxb-stored-bot-token-123456";
     let usedStoredToken = false;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
@@ -2741,6 +2786,7 @@ describe("Bek API", () => {
 
   it("posts approval-needed Slack buttons for paused worker runs", async () => {
     process.env.BEK_SLACK_BACKGROUND_DRAIN = "false";
+    mapSlackTestUser();
     const slackClient = new FakeSlackWebApiClient();
     const app = createApp(new BekStore(), {
       runAdvancement: "worker_local",
@@ -2794,6 +2840,7 @@ describe("Bek API", () => {
   });
 
   it("records Slack outbound failures without failing accepted events", async () => {
+    mapSlackTestUser();
     const slackClient = new FakeSlackWebApiClient({ failWith: "ratelimited" });
     const app = createApp(new BekStore(), { slackClient });
     const payload = {
@@ -2836,6 +2883,7 @@ describe("Bek API", () => {
   });
 
   it("does not dedupe Slack event retries before persistence succeeds", async () => {
+    mapSlackTestUser();
     let flushes = 0;
     const store = new BekStore(undefined, {
       onSnapshotChanged: async () => {
@@ -3019,6 +3067,7 @@ describe("Bek API", () => {
   });
 
   it("validates slash commands and dedupes Slack command retries", async () => {
+    mapSlackTestUser();
     const app = createApp();
 
     const missingChannelBody = slackForm({
@@ -3105,7 +3154,39 @@ describe("Bek API", () => {
     });
   });
 
+  it("ignores configured Slack slash commands from unmapped users without creating runs", async () => {
+    const store = new BekStore();
+    const app = createApp(store);
+    const initialRunCount = store.read().runs.length;
+    const rawBody = slackForm({
+      command: "/bek",
+      channel_id: "C_CHECKOUT",
+      user_id: "U_UNMAPPED",
+      text: "summarize the rollout",
+      team_id: "T123",
+    });
+
+    const res = await app.request("/api/slack/commands", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(
+        rawBody,
+        Math.floor(Date.now() / 1000).toString(),
+        "application/x-www-form-urlencoded",
+      ),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: false,
+      ignored: true,
+      reason: "Slack user U_UNMAPPED is not mapped to a Bek principal.",
+    });
+    expect(store.read().runs).toHaveLength(initialRunCount);
+  });
+
   it("dedupes Slack slash commands across API app instances", async () => {
+    mapSlackTestUser();
     const store = new BekStore();
     const retryBody = slackForm({
       command: "/bek",
@@ -3145,6 +3226,7 @@ describe("Bek API", () => {
   });
 
   it("creates a local run for configured Slack slash commands", async () => {
+    mapSlackTestUser();
     const slackClient = new FakeSlackWebApiClient();
     const app = createApp(new BekStore(), { slackClient });
     const rawBody = slackForm({
