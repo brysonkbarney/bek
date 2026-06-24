@@ -504,6 +504,10 @@ select {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.connector-detail-grid {
+  margin: 12px 0 0;
+}
+
 .summary-field {
   display: grid;
   align-content: start;
@@ -799,6 +803,12 @@ select {
 
 .connector-card p {
   margin: 4px 0 0;
+}
+
+.connector-actions {
+  justify-content: flex-start;
+  min-height: 0;
+  padding-top: 14px;
 }
 
 .empty-state {

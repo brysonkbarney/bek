@@ -66,7 +66,11 @@ pnpm dev
 Open:
 
 - Admin console: `http://localhost:5173`
+- Setup status: `http://localhost:5173/setup`
 - API health: `http://localhost:4317/health`
+
+Use the setup and connector cards as the main readiness view once you move
+beyond the zero-config seeded demo.
 
 You can also run one side at a time:
 
@@ -220,7 +224,9 @@ operator reference value, but the current API uses explicit Slack callback
 settings such as `SLACK_REDIRECT_URI`. OAuth exchange stores the Slack bot
 token in the local encrypted vault and enables thread replies, approval
 buttons, approval decisions, and final answers through `chat:write`. You can
-also set `SLACK_BOT_TOKEN=xoxb-...` as a manual fallback.
+start OAuth from the Slack card on `/connectors`, then refresh `/setup` or
+`/connectors` to confirm the workspace is active and the token is stored. You
+can also set `SLACK_BOT_TOKEN=xoxb-...` as a manual fallback.
 
 Unsigned Slack payloads are only for local experiments:
 

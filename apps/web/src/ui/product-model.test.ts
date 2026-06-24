@@ -81,6 +81,25 @@ describe("admin product helpers", () => {
     });
   });
 
+  it("marks missing Slack installs as incomplete setup work", () => {
+    const slackInstall = setupChecklistFromStatus({
+      ...readySetup,
+      slackInstalled: false,
+      slackInstallStatus: null,
+      slackWorkspaceName: null,
+      slackWorkspaceId: null,
+      slackBotUserId: null,
+      slackTokenStored: false,
+    }).find((step) => step.id === "slack-install");
+
+    expect(slackInstall).toMatchObject({
+      complete: false,
+      route: "/connectors",
+      detail:
+        "Install Bek and store a Slack bot token before real workspace use.",
+    });
+  });
+
   it("keeps unconfigured connector cards actionable", () => {
     const connectors = connectorSummaries(emptyBootstrap);
 
@@ -184,6 +203,33 @@ describe("admin product helpers", () => {
       detail: "Redo workspace install is revoked.",
       route: "/connectors",
       actionLabel: "Review install",
+    });
+  });
+
+  it("shows active Slack installs without stored bot tokens as needs-token cards", () => {
+    const connectors = connectorSummaries({
+      ...emptyBootstrap,
+      connectorInstalls: [
+        {
+          id: "connector_slack_T123",
+          kind: "slack",
+          provider: "slack",
+          externalId: "T123",
+          displayName: "Redo",
+          status: "active",
+          createdAt: "2026-01-02T03:04:05.000Z",
+          updatedAt: "2026-01-02T03:04:05.000Z",
+        },
+      ],
+    });
+
+    expect(
+      connectors.find((connector) => connector.id === "slack"),
+    ).toMatchObject({
+      status: "needs token",
+      route: "/connectors",
+      actionLabel: "Review install",
+      detail: expect.stringContaining("no Slack bot token is stored"),
     });
   });
 });

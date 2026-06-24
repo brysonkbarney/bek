@@ -1466,10 +1466,57 @@ describe("Bek API", () => {
     const denied = await createApp().request("/api/slack/install");
     expect(denied.status).toBe(401);
 
+    const deniedInstallUrl = await createApp().request(
+      "/api/slack/install-url?return_to=/connectors",
+    );
+    expect(deniedInstallUrl.status).toBe(401);
+
     const allowed = await createApp().request("/api/slack/install", {
       headers: { authorization: "Bearer test-admin-token" },
     });
     expect(allowed.status).toBe(302);
+  });
+
+  it("returns a protected Slack install URL for the admin console", async () => {
+    process.env.BEK_ADMIN_API_TOKEN = "test-admin-token";
+    configureFakeSlackOAuth();
+
+    const res = await createApp().request(
+      "/api/slack/install-url?return_to=%2Fconnectors",
+      {
+        headers: { authorization: "Bearer test-admin-token" },
+      },
+    );
+    const json = (await res.json()) as {
+      url: string;
+      scopes: string[];
+      redirectUri: string;
+      exchangeEnabled: boolean;
+      tokenStorageConfigured: boolean;
+    };
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(json.scopes).toEqual(
+      expect.arrayContaining(["app_mentions:read", "commands", "chat:write"]),
+    );
+    expect(json.redirectUri).toBe(process.env.SLACK_REDIRECT_URI);
+    expect(json.exchangeEnabled).toBe(false);
+    expect(json.tokenStorageConfigured).toBe(false);
+
+    const url = new URL(json.url);
+    expect(url.origin).toBe("https://slack.com");
+    const state = verifySlackOAuthState({
+      stateSecret: process.env.SLACK_STATE_SECRET,
+      state: url.searchParams.get("state") ?? undefined,
+    });
+    expect(state).toMatchObject({
+      ok: true,
+      payload: {
+        returnTo: "/connectors",
+        callbackMode: "redirect",
+      },
+    });
   });
 
   it("redirects Slack install with signed OAuth state", async () => {
@@ -1499,6 +1546,7 @@ describe("Bek API", () => {
     expect(state.ok).toBe(true);
     if (state.ok) {
       expect(state.payload.returnTo).toBe("/settings/slack");
+      expect(state.payload.callbackMode).toBeUndefined();
     }
   });
 
@@ -1638,11 +1686,80 @@ describe("Bek API", () => {
     expect(bootstrapText).not.toContain("xoxb-super-secret-token");
     expect(bootstrapText).not.toContain('"vaultEnvelope":');
     expect(bootstrapText).toContain("vaultEnvelopeStored");
+
+    await expect(
+      (await app.request("/api/setup/status")).json(),
+    ).resolves.toMatchObject({
+      slackInstalled: true,
+      slackInstallStatus: "active",
+      slackWorkspaceName: "Redo",
+      slackWorkspaceId: "T123",
+      slackBotUserId: "U_BEK",
+      slackTokenStored: true,
+    });
+
+    const connectorSummaryText = JSON.stringify(
+      await (await app.request("/api/connectors/slack")).json(),
+    );
+    expect(connectorSummaryText).toContain('"tokenPresent":true');
+    expect(connectorSummaryText).toContain('"credentialStatus":"active"');
+    expect(connectorSummaryText).toContain('"scopeSummary"');
+    expect(connectorSummaryText).not.toContain("xoxb-super-secret-token");
+    expect(connectorSummaryText).not.toContain("vaultEnvelope");
     expect(fetch).toHaveBeenCalledWith(
       "https://slack.com/api/oauth.v2.access",
       expect.objectContaining({
         method: "POST",
       }),
+    );
+  });
+
+  it("redirects web-started Slack OAuth callbacks back to the admin console", async () => {
+    configureFakeSlackOAuth();
+    process.env.BEK_SLACK_OAUTH_EXCHANGE = "true";
+    process.env.BEK_CREDENTIAL_MASTER_KEY = testCredentialMasterKey;
+    process.env.BEK_ADMIN_ORIGINS = "http://localhost:5173";
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        ok: true,
+        app_id: "A123",
+        access_token: "xoxb-web-started-token",
+        scope: "app_mentions:read,commands,chat:write",
+        bot_user_id: "U_BEK",
+        team: { id: "T123", name: "Redo" },
+        authed_user: { id: "U_ADMIN" },
+      }),
+    );
+    const state = createSlackOAuthState({
+      stateSecret: process.env.SLACK_STATE_SECRET!,
+      nonce: "web-started",
+      nowSeconds: Math.floor(Date.now() / 1000),
+      returnTo: "/connectors",
+      callbackMode: "redirect",
+    });
+    const store = new BekStore();
+
+    const res = await createApp(store).request(
+      `/api/slack/oauth/callback?code=fake-code&state=${encodeURIComponent(
+        state,
+      )}`,
+    );
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe(
+      "http://localhost:5173/connectors?slack_install=installed&slack_workspace=T123",
+    );
+    expect(JSON.stringify(store.read())).not.toContain(
+      "xoxb-web-started-token",
+    );
+    expect(store.read().connectorInstalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "slack",
+          externalId: "T123",
+          status: "active",
+        }),
+      ]),
     );
   });
 
@@ -1668,6 +1785,43 @@ describe("Bek API", () => {
       error: expect.stringContaining("BEK_CREDENTIAL_MASTER_KEY"),
     });
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps revoked Slack installs token-not-ready in setup status", async () => {
+    const store = new BekStore();
+    const install = store.upsertConnectorInstall({
+      id: "connector_slack_T123",
+      kind: "slack",
+      provider: "slack",
+      externalId: "T123",
+      displayName: "Redo",
+      status: "revoked",
+      metadata: {
+        teamId: "T123",
+        botUserId: "U_BEK",
+      },
+    });
+    store.upsertCredential({
+      id: "credential_slack_bot_T123",
+      connectorInstallId: install.id,
+      name: "Redo Slack bot token",
+      provider: "slack",
+      externalAccountId: "T123",
+      secretRef: "bek-local-vault:slack:org_demo:T123:bot",
+      status: "active",
+      scopeSummary: "chat:write",
+    });
+
+    const status = await createApp(store).request("/api/setup/status");
+
+    await expect(status.json()).resolves.toMatchObject({
+      slackInstalled: true,
+      slackInstallStatus: "revoked",
+      slackWorkspaceName: "Redo",
+      slackWorkspaceId: "T123",
+      slackBotUserId: "U_BEK",
+      slackTokenStored: false,
+    });
   });
 
   it("rejects invalid Slack OAuth callback state", async () => {

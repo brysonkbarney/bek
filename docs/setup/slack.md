@@ -84,13 +84,24 @@ revocation workflows, or persistent Slack user/principal mapping.
    export BEK_SLACK_OAUTH_EXCHANGE=true
    ```
 
-   Then open:
+   Then open the admin console at `/connectors` or `/setup` and use the Slack
+   install action. The web action calls `/api/slack/install-url` with admin
+   auth, then sends the operator to Slack.
+
+   Raw endpoint fallback:
 
    ```txt
    https://YOUR-TUNNEL.example.com/api/slack/install
    ```
 
-   If admin API auth is enabled, call the install endpoint with the admin bearer token from a trusted admin surface.
+   If admin API auth is enabled, direct browser navigation to the raw endpoint
+   may fail because the bearer token is not attached. Use the trusted admin
+   console, or call the endpoint with the admin bearer token from an operator
+   tool.
+
+   After Slack returns, `/setup` and `/connectors` should show
+   `slackInstalled=true`, `slackInstallStatus=active`, the workspace name or
+   ID, the bot user ID, and `slackTokenStored=true`.
 
 9. Enable outbound posting.
 

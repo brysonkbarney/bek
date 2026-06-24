@@ -7,6 +7,7 @@ export interface SlackOAuthStatePayload {
   nonce: string;
   issuedAt: number;
   returnTo?: string;
+  callbackMode?: "json" | "redirect";
 }
 
 export type SlackOAuthStateVerification =
@@ -50,6 +51,7 @@ export function createSlackOAuthState(input: {
   nowSeconds?: number | undefined;
   nonce?: string | undefined;
   returnTo?: string | undefined;
+  callbackMode?: "json" | "redirect" | undefined;
 }): string {
   if (!input.stateSecret) {
     throw new Error("SLACK_STATE_SECRET is required to create OAuth state.");
@@ -62,6 +64,9 @@ export function createSlackOAuthState(input: {
   const returnTo = normalizeOAuthReturnTo(input.returnTo);
   if (returnTo) {
     payload.returnTo = returnTo;
+  }
+  if (input.callbackMode === "redirect") {
+    payload.callbackMode = "redirect";
   }
 
   const encodedPayload = Buffer.from(JSON.stringify(payload)).toString(
@@ -123,6 +128,13 @@ export function verifySlackOAuthState(input: {
     payload.nonce.length === 0 ||
     typeof payload.issuedAt !== "number" ||
     !Number.isFinite(payload.issuedAt)
+  ) {
+    return { ok: false, reason: "Slack OAuth state payload is invalid." };
+  }
+  if (
+    payload.callbackMode !== undefined &&
+    payload.callbackMode !== "json" &&
+    payload.callbackMode !== "redirect"
   ) {
     return { ok: false, reason: "Slack OAuth state payload is invalid." };
   }

@@ -35,12 +35,15 @@ the current OSS spine.
 - [ ] Configure Events API at `/api/slack/events`.
 - [ ] Configure slash command callbacks at `/api/slack/commands`.
 - [ ] Configure interactivity callbacks at `/api/slack/interactivity`.
-- [ ] Set OAuth variables before testing `/api/slack/install`.
+- [ ] Set OAuth variables before using the web Slack install action or the raw
+      `/api/slack/install` fallback endpoint.
 - [ ] Set `BEK_CREDENTIAL_MASTER_KEY` before OAuth exchange so Bek can store
       the returned bot token in the local encrypted vault. Keep this key stable
       across API restarts and database restores.
 - [ ] Set `BEK_SLACK_OAUTH_EXCHANGE=true` outside production when testing real
       OAuth code exchange.
+- [ ] Confirm `/setup` or `/connectors` reports an active Slack install plus a
+      stored bot token before inviting Bek into pilot channels.
 - [ ] Use `SLACK_BOT_TOKEN` with `chat:write` only as a manual fallback when no
       stored OAuth token is available.
 - [ ] Verify an `@bek` mention posts a reply in the originating thread.

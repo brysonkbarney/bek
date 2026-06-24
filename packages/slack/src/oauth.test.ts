@@ -13,6 +13,7 @@ describe("Slack OAuth state", () => {
       nonce: "nonce-1",
       nowSeconds: 1000,
       returnTo: "/settings/slack",
+      callbackMode: "redirect",
     });
 
     expect(
@@ -27,6 +28,7 @@ describe("Slack OAuth state", () => {
         nonce: "nonce-1",
         issuedAt: 1000,
         returnTo: "/settings/slack",
+        callbackMode: "redirect",
       },
     });
   });

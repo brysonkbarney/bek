@@ -54,6 +54,15 @@ export interface SetupStatus {
   readyForLocalDemo: boolean;
 }
 
+export interface SlackInstallStart {
+  ok: true;
+  url: string;
+  scopes: string[];
+  redirectUri: string;
+  exchangeEnabled: boolean;
+  tokenStorageConfigured: boolean;
+}
+
 export interface Run {
   id: string;
   placeScopeId: string;
@@ -201,6 +210,17 @@ export async function fetchSetupStatus(): Promise<SetupStatus> {
   return jsonRequest<SetupStatus>("/api/setup/status");
 }
 
+export function slackInstallStartPath(returnTo = "/connectors"): string {
+  const params = new URLSearchParams({ return_to: returnTo });
+  return `/api/slack/install-url?${params.toString()}`;
+}
+
+export async function fetchSlackInstallStart(
+  returnTo = "/connectors",
+): Promise<SlackInstallStart> {
+  return jsonRequest<SlackInstallStart>(slackInstallStartPath(returnTo));
+}
+
 export async function updateAgent(input: {
   name?: string;
   description?: string;
@@ -217,6 +237,7 @@ export async function updateAgent(input: {
 
 export async function createChannel(input: {
   externalId: string;
+  externalTeamId?: string;
   name: string;
   sensitivity: string;
 }): Promise<PlaceScope> {
@@ -231,6 +252,7 @@ export async function updateChannel(input: {
   channelId: string;
   name?: string;
   externalId?: string;
+  externalTeamId?: string;
   sensitivity?: string;
 }): Promise<PlaceScope> {
   const { channelId, ...body } = input;

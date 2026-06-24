@@ -534,17 +534,39 @@ export function createApp(
       return c.json(slackConfigError("Slack install", missing), 500);
     }
 
-    const state = createSlackOAuthState({
-      stateSecret: process.env.SLACK_STATE_SECRET!,
+    const install = slackInstallAuthorization({
       returnTo: c.req.query("return_to") ?? c.req.query("returnTo"),
     });
-    const url = new URL("https://slack.com/oauth/v2/authorize");
-    url.searchParams.set("client_id", process.env.SLACK_CLIENT_ID!);
-    url.searchParams.set("scope", slackBotScopes().join(","));
-    url.searchParams.set("redirect_uri", process.env.SLACK_REDIRECT_URI!);
-    url.searchParams.set("state", state);
 
-    return c.redirect(url.toString(), 302);
+    return c.redirect(install.url, 302);
+  });
+
+  app.get("/api/slack/install-url", (c) => {
+    const missing = missingEnv([
+      "SLACK_CLIENT_ID",
+      "SLACK_REDIRECT_URI",
+      "SLACK_STATE_SECRET",
+    ]);
+    if (missing.length > 0) {
+      return c.json(slackConfigError("Slack install", missing), 500);
+    }
+
+    const install = slackInstallAuthorization({
+      returnTo: c.req.query("return_to") ?? c.req.query("returnTo"),
+      callbackMode: "redirect",
+    });
+
+    c.header("cache-control", "no-store");
+    return c.json({
+      ok: true,
+      url: install.url,
+      scopes: install.scopes,
+      redirectUri: process.env.SLACK_REDIRECT_URI!,
+      exchangeEnabled: shouldExchangeSlackOAuth(),
+      tokenStorageConfigured: Boolean(
+        process.env.BEK_CREDENTIAL_MASTER_KEY?.trim(),
+      ),
+    });
   });
 
   app.get("/api/slack/oauth/callback", async (c) => {
@@ -580,10 +602,27 @@ export function createApp(
       "SLACK_REDIRECT_URI",
     ]);
     if (missing.length > 0) {
+      if (state.payload.callbackMode === "redirect") {
+        return c.redirect(
+          adminReturnUrl(state.payload.returnTo, {
+            slack_install: "error",
+            slack_error: `missing_${missing.join("_")}`,
+          }),
+          302,
+        );
+      }
       return c.json(slackConfigError("Slack OAuth callback", missing), 500);
     }
 
     if (!shouldExchangeSlackOAuth()) {
+      if (state.payload.callbackMode === "redirect") {
+        return c.redirect(
+          adminReturnUrl(state.payload.returnTo, {
+            slack_install: "validated",
+          }),
+          302,
+        );
+      }
       return c.json(
         {
           ok: true,
@@ -601,6 +640,15 @@ export function createApp(
     try {
       credentialVault = requireLocalCredentialVault();
     } catch (error) {
+      if (state.payload.callbackMode === "redirect") {
+        return c.redirect(
+          adminReturnUrl(state.payload.returnTo, {
+            slack_install: "error",
+            slack_error: "token_storage_not_configured",
+          }),
+          302,
+        );
+      }
       return c.json(
         {
           ok: false,
@@ -620,6 +668,15 @@ export function createApp(
       redirectUri: process.env.SLACK_REDIRECT_URI!,
     });
     if (!exchange.ok) {
+      if (state.payload.callbackMode === "redirect") {
+        return c.redirect(
+          adminReturnUrl(state.payload.returnTo, {
+            slack_install: "error",
+            slack_error: "oauth_exchange_failed",
+          }),
+          302,
+        );
+      }
       return c.json(
         {
           ok: false,
@@ -634,6 +691,16 @@ export function createApp(
       credentialVault,
     });
     await store.flushChanges();
+
+    if (state.payload.callbackMode === "redirect") {
+      return c.redirect(
+        adminReturnUrl(state.payload.returnTo, {
+          slack_install: "installed",
+          slack_workspace: exchange.install.teamId,
+        }),
+        302,
+      );
+    }
 
     return c.json({
       ok: true,
@@ -1426,6 +1493,39 @@ function slackBotScopes(): string[] {
     .split(",")
     .map((scope) => scope.trim())
     .filter(Boolean);
+}
+
+function slackInstallAuthorization(input: {
+  returnTo?: string | undefined;
+  callbackMode?: "json" | "redirect" | undefined;
+}): {
+  url: string;
+  scopes: string[];
+} {
+  const scopes = slackBotScopes();
+  const state = createSlackOAuthState({
+    stateSecret: process.env.SLACK_STATE_SECRET!,
+    returnTo: input.returnTo,
+    callbackMode: input.callbackMode,
+  });
+  const url = new URL("https://slack.com/oauth/v2/authorize");
+  url.searchParams.set("client_id", process.env.SLACK_CLIENT_ID!);
+  url.searchParams.set("scope", scopes.join(","));
+  url.searchParams.set("redirect_uri", process.env.SLACK_REDIRECT_URI!);
+  url.searchParams.set("state", state);
+  return { url: url.toString(), scopes };
+}
+
+function adminReturnUrl(
+  returnTo: string | undefined,
+  params: Record<string, string>,
+): string {
+  const origin = adminOrigins()[0] ?? "http://localhost:5173";
+  const url = new URL(returnTo ?? "/connectors", origin);
+  for (const [key, value] of Object.entries(params)) {
+    url.searchParams.set(key, value);
+  }
+  return url.toString();
 }
 
 function shouldExchangeSlackOAuth(): boolean {

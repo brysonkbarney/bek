@@ -70,7 +70,9 @@ export function StatusBadge({ value }: { value: string }) {
   const tone =
     normalized.includes("failed") ||
     normalized.includes("denied") ||
-    normalized.includes("disabled")
+    normalized.includes("disabled") ||
+    normalized.includes("revoked") ||
+    normalized.includes("error")
       ? "danger"
       : normalized.startsWith("not ") ||
           normalized.includes("not connected") ||

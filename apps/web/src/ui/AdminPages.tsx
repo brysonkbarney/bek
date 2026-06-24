@@ -24,6 +24,7 @@ import {
   decideApproval,
   fetchBootstrap,
   fetchRunDetail,
+  fetchSlackInstallStart,
   fetchSetupStatus,
   updateModelPolicy,
   updateChannel,
@@ -80,6 +81,20 @@ function ConnectorIcon({ id }: { id: string }) {
   return <Icon size={20} aria-hidden="true" />;
 }
 
+function activeSlackWorkspaceId(data: Bootstrap): string | undefined {
+  return data.connectorInstalls.find(
+    (install) =>
+      install.kind === "slack" &&
+      install.provider === "slack" &&
+      install.status === "active",
+  )?.externalId;
+}
+
+function slackTeamIdForPlace(place: Bootstrap["places"][number]) {
+  const teamId = place.metadata?.teamId ?? place.metadata?.slackTeamId;
+  return typeof teamId === "string" ? teamId : undefined;
+}
+
 export function SetupPage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ["bootstrap"],
@@ -126,7 +141,7 @@ export function SetupPage() {
           value={`${progress.complete}/${progress.total}`}
           detail={
             setupStatus.readyForLocalDemo
-              ? "Ready for local demo"
+              ? "Seeded demo ready"
               : "Finish required steps"
           }
         />
@@ -161,8 +176,20 @@ export function SetupPage() {
                   </strong>
                   <span>{step.detail}</span>
                 </div>
-                <Link to={step.route} className="inline-link">
-                  Open
+                <Link
+                  to={step.route}
+                  className="inline-link"
+                  aria-label={`Open ${step.label}`}
+                >
+                  {step.route === "/connectors"
+                    ? "Open Connectors"
+                    : step.route === "/channels"
+                      ? "Open Channels"
+                      : step.route === "/access-bundles"
+                        ? "Open Access"
+                        : step.route === "/models"
+                          ? "Open Models"
+                          : "Open Settings"}
                   <ExternalLink size={13} aria-hidden="true" />
                 </Link>
               </li>
@@ -195,12 +222,14 @@ export function ChannelsPage() {
   });
   const [channelName, setChannelName] = useState("");
   const [externalId, setExternalId] = useState("");
+  const [externalTeamId, setExternalTeamId] = useState("");
   const [sensitivity, setSensitivity] = useState("internal");
   const createChannelMutation = useMutation({
     mutationFn: createChannel,
     onSuccess: () => {
       setChannelName("");
       setExternalId("");
+      setExternalTeamId("");
       setSensitivity("internal");
       return queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
     },
@@ -212,6 +241,8 @@ export function ChannelsPage() {
 
   const trimmedChannelName = channelName.trim();
   const trimmedExternalId = externalId.trim();
+  const installedSlackTeamId = activeSlackWorkspaceId(data);
+  const trimmedExternalTeamId = externalTeamId.trim() || installedSlackTeamId;
   const canCreate =
     trimmedChannelName.length > 0 &&
     trimmedExternalId.length > 0 &&
@@ -243,6 +274,9 @@ export function ChannelsPage() {
             createChannelMutation.mutate({
               name: trimmedChannelName,
               externalId: trimmedExternalId,
+              ...(trimmedExternalTeamId
+                ? { externalTeamId: trimmedExternalTeamId }
+                : {}),
               sensitivity,
             });
           }}
@@ -264,6 +298,17 @@ export function ChannelsPage() {
               placeholder="C0123456789"
               onChange={(event) => setExternalId(event.target.value)}
             />
+          </label>
+          <label>
+            Slack workspace ID
+            <input
+              value={externalTeamId}
+              placeholder={installedSlackTeamId ?? "T0123456789"}
+              onChange={(event) => setExternalTeamId(event.target.value)}
+            />
+            <span className="field-hint">
+              Bek uses this with the channel ID when routing Slack callbacks.
+            </span>
           </label>
           <label>
             Sensitivity
@@ -739,6 +784,7 @@ export function ChannelDetailPage() {
   const place = data ? findPlace(data, channelId) : undefined;
   const [name, setName] = useState("");
   const [externalId, setExternalId] = useState("");
+  const [externalTeamId, setExternalTeamId] = useState("");
   const [sensitivity, setSensitivity] = useState("internal");
   const [bundleId, setBundleId] = useState("");
   const updateMutation = useMutation({
@@ -757,6 +803,7 @@ export function ChannelDetailPage() {
     if (!place) return;
     setName(place.name);
     setExternalId(place.externalId);
+    setExternalTeamId(slackTeamIdForPlace(place) ?? "");
     setSensitivity(place.sensitivity);
   }, [place]);
 
@@ -791,6 +838,8 @@ export function ChannelDetailPage() {
   const runs = data.runs.filter((run) => run.placeScopeId === place.id);
   const trimmedName = name.trim();
   const trimmedExternalId = externalId.trim();
+  const installedSlackTeamId = activeSlackWorkspaceId(data);
+  const trimmedExternalTeamId = externalTeamId.trim() || installedSlackTeamId;
   const canSave =
     trimmedName.length > 0 &&
     trimmedExternalId.length > 0 &&
@@ -852,6 +901,9 @@ export function ChannelDetailPage() {
                 channelId: place.id,
                 name: trimmedName,
                 externalId: trimmedExternalId,
+                ...(trimmedExternalTeamId
+                  ? { externalTeamId: trimmedExternalTeamId }
+                  : {}),
                 sensitivity,
               });
             }}
@@ -871,6 +923,17 @@ export function ChannelDetailPage() {
                 required
                 onChange={(event) => setExternalId(event.target.value)}
               />
+            </label>
+            <label>
+              Slack workspace ID
+              <input
+                value={externalTeamId}
+                placeholder={installedSlackTeamId ?? "T0123456789"}
+                onChange={(event) => setExternalTeamId(event.target.value)}
+              />
+              <span className="field-hint">
+                Keep this aligned with the workspace that installed Bek.
+              </span>
             </label>
             <label>
               Sensitivity
@@ -1203,10 +1266,40 @@ export function ConnectorsPage() {
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
   });
+  const {
+    data: setupStatus,
+    isLoading: isSetupLoading,
+    error: setupError,
+  } = useQuery({
+    queryKey: ["setupStatus"],
+    queryFn: fetchSetupStatus,
+  });
+  const [pendingSlackInstallUrl, setPendingSlackInstallUrl] = useState("");
+  const slackInstallMutation = useMutation({
+    mutationFn: () => fetchSlackInstallStart("/connectors"),
+    onSuccess: (install) => {
+      if (install.exchangeEnabled && install.tokenStorageConfigured) {
+        window.location.assign(install.url);
+        return;
+      }
+      setPendingSlackInstallUrl(install.url);
+    },
+  });
+  const slackInstallResult = new URLSearchParams(window.location.search).get(
+    "slack_install",
+  );
 
-  if (isLoading) return <div className="state">Loading connectors...</div>;
-  if (error || !data)
+  if (isLoading || isSetupLoading)
+    return <div className="state">Loading connectors...</div>;
+  if (error || setupError || !data || !setupStatus)
     return <div className="state error">Bek API is not reachable.</div>;
+
+  const slackSummary = connectorSummaries(data).find(
+    (connector) => connector.id === "slack",
+  );
+  const otherConnectors = connectorSummaries(data).filter(
+    (connector) => connector.id !== "slack",
+  );
 
   return (
     <div className="page">
@@ -1214,8 +1307,107 @@ export function ConnectorsPage() {
         eyebrow="Connectors"
         title="Slack, repos, MCP tools, sandboxes, and model providers plug into one agent."
       />
+      {slackInstallResult === "installed" ? (
+        <SuccessCallout>Slack workspace connected.</SuccessCallout>
+      ) : slackInstallResult === "validated" ? (
+        <WarningCallout>
+          Slack returned successfully, but OAuth exchange is disabled.
+        </WarningCallout>
+      ) : slackInstallResult === "error" ? (
+        <WarningCallout>
+          Slack install returned with an error. Review OAuth and credential
+          settings before trying again.
+        </WarningCallout>
+      ) : null}
+      {slackSummary ? (
+        <Panel
+          title="Slack"
+          action={<StatusBadge value={slackSummary.status} />}
+        >
+          {slackInstallMutation.isError ? (
+            <WarningCallout>
+              {errorMessage(
+                slackInstallMutation.error,
+                "Bek could not start Slack install.",
+              )}
+            </WarningCallout>
+          ) : null}
+          {pendingSlackInstallUrl ? (
+            <WarningCallout>
+              OAuth can start, but token exchange or local token storage is not
+              fully enabled yet.
+            </WarningCallout>
+          ) : null}
+          <div className="connector-card">
+            <div className="connector-icon">
+              <Slack size={20} aria-hidden="true" />
+            </div>
+            <div>
+              <strong>{slackSummary.metric}</strong>
+              <p className="muted">{slackSummary.detail}</p>
+            </div>
+          </div>
+          <div className="summary-grid connector-detail-grid">
+            <div className="summary-field">
+              <span>Workspace</span>
+              <strong>
+                {setupStatus.slackWorkspaceName ??
+                  setupStatus.slackWorkspaceId ??
+                  "Not installed"}
+              </strong>
+              {setupStatus.slackWorkspaceId ? (
+                <small>{setupStatus.slackWorkspaceId}</small>
+              ) : null}
+            </div>
+            <div className="summary-field">
+              <span>Install</span>
+              <strong>{setupStatus.slackInstallStatus ?? "missing"}</strong>
+              <small>OAuth workspace state</small>
+            </div>
+            <div className="summary-field">
+              <span>Bot user</span>
+              <strong>{setupStatus.slackBotUserId ?? "missing"}</strong>
+              <small>Used for posting replies</small>
+            </div>
+            <div className="summary-field">
+              <span>Token</span>
+              <strong>
+                {setupStatus.slackTokenStored ? "stored" : "missing"}
+              </strong>
+              <small>Encrypted local vault status</small>
+            </div>
+          </div>
+          <div className="form-actions connector-actions">
+            <button
+              type="button"
+              className="primary"
+              disabled={slackInstallMutation.isPending}
+              aria-busy={slackInstallMutation.isPending}
+              onClick={() => {
+                if (pendingSlackInstallUrl) {
+                  window.location.assign(pendingSlackInstallUrl);
+                  return;
+                }
+                slackInstallMutation.mutate();
+              }}
+            >
+              {slackInstallMutation.isPending
+                ? "Preparing..."
+                : pendingSlackInstallUrl
+                  ? "Continue to Slack"
+                  : setupStatus.slackInstalled
+                    ? "Reinstall Slack"
+                    : "Connect Slack"}
+            </button>
+            <Link to="/channels" className="secondary">
+              Manage channels
+              <ExternalLink size={14} aria-hidden="true" />
+            </Link>
+          </div>
+        </Panel>
+      ) : null}
       <section className="connector-grid">
-        {connectorSummaries(data).map((connector) => (
+        {otherConnectors.map((connector) => (
           <Panel
             title={connector.name}
             key={connector.id}
