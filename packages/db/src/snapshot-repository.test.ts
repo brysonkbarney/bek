@@ -87,6 +87,20 @@ describe("Bek snapshot persistence mapping", () => {
           createdAt: "2026-01-02T03:04:05.000Z",
           updatedAt: "2026-01-02T03:04:06.000Z",
         },
+        {
+          id: "delivery_github_webhook",
+          orgId: "org_demo",
+          provider: "github",
+          kind: "github.webhook",
+          key: "github:webhook:pull_request:delivery-123",
+          status: "processed",
+          response: {
+            ok: true,
+            eventName: "pull_request",
+          },
+          createdAt: "2026-01-02T03:04:07.000Z",
+          updatedAt: "2026-01-02T03:04:08.000Z",
+        },
       ],
     };
 

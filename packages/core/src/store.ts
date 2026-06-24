@@ -56,6 +56,7 @@ export interface SetRunStatusInput {
 
 export interface RecordIngressDeliveryInput {
   key: string;
+  provider?: IngressDelivery["provider"] | undefined;
   kind: IngressDeliveryKind;
   status: IngressDelivery["status"];
   runId?: string | undefined;
@@ -833,7 +834,7 @@ export class BekStore {
     const delivery: IngressDelivery = {
       id: createId("delivery"),
       orgId: this.snapshot.org.id,
-      provider: "slack",
+      provider: input.provider ?? "slack",
       kind: input.kind,
       key: input.key,
       status: input.status,

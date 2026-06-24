@@ -1070,7 +1070,7 @@ function ingressDeliveryFromRow(
   const delivery: IngressDelivery = {
     id: row.id,
     orgId: row.orgId,
-    provider: "slack",
+    provider: row.provider as IngressDelivery["provider"],
     kind: row.kind as IngressDelivery["kind"],
     key: row.key,
     status: row.status as IngressDelivery["status"],

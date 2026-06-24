@@ -19,11 +19,15 @@ import type {
 import {
   createGitHubDraftPullRequestWorkflowPlan,
   createGitHubInstallationTokenRequest,
+  createGitHubWebhookDeliveryDedupeKey,
+  normalizeGitHubWebhookEvent,
   parseGitHubRepoResource,
   validateGitHubAppConfig,
+  verifyGitHubWebhookSignature,
   type GitHubInstallationPermissionAccess,
   type GitHubInstallationTokenPermissions,
   type GitHubRepoResource,
+  type NormalizedGitHubWebhookEvent,
 } from "@bek/github";
 import {
   buildSlackCommandErrorResponse,
@@ -153,7 +157,7 @@ export function createApp(
     await next();
   });
   app.use("/api/*", async (c, next) => {
-    if (isSlackPublicCallback(c.req.path)) {
+    if (isPublicApiCallback(c.req.path)) {
       await next();
       return;
     }
@@ -552,6 +556,128 @@ export function createApp(
       ),
     ),
   );
+  app.post("/api/github/webhooks", async (c) => {
+    const rawBody = await c.req.text();
+    const signature = c.req.header("x-hub-signature-256");
+    if (
+      !verifyGitHubWebhookSignature({
+        webhookSecret: githubWebhookSecret(),
+        signature,
+        rawBody,
+      })
+    ) {
+      return c.json({ error: "Invalid GitHub webhook signature." }, 401);
+    }
+
+    const eventName = c.req.header("x-github-event")?.trim().toLowerCase();
+    const deliveryId = c.req.header("x-github-delivery")?.trim();
+    if (!eventName) {
+      return c.json({ error: "GitHub webhook event header is required." }, 400);
+    }
+    if (!deliveryId) {
+      return c.json(
+        { error: "GitHub webhook delivery header is required." },
+        400,
+      );
+    }
+
+    let deliveryKey: string;
+    try {
+      deliveryKey = createGitHubWebhookDeliveryDedupeKey({
+        deliveryId,
+        eventName,
+      });
+    } catch {
+      return c.json({ error: "GitHub webhook delivery id is invalid." }, 400);
+    }
+
+    const existing = store.findIngressDelivery(deliveryKey);
+    if (existing) {
+      return c.json({
+        ...(existing.response ?? {}),
+        deduped: true,
+      });
+    }
+
+    let payload: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(rawBody) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("GitHub webhook payload must be a JSON object.");
+      }
+      payload = parsed as Record<string, unknown>;
+    } catch {
+      return c.json(
+        { error: "GitHub webhook payload must be valid JSON." },
+        400,
+      );
+    }
+
+    if (eventName === "ping") {
+      const response = {
+        ok: true,
+        provider: "github",
+        eventName,
+        deliveryId,
+        ignored: true,
+        reason: "GitHub webhook ping acknowledged.",
+      };
+      store.recordIngressDelivery({
+        provider: "github",
+        key: deliveryKey,
+        kind: "github.webhook",
+        status: "ignored",
+        response,
+      });
+      await store.flushChanges();
+      return c.json(response);
+    }
+
+    if (!isSupportedGitHubWebhookEvent(eventName)) {
+      const response = {
+        ok: true,
+        provider: "github",
+        eventName,
+        deliveryId,
+        ignored: true,
+        reason: "Unsupported GitHub webhook event.",
+      };
+      store.recordIngressDelivery({
+        provider: "github",
+        key: deliveryKey,
+        kind: "github.webhook",
+        status: "ignored",
+        response,
+      });
+      await store.flushChanges();
+      return c.json(response);
+    }
+
+    let normalized: NormalizedGitHubWebhookEvent;
+    try {
+      normalized = normalizeGitHubWebhookEvent({
+        eventName,
+        payload,
+        deliveryId,
+      });
+    } catch {
+      return c.json(
+        { error: "GitHub webhook payload could not be normalized." },
+        400,
+      );
+    }
+
+    const response = normalizedGitHubWebhookResponse(normalized);
+    store.recordIngressDelivery({
+      provider: "github",
+      key: deliveryKey,
+      kind: "github.webhook",
+      status: "processed",
+      response,
+    });
+    await store.flushChanges();
+    return c.json(response);
+  });
   app.post("/api/channels", async (c) => {
     const body = createChannelSchema.parse(await c.req.json());
     const { externalTeamId, ...placeInput } = body;
@@ -2234,6 +2360,106 @@ function isGitHubGrantCapability(
   );
 }
 
+function githubWebhookSecret(): string | undefined {
+  return (
+    process.env.GITHUB_APP_WEBHOOK_SECRET ?? process.env.GITHUB_WEBHOOK_SECRET
+  );
+}
+
+function isSupportedGitHubWebhookEvent(
+  eventName: string,
+): eventName is NormalizedGitHubWebhookEvent["eventName"] {
+  return (
+    eventName === "installation" ||
+    eventName === "installation_repositories" ||
+    eventName === "pull_request" ||
+    eventName === "check_run"
+  );
+}
+
+function normalizedGitHubWebhookResponse(
+  event: NormalizedGitHubWebhookEvent,
+): Record<string, unknown> {
+  const response: Record<string, unknown> = {
+    ok: true,
+    provider: "github",
+    type: event.type,
+    eventName: event.eventName,
+    action: event.action,
+  };
+  assignDefined(response, "deliveryId", event.deliveryId);
+  assignDefined(response, "installationId", event.installationId);
+  assignDefined(response, "senderLogin", event.senderLogin);
+
+  if (event.type === "github.installation") {
+    assignDefined(response, "accountLogin", event.accountLogin);
+    assignDefined(response, "repositorySelection", event.repositorySelection);
+    response.repositories = event.repositories.map(githubRepoResponse);
+    response.repositoriesAdded =
+      event.repositoriesAdded.map(githubRepoResponse);
+    response.repositoriesRemoved =
+      event.repositoriesRemoved.map(githubRepoResponse);
+    return response;
+  }
+
+  if (event.type === "github.pull_request") {
+    response.repository = githubRepoResponse(event.repository);
+    response.pullRequest = {
+      number: event.pullRequest.number,
+      title: event.pullRequest.title,
+      state: event.pullRequest.state,
+      draft: event.pullRequest.draft,
+      authorLogin: event.pullRequest.authorLogin,
+      htmlUrl: event.pullRequest.htmlUrl,
+      head: {
+        branch: event.pullRequest.head.branch,
+        sha: event.pullRequest.head.sha,
+        repository: event.pullRequest.head.repository
+          ? githubRepoResponse(event.pullRequest.head.repository)
+          : undefined,
+      },
+      base: {
+        branch: event.pullRequest.base.branch,
+        sha: event.pullRequest.base.sha,
+        repository: githubRepoResponse(event.pullRequest.base.repository),
+      },
+    };
+    return response;
+  }
+
+  response.repository = githubRepoResponse(event.repository);
+  response.checkRun = {
+    id: event.checkRun.id,
+    name: event.checkRun.name,
+    headSha: event.checkRun.headSha,
+    status: event.checkRun.status,
+    conclusion: event.checkRun.conclusion,
+    htmlUrl: event.checkRun.htmlUrl,
+    pullRequestNumbers: event.checkRun.pullRequestNumbers,
+  };
+  return response;
+}
+
+function githubRepoResponse(repo: GitHubRepoResource) {
+  return {
+    owner: repo.owner,
+    repo: repo.repo,
+    fullName: repo.fullName,
+    resource: repo.resource,
+    url: repo.url,
+  };
+}
+
+function assignDefined(
+  target: Record<string, unknown>,
+  key: string,
+  value: unknown,
+) {
+  if (value !== undefined) {
+    target[key] = value;
+  }
+}
+
 function latestSlackInstall(
   snapshot: BekSnapshot,
 ): ConnectorInstall | undefined {
@@ -2502,7 +2728,11 @@ function pruneExpiredRateLimitBuckets(
 }
 
 function rateLimitKey(c: Context): string {
-  const routeClass = isSlackPublicCallback(c.req.path) ? "slack" : "api";
+  const routeClass = isSlackPublicCallback(c.req.path)
+    ? "slack"
+    : isGitHubPublicWebhookCallback(c.req.path)
+      ? "github"
+      : "api";
   return `${routeClass}:${requestPeerKey(c)}`;
 }
 
@@ -2568,6 +2798,10 @@ function isExpectedBearerToken(
   return timingSafeEqual(suppliedBuffer, expectedBuffer);
 }
 
+function isPublicApiCallback(path: string): boolean {
+  return isSlackPublicCallback(path) || isGitHubPublicWebhookCallback(path);
+}
+
 function isSlackPublicCallback(path: string): boolean {
   return [
     "/api/slack/events",
@@ -2575,6 +2809,10 @@ function isSlackPublicCallback(path: string): boolean {
     "/api/slack/interactivity",
     "/api/slack/commands",
   ].includes(path);
+}
+
+function isGitHubPublicWebhookCallback(path: string): boolean {
+  return path === "/api/github/webhooks";
 }
 
 function isVerifiedSlackRequest(input: {

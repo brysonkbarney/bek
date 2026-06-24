@@ -16,9 +16,9 @@ The current foundation provides local helpers only:
 - A draft PR workflow execution contract that leases a token, validates it, passes the secret token only to the execution client, and returns redacted lease metadata.
 - A fake in-memory GitHub client for tests and local product flows.
 - An admin setup preview route that validates GitHub App env, parses repo grants, and previews repo-scoped installation token requests without calling GitHub.
-- Webhook delivery dedupe key helpers and normalized `installation`, `pull_request`, and `check_run` events.
+- Signed webhook ingress at `POST /api/github/webhooks` with delivery dedupe, `ping` acknowledgement, ignored unsupported events, and normalized `installation`, `installation_repositories`, `pull_request`, and `check_run` persistence.
 
-It does not call GitHub, exchange real installation tokens, clone repositories, push branches, open pull requests against GitHub, or process GitHub webhook deliveries in the API yet.
+It does not call GitHub, exchange real installation tokens, clone repositories, push branches, open pull requests against GitHub, or create runs from GitHub webhooks yet.
 
 ## GitHub App Settings
 
@@ -30,11 +30,12 @@ Create a GitHub App owned by the organization that will install Bek. Use the lea
 | Pull requests | Read and write | Open or update PRs after approval.       |
 | Metadata      | Read-only      | Required by GitHub Apps.                 |
 
-Recommended webhook events for the first implementation:
+Recommended webhook events:
 
+- `installation`
+- `installation_repositories`
 - `pull_request`
-- `pull_request_review`
-- `check_suite` or `check_run`
+- `check_run`
 
 ## Environment Variables
 
@@ -86,6 +87,34 @@ If `BEK_ADMIN_API_TOKEN` is configured, include `Authorization: Bearer ...` just
 
 Wildcard policy grants such as `github:redohq/*` are reported separately as invalid for this endpoint because GitHub installation token requests are repo-scoped.
 
+## Webhook Ingress
+
+Bek exposes signed GitHub webhook ingress at:
+
+```bash
+POST /api/github/webhooks
+```
+
+This route is public like Slack callbacks, but it fails closed unless
+`X-Hub-Signature-256` verifies against `GITHUB_APP_WEBHOOK_SECRET` or the
+deprecated `GITHUB_WEBHOOK_SECRET` alias. It also requires
+`X-GitHub-Event` and `X-GitHub-Delivery`.
+
+The route currently:
+
+- Acknowledges signed `ping` deliveries.
+- Dedupes deliveries by event name plus GitHub delivery id.
+- Persists normalized metadata for supported `installation`,
+  `installation_repositories`, `pull_request`, and `check_run` events.
+- Ignores unsupported signed events without asking GitHub to retry forever.
+- Does not create runs or perform GitHub writes.
+
+Point the GitHub App webhook URL at:
+
+```txt
+https://<your-bek-api-host>/api/github/webhooks
+```
+
 ## Resource Format
 
 Access bundles should grant repo capability with canonical resources:
@@ -122,7 +151,7 @@ The fake provider, fake client, and execution contract are intentionally local-o
 - GitHub App installation persistence and secret broker integration.
 - Real installation token exchange and repo-scoped token brokering.
 - Real GitHub execution client that uses validated installation tokens to clone, push branches, and open or update pull requests.
-- Webhook API route backed by durable delivery dedupe.
+- GitHub webhook-to-policy routing for repo-specific run creation.
 - Real branch push workflow in an isolated runtime.
 - PR creation/update worker that consumes approved proposal payloads and hash inputs.
 - Audit events for token minting, branch writes, PR writes, and webhook handling.

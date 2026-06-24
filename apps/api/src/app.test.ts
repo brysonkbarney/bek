@@ -9,6 +9,7 @@ import {
   type SlackPostMessageInput,
   verifySlackOAuthState,
 } from "@bek/slack";
+import { createGitHubWebhookSignature } from "@bek/github";
 import { BekStore, createSeedSnapshot } from "@bek/core";
 import type { WorkerSnapshot } from "@bek/worker";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -96,6 +97,24 @@ function signedSlackHeaders(
     "content-type": contentType,
     "x-slack-request-timestamp": timestamp,
     "x-slack-signature": createSlackSignature(secret, timestamp, rawBody),
+  };
+}
+
+function signedGitHubHeaders(
+  rawBody: string,
+  input: {
+    eventName?: string | undefined;
+    deliveryId?: string | undefined;
+    secret?: string | undefined;
+  } = {},
+) {
+  const secret = input.secret ?? "test-github-webhook-secret";
+  process.env.GITHUB_APP_WEBHOOK_SECRET = secret;
+  return {
+    "content-type": "application/json",
+    "x-github-event": input.eventName ?? "ping",
+    "x-github-delivery": input.deliveryId ?? "delivery-123",
+    "x-hub-signature-256": createGitHubWebhookSignature(secret, rawBody),
   };
 }
 
@@ -220,6 +239,225 @@ describe("Bek API", () => {
       ok: true,
       runId: expect.any(String),
     });
+  });
+
+  it("keeps signed GitHub webhooks public when admin auth is configured", async () => {
+    process.env.BEK_ADMIN_API_TOKEN = "test-admin-token";
+    const app = createApp();
+    const setup = await app.request("/api/setup/github", {
+      headers: { authorization: "Bearer wrong-token" },
+    });
+    expect(setup.status).toBe(401);
+
+    const rawBody = JSON.stringify({ zen: "Approachable automation." });
+    const webhook = await app.request("/api/github/webhooks", {
+      method: "POST",
+      body: rawBody,
+      headers: signedGitHubHeaders(rawBody, {
+        eventName: "ping",
+        deliveryId: "delivery-public-github",
+      }),
+    });
+
+    expect(webhook.status).toBe(200);
+    await expect(webhook.json()).resolves.toMatchObject({
+      ok: true,
+      provider: "github",
+      eventName: "ping",
+      deliveryId: "delivery-public-github",
+      ignored: true,
+    });
+  });
+
+  it("rejects missing or tampered GitHub webhook signatures", async () => {
+    const rawBody = JSON.stringify({ zen: "No unsigned webhooks." });
+    const missing = await createApp().request("/api/github/webhooks", {
+      method: "POST",
+      body: rawBody,
+      headers: {
+        "content-type": "application/json",
+        "x-github-event": "ping",
+        "x-github-delivery": "delivery-missing-signature",
+      },
+    });
+    expect(missing.status).toBe(401);
+
+    const tampered = await createApp().request("/api/github/webhooks", {
+      method: "POST",
+      body: rawBody,
+      headers: {
+        ...signedGitHubHeaders(rawBody, {
+          eventName: "ping",
+          deliveryId: "delivery-tampered-signature",
+        }),
+        "x-hub-signature-256": createGitHubWebhookSignature(
+          "wrong-secret",
+          rawBody,
+        ),
+      },
+    });
+    expect(tampered.status).toBe(401);
+    await expect(tampered.json()).resolves.toMatchObject({
+      error: "Invalid GitHub webhook signature.",
+    });
+  });
+
+  it("rejects signed GitHub webhooks with malformed JSON", async () => {
+    const rawBody = "{not-json";
+    const res = await createApp().request("/api/github/webhooks", {
+      method: "POST",
+      body: rawBody,
+      headers: signedGitHubHeaders(rawBody, {
+        eventName: "ping",
+        deliveryId: "delivery-malformed-json",
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      error: "GitHub webhook payload must be valid JSON.",
+    });
+  });
+
+  it("dedupes signed GitHub webhook deliveries", async () => {
+    const store = new BekStore();
+    const app = createApp(store);
+    const rawBody = JSON.stringify({ zen: "Deduped." });
+    const headers = signedGitHubHeaders(rawBody, {
+      eventName: "ping",
+      deliveryId: "delivery-dedupe",
+    });
+
+    const first = await app.request("/api/github/webhooks", {
+      method: "POST",
+      body: rawBody,
+      headers,
+    });
+    const second = await app.request("/api/github/webhooks", {
+      method: "POST",
+      body: rawBody,
+      headers,
+    });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    await expect(second.json()).resolves.toMatchObject({
+      deliveryId: "delivery-dedupe",
+      deduped: true,
+    });
+    expect(
+      store
+        .read()
+        .ingressDeliveries.filter(
+          (delivery) => delivery.key === "github:webhook:ping:delivery-dedupe",
+        ),
+    ).toHaveLength(1);
+  });
+
+  it("normalizes and persists supported GitHub pull request webhooks", async () => {
+    const store = new BekStore();
+    const payload = {
+      action: "opened",
+      number: 42,
+      installation: { id: 12345 },
+      sender: { login: "octocat" },
+      repository: { full_name: "redohq/checkout" },
+      pull_request: {
+        id: 987,
+        number: 42,
+        title: "Ship Bek",
+        state: "open",
+        draft: false,
+        html_url: "https://github.com/redohq/checkout/pull/42",
+        user: { login: "octocat" },
+        head: {
+          ref: "bek/ship",
+          sha: "abc123",
+          repo: { full_name: "octocat/checkout" },
+        },
+        base: {
+          ref: "main",
+          sha: "def456",
+          repo: { full_name: "redohq/checkout" },
+        },
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+
+    const res = await createApp(store).request("/api/github/webhooks", {
+      method: "POST",
+      body: rawBody,
+      headers: signedGitHubHeaders(rawBody, {
+        eventName: "pull_request",
+        deliveryId: "delivery-pr-opened",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: true,
+      provider: "github",
+      type: "github.pull_request",
+      eventName: "pull_request",
+      action: "opened",
+      deliveryId: "delivery-pr-opened",
+      installationId: "12345",
+      senderLogin: "octocat",
+      repository: {
+        fullName: "redohq/checkout",
+        resource: "github:redohq/checkout",
+      },
+      pullRequest: {
+        number: 42,
+        title: "Ship Bek",
+        head: { branch: "bek/ship", sha: "abc123" },
+        base: { branch: "main", sha: "def456" },
+      },
+    });
+    expect(store.read().ingressDeliveries[0]).toMatchObject({
+      provider: "github",
+      kind: "github.webhook",
+      key: "github:webhook:pull_request:delivery-pr-opened",
+      status: "processed",
+      response: {
+        eventName: "pull_request",
+        action: "opened",
+      },
+    });
+  });
+
+  it("keeps Slack and GitHub webhook signatures isolated", async () => {
+    process.env.SLACK_SIGNING_SECRET = "test-slack-secret";
+    const slackBody = JSON.stringify({
+      event_id: "EvGithubSignatureNotSlack",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek hello",
+      },
+    });
+    const slackRes = await createApp().request("/api/slack/events", {
+      method: "POST",
+      body: slackBody,
+      headers: signedGitHubHeaders(slackBody, {
+        eventName: "ping",
+        deliveryId: "delivery-github-signature-not-slack",
+      }),
+    });
+    expect(slackRes.status).toBe(401);
+
+    const githubBody = JSON.stringify({ zen: "Slack signatures do not pass." });
+    const githubRes = await createApp().request("/api/github/webhooks", {
+      method: "POST",
+      body: githubBody,
+      headers: {
+        ...signedSlackHeaders(githubBody),
+        "x-github-event": "ping",
+        "x-github-delivery": "delivery-slack-signature-not-github",
+      },
+    });
+    expect(githubRes.status).toBe(401);
   });
 
   it("rejects admin API request bodies over the configured limit", async () => {
@@ -2949,7 +3187,12 @@ describe("Bek API", () => {
     });
     expect(drain.status).toBe(200);
     expect(slackClient.postMessageCalls).toHaveLength(2);
-    const approvalMessage = slackClient.postMessageCalls[1]!;
+    const approvalMessage = slackClient.postMessageCalls.find(
+      (message) => message.text === "Bek needs approval for local.approval.",
+    );
+    if (!approvalMessage) {
+      throw new Error("Expected an approval-needed Slack message.");
+    }
     expect(approvalMessage).toMatchObject({
       channel: "C_CHECKOUT",
       thread_ts: "1710000000.000020",

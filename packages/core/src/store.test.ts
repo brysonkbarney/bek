@@ -410,6 +410,37 @@ describe("Bek ingress delivery state", () => {
     expect(store.removeIngressDelivery(delivery.key)).toBe(true);
     expect(store.findIngressDelivery(delivery.key)).toBeUndefined();
   });
+
+  it("records durable GitHub webhook delivery keys", () => {
+    const store = new BekStore();
+
+    const delivery = store.recordIngressDelivery({
+      provider: "github",
+      key: "github:webhook:pull_request:delivery-123",
+      kind: "github.webhook",
+      status: "processed",
+      response: {
+        ok: true,
+        eventName: "pull_request",
+        token: "ghs_this-secret-token-should-redact",
+      },
+    });
+
+    expect(delivery).toMatchObject({
+      provider: "github",
+      kind: "github.webhook",
+      key: "github:webhook:pull_request:delivery-123",
+      response: {
+        ok: true,
+        eventName: "pull_request",
+        token: "[redacted:field]",
+      },
+    });
+    expect(store.findIngressDelivery(delivery.key)).toMatchObject({
+      provider: "github",
+      kind: "github.webhook",
+    });
+  });
 });
 
 describe("Bek outbound delivery state", () => {

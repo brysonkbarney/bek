@@ -65,7 +65,7 @@ These product items block broad design-partner rollout, not a code-only release 
   delivery retries.
 - API has typed errors and request IDs.
 - Docker Compose starts all local dependencies.
-- GitHub App package can validate config, verify webhooks, parse repo resources, and generate PR proposals without network calls.
+- GitHub App package can validate config, verify webhooks, parse repo resources, ingest signed webhook deliveries, and generate PR proposals without network calls.
 
 ## Security
 

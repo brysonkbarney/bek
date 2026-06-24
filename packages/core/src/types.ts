@@ -262,12 +262,13 @@ export interface ApprovalRequest {
 export type IngressDeliveryKind =
   | "slack.event"
   | "slack.command"
-  | "slack.interaction";
+  | "slack.interaction"
+  | "github.webhook";
 
 export interface IngressDelivery {
   id: string;
   orgId: string;
-  provider: "slack";
+  provider: "slack" | "github";
   kind: IngressDeliveryKind;
   key: string;
   status: "processed" | "ignored";
