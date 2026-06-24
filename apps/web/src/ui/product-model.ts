@@ -215,6 +215,11 @@ export function setupProgress(status: SetupStatus): {
   };
 }
 
+export function setupReadyForWorkspace(status: SetupStatus): boolean {
+  const progress = setupProgress(status);
+  return status.readyForWorkspace && progress.complete === progress.total;
+}
+
 export function findPlace(
   data: Bootstrap,
   placeId: string,

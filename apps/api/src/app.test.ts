@@ -237,6 +237,7 @@ describe("Bek API", () => {
       visibleHandle: "@bek",
       singleVisibleAgent: true,
       readyForLocalDemo: true,
+      readyForWorkspace: false,
     });
   });
 

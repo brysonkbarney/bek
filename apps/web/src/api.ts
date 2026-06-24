@@ -109,6 +109,7 @@ export interface SetupStatus {
   githubGrantCount: number;
   pendingApprovals: number;
   readyForLocalDemo: boolean;
+  readyForWorkspace: boolean;
 }
 
 export interface SlackInstallStart {

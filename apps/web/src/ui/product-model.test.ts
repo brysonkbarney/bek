@@ -4,6 +4,7 @@ import {
   connectorSummaries,
   setupChecklistFromStatus,
   setupProgress,
+  setupReadyForWorkspace,
   workerQueueSummary,
 } from "./product-model";
 
@@ -23,6 +24,7 @@ const readySetup: SetupStatus = {
   githubGrantCount: 1,
   pendingApprovals: 0,
   readyForLocalDemo: true,
+  readyForWorkspace: true,
 };
 
 const emptyBootstrap: Bootstrap = {
@@ -54,6 +56,7 @@ describe("admin product helpers", () => {
       complete: checklist.length,
       total: checklist.length,
     });
+    expect(setupReadyForWorkspace(readySetup)).toBe(true);
     expect(checklist[0]).toMatchObject({
       label: "Expose @bek as the only visible Slack teammate",
       complete: true,
@@ -76,6 +79,12 @@ describe("admin product helpers", () => {
       complete: false,
       detail: expect.stringContaining("no Slack bot token is stored"),
     });
+    expect(
+      setupReadyForWorkspace({
+        ...readySetup,
+        slackTokenStored: false,
+      }),
+    ).toBe(false);
     expect(revoked).toMatchObject({
       complete: false,
       detail: "Redo install is revoked.",

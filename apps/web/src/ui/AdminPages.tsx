@@ -45,6 +45,7 @@ import {
   grantsByDecision,
   setupChecklistFromStatus,
   setupProgress,
+  setupReadyForWorkspace,
   visibleHandleAntiPatterns,
 } from "./product-model";
 import {
@@ -116,6 +117,7 @@ export function SetupPage() {
 
   const progress = setupProgress(setupStatus);
   const checklist = setupChecklistFromStatus(setupStatus);
+  const setupReady = setupReadyForWorkspace(setupStatus);
 
   return (
     <div className="page">
@@ -140,9 +142,11 @@ export function SetupPage() {
           label="Setup progress"
           value={`${progress.complete}/${progress.total}`}
           detail={
-            setupStatus.readyForLocalDemo
-              ? "Seeded demo ready"
-              : "Finish required steps"
+            setupReady
+              ? "Workspace ready"
+              : setupStatus.readyForLocalDemo
+                ? "Seeded demo usable"
+                : "Finish required steps"
           }
         />
         <MetricCard
@@ -155,11 +159,7 @@ export function SetupPage() {
       <section className="grid">
         <Panel
           title="Setup status"
-          action={
-            <StatusBadge
-              value={setupStatus.readyForLocalDemo ? "ready" : "needs setup"}
-            />
-          }
+          action={<StatusBadge value={setupReady ? "ready" : "needs setup"} />}
         >
           <ol className="setup-steps">
             {checklist.map((step, index) => (

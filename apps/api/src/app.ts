@@ -461,9 +461,21 @@ export function createApp(
     const githubGrantCount = snapshot.accessBundles
       .flatMap((bundle) => bundle.grants)
       .filter((grant) => grant.resource.startsWith("github:")).length;
+    const singleVisibleAgent = snapshot.agent.handle === "@bek";
+    const readyForLocalDemo =
+      singleVisibleAgent &&
+      slackChannels.length > 0 &&
+      snapshot.accessBundles.length > 0 &&
+      snapshot.modelPolicies.length > 0;
+    const readyForWorkspace =
+      readyForLocalDemo &&
+      slackInstall?.status === "active" &&
+      Boolean(slackCredential) &&
+      snapshot.runtimeProfiles.length > 0 &&
+      githubGrantCount > 0;
     return c.json({
       visibleHandle: snapshot.agent.handle,
-      singleVisibleAgent: snapshot.agent.handle === "@bek",
+      singleVisibleAgent,
       slackChannels: slackChannels.length,
       slackInstalled: Boolean(slackInstall),
       slackInstallStatus: slackInstall?.status ?? null,
@@ -479,11 +491,8 @@ export function createApp(
       runtimeProfiles: snapshot.runtimeProfiles.length,
       githubGrantCount,
       pendingApprovals: pendingApprovals.length,
-      readyForLocalDemo:
-        snapshot.agent.handle === "@bek" &&
-        slackChannels.length > 0 &&
-        snapshot.accessBundles.length > 0 &&
-        snapshot.modelPolicies.length > 0,
+      readyForLocalDemo,
+      readyForWorkspace,
     });
   });
   app.get("/api/channels", (c) =>
