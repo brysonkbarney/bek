@@ -128,3 +128,133 @@ describe("Bek approvals", () => {
     ).toBe("expired");
   });
 });
+
+describe("Bek admin control plane store", () => {
+  it("updates the single visible agent without changing the @bek handle", () => {
+    const store = new BekStore();
+
+    const agent = store.updateAgent({
+      name: "Bek Teammate",
+      description: "Open teammate for the whole company.",
+      status: "paused",
+    });
+
+    expect(agent).toMatchObject({
+      name: "Bek Teammate",
+      handle: "@bek",
+      status: "paused",
+    });
+  });
+
+  it("creates and updates channel scopes", () => {
+    const store = new BekStore();
+
+    const channel = store.createPlace({
+      kind: "slack_channel",
+      provider: "slack",
+      externalId: "C_PRODUCT",
+      name: "#product",
+      sensitivity: "confidential",
+    });
+    expect(channel.id).toMatch(/^place_/);
+
+    const updated = store.updatePlace(channel.id, {
+      name: "#product-ai",
+      sensitivity: "restricted",
+    });
+    expect(updated).toMatchObject({
+      externalId: "C_PRODUCT",
+      name: "#product-ai",
+      sensitivity: "restricted",
+    });
+  });
+
+  it("manages access bundles, place attachments, and grants", () => {
+    const store = new BekStore();
+    const channel = store.createPlace({
+      kind: "slack_channel",
+      provider: "slack",
+      externalId: "C_SUPPORT",
+      name: "#support",
+      sensitivity: "internal",
+    });
+    const bundle = store.createAccessBundle({
+      name: "Support",
+      description: "Support channel grants",
+      attachedPlaceIds: [channel.id],
+    });
+    expect(bundle.attachedPlaceIds).toEqual([channel.id]);
+
+    const grant = store.createGrant(bundle.id, {
+      capability: "mcp.tool",
+      resource: "mcp:linear/create_issue",
+      decision: "ask",
+      risk: "write_external",
+      requiresApproval: true,
+    });
+    expect(grant.id).toMatch(/^grant_/);
+
+    const updatedGrant = store.updateGrant(bundle.id, grant.id, {
+      decision: "deny",
+      requiresApproval: false,
+    });
+    expect(updatedGrant).toMatchObject({
+      decision: "deny",
+      requiresApproval: false,
+    });
+
+    const detached = store.detachBundleFromPlace(bundle.id, channel.id);
+    expect(detached.attachedPlaceIds).toEqual([]);
+  });
+
+  it("updates model and runtime policies used by setup", () => {
+    const store = new BekStore();
+
+    expect(
+      store.updateModelPolicy("model_auto", {
+        defaultModel: "openai/gpt-5.5",
+        fallbackModels: ["anthropic/claude-sonnet-4.8", "openai/gpt-5.5"],
+        perRunBudgetCents: 500,
+      }),
+    ).toMatchObject({
+      defaultModel: "openai/gpt-5.5",
+      fallbackModels: ["anthropic/claude-sonnet-4.8", "openai/gpt-5.5"],
+      perRunBudgetCents: 500,
+    });
+
+    expect(
+      store.updateRuntimeProfile("runtime_answer", {
+        runtimeKind: "external",
+        adapter: "customer-runner",
+      }),
+    ).toMatchObject({ runtimeKind: "external", adapter: "customer-runner" });
+  });
+});
+
+describe("Bek store persistence hook", () => {
+  it("flushes changed snapshots in mutation order", async () => {
+    const savedNames: string[] = [];
+    const store = new BekStore(undefined, {
+      onSnapshotChanged: async (snapshot) => {
+        savedNames.push(snapshot.agent.name);
+      },
+    });
+
+    store.updateAgent({ name: "Bek One" });
+    store.updateAgent({ name: "Bek Two" });
+    await store.flushChanges();
+
+    expect(savedNames).toEqual(["Bek One", "Bek Two"]);
+  });
+
+  it("surfaces persistence failures on flush", async () => {
+    const store = new BekStore(undefined, {
+      onSnapshotChanged: async () => {
+        throw new Error("database unavailable");
+      },
+    });
+
+    store.updateAgent({ name: "Bek Persisted" });
+    await expect(store.flushChanges()).rejects.toThrow(/database unavailable/i);
+  });
+});

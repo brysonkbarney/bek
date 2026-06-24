@@ -5,8 +5,8 @@ dist
 .env
 .env.*
 !.env.example
+!.env.docker.example
 coverage
 *.log
 .DS_Store
 data
-

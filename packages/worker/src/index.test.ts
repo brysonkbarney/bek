@@ -1,8 +1,16 @@
-import type { ApprovalRequest } from "@bek/core";
-import { createRunWorkItem, type RuntimeResult } from "@bek/runtime";
+import { createSeedSnapshot, type ApprovalRequest } from "@bek/core";
+import {
+  createRunWorkItem,
+  type RuntimeAdapter,
+  type RuntimeResult,
+} from "@bek/runtime";
 import { describe, expect, it } from "vitest";
 import {
+  InMemoryWorkerEventSink,
   InMemoryWorkerQueue,
+  WorkerRuntimeService,
+  canTransitionRunAttemptState,
+  createWorkerIdempotencyKey,
   createSequentialIdFactory,
   retryDelayMs,
 } from "./index";
@@ -42,6 +50,30 @@ function approval(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
   };
 }
 
+function snapshotWithQueuedRun(input: {
+  runId: string;
+  prompt?: string | undefined;
+  runtimeProfileId?: string | undefined;
+}) {
+  const snapshot = createSeedSnapshot(baseNow);
+  const template = snapshot.runs[0];
+  if (!template) {
+    throw new Error("Expected seed run.");
+  }
+  const run = {
+    ...template,
+    id: input.runId,
+    prompt: input.prompt ?? "@bek process this queued run",
+    status: "queued" as const,
+    runtimeProfileId: input.runtimeProfileId ?? template.runtimeProfileId,
+    actualCostCents: 0,
+    createdAt: baseNow,
+    updatedAt: baseNow,
+  };
+  snapshot.runs.unshift(run);
+  return { snapshot, run };
+}
+
 function completedResult(): RuntimeResult {
   return {
     status: "completed",
@@ -61,6 +93,38 @@ function failedResult(error = "adapter crashed"): RuntimeResult {
 }
 
 describe("in-memory worker queue", () => {
+  it("deduplicates active work by run attempt idempotency key", () => {
+    const queue = new InMemoryWorkerQueue();
+    const item = workItem({ runId: "run_idempotent" });
+
+    const enqueued = queue.enqueue({ item });
+    expect(enqueued.decision).toBe("enqueued");
+    if (enqueued.decision !== "enqueued") {
+      throw new Error("Expected enqueue.");
+    }
+    expect(enqueued.record.idempotencyKey).toBe(
+      createWorkerIdempotencyKey(item),
+    );
+
+    const duplicate = queue.enqueue({
+      item: workItem({
+        runId: "run_idempotent",
+        reason: "resume",
+        traceId: "trace_duplicate",
+      }),
+    });
+    expect(duplicate.decision).toBe("duplicate");
+    if (duplicate.decision !== "duplicate") {
+      throw new Error("Expected duplicate.");
+    }
+    expect(duplicate.record.id).toBe(enqueued.record.id);
+
+    const nextAttempt = queue.enqueue({
+      item: workItem({ runId: "run_idempotent", attempt: 2 }),
+    });
+    expect(nextAttempt.decision).toBe("enqueued");
+  });
+
   it("claims available work in deterministic FIFO order and reclaims expired leases", () => {
     const queue = new InMemoryWorkerQueue({
       now: () => baseNow,
@@ -84,6 +148,8 @@ describe("in-memory worker queue", () => {
       throw new Error("Expected claim.");
     }
     expect(first.record.item.runId).toBe("run_a");
+    expect(first.lease.idempotencyKey).toBe(first.record.idempotencyKey);
+    expect(first.record.attemptState).toBe("claimed");
 
     const second = queue.claimNext({
       workerId: "worker_2",
@@ -100,6 +166,32 @@ describe("in-memory worker queue", () => {
     expect(queue.read().events.map((event) => event.type)).toContain(
       "worker.lease_expired",
     );
+  });
+
+  it("sweeps expired leases without requiring a new claim", () => {
+    const queue = new InMemoryWorkerQueue();
+    queue.enqueue({ item: workItem({ runId: "run_expiry" }) });
+    const claim = queue.claimNext({
+      workerId: "worker_1",
+      leaseMs: 1_000,
+      now: baseNow,
+    });
+    if (claim.decision !== "claimed") {
+      throw new Error("Expected claim.");
+    }
+
+    const expiry = queue.expireLeases({
+      now: "2026-06-24T18:00:01.001Z",
+    });
+    expect(expiry.decision).toBe("expired");
+    if (expiry.decision !== "expired") {
+      throw new Error("Expected expiry.");
+    }
+    expect(expiry.records[0]).toMatchObject({
+      status: "queued",
+      attemptState: "queued",
+      lease: undefined,
+    });
   });
 
   it("accepts heartbeat extensions and reports cancellation to claimed workers", () => {
@@ -132,6 +224,13 @@ describe("in-memory worker queue", () => {
       now: "2026-06-24T18:00:01.000Z",
     });
     expect(cancel.decision).toBe("cancel_requested");
+    if (cancel.decision !== "cancel_requested") {
+      throw new Error("Expected cancellation request.");
+    }
+    expect(cancel.affectedRecords[0]).toMatchObject({
+      status: "claimed",
+      attemptState: "cancel_requested",
+    });
 
     const nextHeartbeat = queue.heartbeat({
       leaseId: claim.lease.id,
@@ -171,6 +270,7 @@ describe("in-memory worker queue", () => {
     ).toBe("empty");
     expect(queue.read().records[0]).toMatchObject({
       status: "cancelled",
+      attemptState: "cancelled",
       terminalReason: "Superseded by a newer run.",
     });
   });
@@ -203,6 +303,10 @@ describe("in-memory worker queue", () => {
       attempt: 2,
       reason: "retry",
     });
+    expect(retry.record.attemptState).toBe("retry_scheduled");
+    expect(retry.nextRecord.idempotencyKey).toBe(
+      createWorkerIdempotencyKey(retry.nextRecord.item),
+    );
     expect(retry.retryAt).toBe("2026-06-24T18:00:02.000Z");
     expect(
       queue.claimNext({
@@ -226,9 +330,21 @@ describe("in-memory worker queue", () => {
       now: "2026-06-24T18:00:03.000Z",
     });
     expect(dead.decision).toBe("dead");
+    if (dead.decision !== "dead") {
+      throw new Error("Expected dead letter.");
+    }
+    expect(dead.record.attemptState).toBe("dead_lettered");
+    expect(dead.deadLetter).toMatchObject({
+      workId: dead.record.id,
+      idempotencyKey: dead.record.idempotencyKey,
+      reason: "still broken",
+    });
+    expect(queue.read().deadLetters).toHaveLength(1);
     expect(
       retryDelayMs(3, { maxAttempts: 4, baseDelayMs: 500, maxDelayMs: 900 }),
     ).toBe(900);
+    expect(canTransitionRunAttemptState("claimed", "dead_lettered")).toBe(true);
+    expect(canTransitionRunAttemptState("completed", "queued")).toBe(false);
   });
 
   it("pauses for approval and resumes the same attempt only after matching approval", () => {
@@ -255,9 +371,12 @@ describe("in-memory worker queue", () => {
     });
     expect(pause.decision).toBe("paused_for_approval");
 
-    expect(queue.resumeAfterApproval({ approval: approval() }).decision).toBe(
-      "waiting",
-    );
+    expect(
+      queue.resumeAfterApproval({
+        approval: approval(),
+        now: "2026-06-24T18:00:01.500Z",
+      }).decision,
+    ).toBe("waiting");
     expect(
       queue.resumeAfterApproval({
         approval: approval({ status: "approved", payloadHash: "wrong_hash" }),
@@ -283,6 +402,17 @@ describe("in-memory worker queue", () => {
       reason: "approval_granted",
       traceId: "trace_after_approval",
     });
+    expect(resumed.record.idempotencyKey).toBe(pause.record.idempotencyKey);
+
+    const repeated = queue.resumeAfterApproval({
+      approval: approval({
+        status: "approved",
+        decidedByPrincipalId: "principal_admin",
+        decidedAt: "2026-06-24T18:00:03.000Z",
+      }),
+      now: "2026-06-24T18:00:03.500Z",
+    });
+    expect(repeated.decision).toBe("already_resumed");
 
     const resumeClaim = queue.claimNext({
       workerId: "worker_2",
@@ -329,8 +459,47 @@ describe("in-memory worker queue", () => {
     expect(denied.record.status).toBe("cancelled");
   });
 
-  it("redacts secrets from emitted runtime events", () => {
+  it("expires pending approval waits by gate expiry", () => {
     const queue = new InMemoryWorkerQueue();
+    queue.enqueue({ item: workItem({ runId: "run_approval" }) });
+    const claim = queue.claimNext({
+      workerId: "worker_1",
+      leaseMs: 5_000,
+      now: baseNow,
+    });
+    if (claim.decision !== "claimed") {
+      throw new Error("Expected claim.");
+    }
+    queue.settle({
+      leaseId: claim.lease.id,
+      result: {
+        status: "awaiting_approval",
+        artifactRefs: [],
+        actualCostCents: 1,
+      },
+      approval: approval({
+        expiresAt: "2026-06-24T18:00:02.000Z",
+      }),
+      now: "2026-06-24T18:00:01.000Z",
+    });
+
+    const expired = queue.resumeAfterApproval({
+      approval: approval({
+        status: "pending",
+        expiresAt: "2026-06-24T18:00:02.000Z",
+      }),
+      now: "2026-06-24T18:00:02.000Z",
+    });
+    expect(expired.decision).toBe("cancelled");
+    if (expired.decision !== "cancelled") {
+      throw new Error("Expected expired approval to cancel.");
+    }
+    expect(expired.record.terminalReason).toBe("Approval expired.");
+  });
+
+  it("redacts secrets from emitted runtime events", () => {
+    const eventSink = new InMemoryWorkerEventSink();
+    const queue = new InMemoryWorkerQueue({ eventSink });
     queue.enqueue({ item: workItem({ runId: "run_secret" }) });
     const claim = queue.claimNext({
       workerId: "worker_1",
@@ -362,6 +531,7 @@ describe("in-memory worker queue", () => {
         nested: { token: "[redacted:field]" },
       },
     });
+    expect(eventSink.read()).toContainEqual(event);
 
     const settled = queue.settle({
       leaseId: claim.lease.id,
@@ -369,5 +539,225 @@ describe("in-memory worker queue", () => {
       now: "2026-06-24T18:00:02.000Z",
     });
     expect(settled.decision).toBe("completed");
+  });
+});
+
+describe("worker runtime service", () => {
+  it("dequeues and processes one run through a registered runtime adapter", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({ runId: "run_service" });
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_service",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+
+    const startedRuns: string[] = [];
+    const adapter: RuntimeAdapter = {
+      id: "ai-sdk-local-stub",
+      kind: "ai_sdk",
+      canRun: () => true,
+      async start(input) {
+        startedRuns.push(input.run.id);
+        await input.emit({
+          type: "runtime.started",
+          message: "Runtime started from service test.",
+        });
+        return completedResult();
+      },
+      async resume() {
+        throw new Error("Unexpected resume.");
+      },
+      async cancel() {
+        throw new Error("Unexpected cancel.");
+      },
+    };
+
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [adapter],
+      workerId: "worker_service",
+      now: () => baseNow,
+    });
+
+    const drain = await service.drain({ maxItems: 2, now: baseNow });
+    expect(drain).toMatchObject({ processed: 1, stoppedReason: "empty" });
+    expect(startedRuns).toEqual(["run_service"]);
+    expect(queue.read().records[0]).toMatchObject({
+      status: "completed",
+      attemptState: "completed",
+    });
+    expect(queue.read().events.map((event) => event.type)).toEqual(
+      expect.arrayContaining([
+        "worker.claimed",
+        "runtime.selected",
+        "runtime.started",
+        "worker.completed",
+      ]),
+    );
+  });
+
+  it("pauses through the service and resumes the same attempt after approval", async () => {
+    let now = baseNow;
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_service_approval",
+    });
+    const queue = new InMemoryWorkerQueue({
+      now: () => now,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_service_approval",
+        now,
+      }),
+      now,
+    });
+
+    let requestedApproval: ApprovalRequest | undefined;
+    let resumedApprovalStatus: ApprovalRequest["status"] | undefined;
+    const adapter: RuntimeAdapter = {
+      id: "ai-sdk-local-stub",
+      kind: "ai_sdk",
+      canRun: () => true,
+      async start(input) {
+        requestedApproval = await input.requestApproval({
+          kind: "external.write",
+          action: "github.pr",
+          resource: "github:redohq/checkout",
+          risk: "write_external",
+          payload: { runId: input.run.id },
+        });
+        return {
+          status: "awaiting_approval",
+          artifactRefs: [],
+          actualCostCents: 1,
+        };
+      },
+      async resume(input) {
+        resumedApprovalStatus = input.approval.status;
+        return completedResult();
+      },
+      async cancel() {
+        throw new Error("Unexpected cancel.");
+      },
+    };
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [adapter],
+      workerId: "worker_service",
+      now: () => now,
+    });
+
+    now = "2026-06-24T18:00:01.000Z";
+    const paused = await service.processNext({ now });
+    expect(paused.decision).toBe("processed");
+    if (paused.decision !== "processed") {
+      throw new Error("Expected paused service processing.");
+    }
+    expect(paused.settlement.decision).toBe("paused_for_approval");
+    if (!requestedApproval) {
+      throw new Error("Expected requested approval.");
+    }
+
+    now = "2026-06-24T18:00:03.000Z";
+    const resume = queue.resumeAfterApproval({
+      approval: {
+        ...requestedApproval,
+        status: "approved",
+        decidedByPrincipalId: "principal_admin",
+        decidedAt: now,
+      },
+      now,
+    });
+    expect(resume.decision).toBe("resume_enqueued");
+
+    const completed = await service.processNext({ now });
+    expect(completed.decision).toBe("processed");
+    if (completed.decision !== "processed") {
+      throw new Error("Expected resumed service processing.");
+    }
+    expect(completed.settlement.decision).toBe("completed");
+    expect(completed.record.item.attempt).toBe(1);
+    expect(resumedApprovalStatus).toBe("approved");
+    expect(queue.read().records[0]).toMatchObject({
+      status: "completed",
+      attemptState: "completed",
+    });
+  });
+
+  it("cooperatively cancels claimed work before settlement", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_service_cancel",
+    });
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_service_cancel",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+
+    let cancelCalled = false;
+    const adapter: RuntimeAdapter = {
+      id: "ai-sdk-local-stub",
+      kind: "ai_sdk",
+      canRun: () => true,
+      async start(input) {
+        queue.cancelRun({
+          orgId: input.workItem.orgId,
+          runId: input.workItem.runId,
+          reason: "Human stopped the service run.",
+          now: "2026-06-24T18:00:01.000Z",
+        });
+        return completedResult();
+      },
+      async resume() {
+        throw new Error("Unexpected resume.");
+      },
+      async cancel() {
+        cancelCalled = true;
+      },
+    };
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [adapter],
+      workerId: "worker_service",
+      now: () => baseNow,
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected service processing.");
+    }
+    expect(decision.settlement.decision).toBe("cancelled");
+    expect(cancelCalled).toBe(true);
+    expect(queue.read().records[0]).toMatchObject({
+      status: "cancelled",
+      attemptState: "cancelled",
+      terminalReason: "Human stopped the service run.",
+    });
   });
 });

@@ -1,0 +1,73 @@
+# Bek Docs
+
+Bek is an open-source Claude Tag-style Slack teammate: users tag one visible
+`@bek`, while admins govern the models, repos, MCP tools, runtimes, sandboxes,
+budgets, and approvals behind it.
+
+## Start Here
+
+| Need                       | Doc                                                                                 |
+| -------------------------- | ----------------------------------------------------------------------------------- |
+| Run Bek locally            | [Quickstart](./quickstart.md)                                                       |
+| Start local dependencies   | [Docker Compose self-hosting](./self-host/docker-compose.md)                        |
+| Wire Slack app settings    | [Slack setup](./setup/slack.md)                                                     |
+| Plan GitHub App setup      | [GitHub setup](./setup/github.md)                                                   |
+| Configure model posture    | [Model providers](./setup/model-providers.md)                                       |
+| Govern MCP tools           | [MCP setup](./setup/mcp.md)                                                         |
+| Understand architecture    | [Architecture](./architecture.md)                                                   |
+| Review worker/runtime plan | [Worker](./architecture/worker.md) and [runtime](./architecture/runtime-sandbox.md) |
+| Check launch readiness     | [Launch readiness](./launch-readiness.md)                                           |
+| Operate a workspace        | [Operator checklist](./operator-checklist.md)                                       |
+| Review security scope      | [Security entry points](./security/threat-model-entry-points.md)                    |
+| Compare alternatives       | [Alternatives](./comparison/alternatives.md)                                        |
+| Position hosted Bek        | [Hosted Bek](./commercial/hosted.md)                                                |
+
+## Current Product Boundary
+
+The repository currently ships a working local product spine:
+
+- Hono API with seeded in-memory workspace data and optional Postgres snapshot
+  persistence.
+- React admin console for setup, channels, access bundles, runs, approvals,
+  connectors, model policy, memory stance, audit, and settings.
+- Slack event, command, interactivity, signature, OAuth-state, and OAuth code
+  exchange foundations; exchanged install tokens are redacted and not stored
+  yet.
+- GitHub App, model-router, MCP gateway, worker, runtime, sandbox, and
+  Drizzle/Postgres contracts.
+- Docker Compose for local Postgres, Valkey, and MinIO dependencies.
+
+It is not production-ready yet. Slack bot-token storage, Slack Web API posting,
+GitHub writes, live MCP proxying, model-provider calls, durable worker
+execution, and production sandboxing are not wired end to end.
+
+## Credential Requirements
+
+The local quickstart requires no external credentials. Use `.env.example` as a
+checklist when moving beyond the seeded demo.
+
+| Scenario                     | Credentials required                                                                 | Current status                                                                                                                    |
+| ---------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| Local admin demo             | None                                                                                 | Works with seeded data.                                                                                                           |
+| Signed Slack callbacks       | `SLACK_SIGNING_SECRET`, public HTTPS URL                                             | Events, commands, and interactivity verify signatures.                                                                            |
+| Slack OAuth install/callback | `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_STATE_SECRET`, `SLACK_REDIRECT_URI` | Redirect/state validation works; code exchange is explicit locally and default in production, but token vault storage is pending. |
+| Slack approvals              | `BEK_SLACK_USER_PRINCIPAL_MAP` for local mapping                                     | Parsed approval buttons can decide seeded approvals.                                                                              |
+| GitHub App workflow          | `GITHUB_APP_ID`, private key, webhook secret                                         | Validation and local workflow contracts exist; no real writes.                                                                    |
+| Model providers              | Provider key or gateway credential                                                   | Routing and cost primitives exist; no external model calls.                                                                       |
+| MCP servers                  | Registry/config path and tool credentials                                            | Schema/cache/proxy contracts exist; no live transport.                                                                            |
+| Sandbox execution            | Docker or hosted sandbox provider credentials                                        | Policy/adapter contracts exist; production execution is blocked.                                                                  |
+
+## Cost And Limit Controls
+
+Bek's current model includes per-run budget fields, seeded budget policies,
+model route estimates, run cost totals, and `/api/model-usage`. These are useful
+for product shape and local demos. Production cost control still requires
+persistent ledgers, daily/workspace ceilings, provider call accounting, and
+alerting.
+
+## Before A Real Workspace
+
+Read the [operator checklist](./operator-checklist.md) and
+[launch readiness](./launch-readiness.md). At minimum, a real pilot needs
+admin API auth, signed Slack callbacks, persistent storage, durable event
+dedupe, a credential broker, clear approver mapping, and explicit budget limits.

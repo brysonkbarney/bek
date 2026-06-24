@@ -1,3 +1,2 @@
-# Add real GitHub users or team slugs after the repository owner is chosen.
-# Example:
-# * @your-org/bek-maintainers
+# Repository owner until a maintainer team is created.
+* @brysonkbarney

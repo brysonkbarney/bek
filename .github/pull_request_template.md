@@ -20,7 +20,12 @@
 
 ## Verification
 
-- [ ] `pnpm check`
+- [ ] `pnpm format:check`
+- [ ] `pnpm lint`
+- [ ] `pnpm typecheck`
+- [ ] `pnpm test`
+- [ ] `pnpm build`
+- [ ] `pnpm smoke`
 - [ ] Targeted tests:
 - [ ] Docs reviewed for current-vs-planned accuracy:
 

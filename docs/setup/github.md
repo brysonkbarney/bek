@@ -9,9 +9,13 @@ The current foundation provides local helpers only:
 - GitHub App environment validation.
 - GitHub webhook `X-Hub-Signature-256` verification.
 - Canonical repo resource parsing with `github:owner/repo`.
-- Pull request proposal objects that can be evaluated by bundle policy and approval flows before any GitHub write.
+- Installation token request/provider interfaces plus a fake provider for local workers.
+- Pull request proposal objects and PR approval hash inputs that can be evaluated by bundle policy and approval flows before any GitHub write.
+- Local branch, commit, and draft PR workflow plan objects.
+- A fake in-memory GitHub client for tests and local product flows.
+- Webhook delivery dedupe key helpers and normalized `installation`, `pull_request`, and `check_run` events.
 
-It does not call GitHub, exchange installation tokens, clone repositories, push branches, open pull requests, or handle webhook deliveries in the API yet.
+It does not call GitHub, exchange real installation tokens, clone repositories, push branches, open pull requests, or handle webhook deliveries in the API yet.
 
 ## GitHub App Settings
 
@@ -68,11 +72,20 @@ Suggested capability policy:
 
 Opening a pull request should use a proposal object first. The proposal carries `capability: "github.pr"`, the canonical repo resource, and an approval requirement. A worker should only call GitHub after bundle policy allows the resource and any required human approval is approved.
 
+Draft PR workflows should use the local workflow plan helpers before any worker talks to a real provider:
+
+1. Mint a repo-scoped installation token through a `GitHubInstallationTokenProvider`.
+2. Create a branch plan with `capability: "github.branch"`.
+3. Create a commit plan with normalized safe relative file paths.
+4. Create a draft PR proposal and PR approval hash input.
+
+The fake provider and fake client are intentionally local-only. They exist so API, worker, and policy flows can exercise branch/commit/PR behavior without network calls or secrets.
+
 ## Launch Blockers
 
 - GitHub App installation persistence and secret broker integration.
-- Webhook API route with delivery dedupe.
-- Installation token exchange and repo-scoped token brokering.
-- Branch push workflow in an isolated runtime.
-- PR creation/update worker that consumes approved proposal payloads.
+- Webhook API route backed by durable delivery dedupe.
+- Real installation token exchange and repo-scoped token brokering.
+- Real branch push workflow in an isolated runtime.
+- PR creation/update worker that consumes approved proposal payloads and hash inputs.
 - Audit events for token minting, branch writes, PR writes, and webhook handling.

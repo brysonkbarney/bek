@@ -21,7 +21,15 @@ import type {
   CapabilityGrant,
   PlaceScope,
   Run,
+  SetupStatus,
 } from "../api";
+
+type AdminRoute =
+  | "/channels"
+  | "/access-bundles"
+  | "/connectors"
+  | "/models"
+  | "/settings";
 
 export const navigationItems = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
@@ -88,6 +96,82 @@ export function pendingApprovals(
   return approvals.filter((approval) => approval.status === "pending");
 }
 
+export function setupChecklistFromStatus(status: SetupStatus): Array<{
+  id: string;
+  label: string;
+  detail: string;
+  complete: boolean;
+  route: AdminRoute;
+}> {
+  return [
+    {
+      id: "visible-handle",
+      label: "Expose @bek as the only visible Slack teammate",
+      detail: status.singleVisibleAgent
+        ? `Locked to ${status.visibleHandle}`
+        : `Current handle is ${status.visibleHandle || "missing"}`,
+      complete: status.singleVisibleAgent && status.visibleHandle === "@bek",
+      route: "/settings",
+    },
+    {
+      id: "slack-channels",
+      label: "Choose at least one pilot Slack channel",
+      detail: `${status.slackChannels} channel scope${
+        status.slackChannels === 1 ? "" : "s"
+      } configured`,
+      complete: status.slackChannels > 0,
+      route: "/channels",
+    },
+    {
+      id: "access-bundles",
+      label: "Attach an access bundle to govern what @bek can do",
+      detail: `${status.accessBundles} access bundle${
+        status.accessBundles === 1 ? "" : "s"
+      } configured`,
+      complete: status.accessBundles > 0,
+      route: "/access-bundles",
+    },
+    {
+      id: "model-policy",
+      label: "Configure model routing and per-run budget",
+      detail: `${status.modelPolicies} model polic${
+        status.modelPolicies === 1 ? "y" : "ies"
+      } configured`,
+      complete: status.modelPolicies > 0,
+      route: "/models",
+    },
+    {
+      id: "runtime-profile",
+      label: "Register a runtime profile for tool execution",
+      detail: `${status.runtimeProfiles} runtime profile${
+        status.runtimeProfiles === 1 ? "" : "s"
+      } configured`,
+      complete: status.runtimeProfiles > 0,
+      route: "/connectors",
+    },
+    {
+      id: "github-grants",
+      label: "Grant GitHub access only through policy",
+      detail: `${status.githubGrantCount} GitHub grant${
+        status.githubGrantCount === 1 ? "" : "s"
+      } attached`,
+      complete: status.githubGrantCount > 0,
+      route: "/access-bundles",
+    },
+  ];
+}
+
+export function setupProgress(status: SetupStatus): {
+  complete: number;
+  total: number;
+} {
+  const steps = setupChecklistFromStatus(status);
+  return {
+    complete: steps.filter((step) => step.complete).length,
+    total: steps.length,
+  };
+}
+
 export function findPlace(
   data: Bootstrap,
   placeId: string,
@@ -111,7 +195,15 @@ export function assertOneVisibleHandle(data: Pick<Bootstrap, "agent">): string {
   return data.agent.handle;
 }
 
-export function connectorSummaries(data: Bootstrap) {
+export function connectorSummaries(data: Bootstrap): Array<{
+  id: string;
+  name: string;
+  status: string;
+  detail: string;
+  metric: string;
+  route: AdminRoute;
+  actionLabel: string;
+}> {
   const grantResources = data.accessBundles.flatMap((bundle) =>
     bundle.grants.map((grant) => grant.resource),
   );
@@ -122,6 +214,15 @@ export function connectorSummaries(data: Bootstrap) {
   const hasSandbox = grantResources.some((resource) =>
     resource.startsWith("sandbox:"),
   );
+  const githubGrantCount = grantResources.filter((resource) =>
+    resource.startsWith("github:"),
+  ).length;
+  const mcpGrantCount = grantResources.filter((resource) =>
+    resource.startsWith("mcp:"),
+  ).length;
+  const sandboxGrantCount = grantResources.filter((resource) =>
+    resource.startsWith("sandbox:"),
+  ).length;
 
   return [
     {
@@ -131,6 +232,9 @@ export function connectorSummaries(data: Bootstrap) {
       detail: hasSlack
         ? `${data.places.length} channel scopes`
         : "Install Bek in Slack to create runs.",
+      metric: `${data.places.length} scopes`,
+      route: "/channels",
+      actionLabel: "Manage channels",
     },
     {
       id: "github",
@@ -139,12 +243,18 @@ export function connectorSummaries(data: Bootstrap) {
       detail: hasGitHub
         ? "Selected repo grants are attached to access bundles."
         : "Install the GitHub App to enable repo work.",
+      metric: `${githubGrantCount} grants`,
+      route: "/access-bundles",
+      actionLabel: "Review grants",
     },
     {
       id: "mcp",
       name: "MCP Gateway",
-      status: "ready",
+      status: mcpGrantCount > 0 ? "configured" : "ready",
       detail: "Tool grants are mediated through access bundles and approvals.",
+      metric: `${mcpGrantCount} tool grants`,
+      route: "/access-bundles",
+      actionLabel: "Open access",
     },
     {
       id: "sandbox",
@@ -153,6 +263,9 @@ export function connectorSummaries(data: Bootstrap) {
       detail: hasSandbox
         ? "Code execution is gated by policy."
         : "Connect Docker, E2B, or Vercel Sandbox.",
+      metric: `${sandboxGrantCount} grants`,
+      route: "/access-bundles",
+      actionLabel: "Review policy",
     },
     {
       id: "model",
@@ -161,6 +274,20 @@ export function connectorSummaries(data: Bootstrap) {
       detail:
         data.modelPolicies[0]?.defaultModel ??
         "Add OpenAI, Anthropic, OpenRouter, LiteLLM, or a gateway.",
+      metric: `${data.modelPolicies.length} policies`,
+      route: "/models",
+      actionLabel: "Tune routing",
+    },
+    {
+      id: "runtime",
+      name: "Runtime Profiles",
+      status: data.runtimeProfiles.length > 0 ? "ready" : "not configured",
+      detail:
+        data.runtimeProfiles[0]?.adapter ??
+        "Add a local, hosted, or sandboxed runtime adapter.",
+      metric: `${data.runtimeProfiles.length} profiles`,
+      route: "/connectors",
+      actionLabel: "Review runtime",
     },
   ];
 }

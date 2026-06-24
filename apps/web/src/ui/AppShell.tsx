@@ -24,6 +24,7 @@ export function AppShell() {
               <Link
                 key={item.to}
                 to={item.to}
+                activeOptions={{ exact: item.to === "/" }}
                 activeProps={{ className: "active", "aria-current": "page" }}
               >
                 <Icon size={17} aria-hidden="true" />

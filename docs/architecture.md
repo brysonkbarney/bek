@@ -18,7 +18,9 @@ apps/web
 apps/api
   Hono API
   seeded in-memory store for local demo
+  optional Postgres snapshot repository
   Slack event endpoint
+  Slack OAuth state and code exchange
   run creation
   approvals
   policy evaluation
@@ -33,12 +35,14 @@ packages/core
 packages/slack
   Slack signature verification
   event normalization
+  OAuth state and exchange helpers
+  message rendering
 
 packages/db
-  Drizzle/Postgres schema draft
+  Drizzle/Postgres schema and snapshot repository
 
 packages/model-router
-  provider-neutral model selection stub
+  provider-neutral model selection and local fake gateway
 
 packages/mcp-gateway
   MCP manifest/proxy contract foundations
@@ -46,15 +50,17 @@ packages/mcp-gateway
 
 ## Next Architecture Milestones
 
-1. Replace in-memory store with Postgres repository implementation.
-2. Add worker-owned run advancement.
-3. Add real Slack install/OAuth and message posting.
+1. Harden Postgres persistence from snapshot writes toward row-level commands,
+   locks, migrations, and multi-process idempotency.
+2. Wire API-created runs into the worker service instead of only the local
+   smoke/demo flow.
+3. Add credential-vault persistence for Slack installs and real message posting.
 4. Add GitHub App installation and repo grants.
-5. Add local Docker sandbox provider.
+5. Connect local Docker sandbox execution into the worker runtime path.
 6. Add OpenCode adapter.
 7. Add MCP registry and tool proxy.
 8. Add credential broker.
-9. Add audit export and eval dataset generation.
+9. Wire audit export and eval dataset generation into the admin/API surfaces.
 
 ## Non-Negotiable Invariants
 

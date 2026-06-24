@@ -1,17 +1,78 @@
 name: bek
+
+x-bek-build: &bek-build
+  context: .
+  args:
+    VITE_BEK_API_URL: ${VITE_BEK_API_URL:-http://localhost:4317}
+    VITE_BEK_ADMIN_API_TOKEN: ${VITE_BEK_ADMIN_API_TOKEN:-}
+
+x-bek-app-env: &bek-app-env
+  NODE_ENV: ${NODE_ENV:-production}
+  BEK_API_PORT: ${BEK_API_PORT:-4317}
+  BEK_PUBLIC_URL: ${BEK_PUBLIC_URL:-http://localhost:4317}
+  BEK_ADMIN_API_TOKEN: ${BEK_ADMIN_API_TOKEN:-}
+  BEK_REQUIRE_ADMIN_AUTH: ${BEK_REQUIRE_ADMIN_AUTH:-true}
+  BEK_ADMIN_ORIGINS: ${BEK_ADMIN_ORIGINS:-http://localhost:5173}
+  BEK_STORAGE: ${BEK_STORAGE:-postgres}
+  BEK_DB_AUTO_SEED: ${BEK_DB_AUTO_SEED:-true}
+  BEK_DB_LOGGER: ${BEK_DB_LOGGER:-false}
+  BEK_ORG_ID: ${BEK_ORG_ID:-org_demo}
+  DATABASE_URL: ${DATABASE_URL:-postgres://bek:bek@postgres:5432/bek}
+  REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+  S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+  S3_BUCKET: ${S3_BUCKET:-bek-artifacts}
+  S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-bek}
+  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-bek-local-dev}
+  BEK_DEV_UNSIGNED_SLACK: ${BEK_DEV_UNSIGNED_SLACK:-false}
+  SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+  SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+  SLACK_CLIENT_ID: ${SLACK_CLIENT_ID:-}
+  SLACK_CLIENT_SECRET: ${SLACK_CLIENT_SECRET:-}
+  SLACK_STATE_SECRET: ${SLACK_STATE_SECRET:-}
+  SLACK_REDIRECT_URI: ${SLACK_REDIRECT_URI:-http://localhost:4317/api/slack/oauth/callback}
+  BEK_SLACK_OAUTH_EXCHANGE: ${BEK_SLACK_OAUTH_EXCHANGE:-}
+  SLACK_BOT_SCOPES: ${SLACK_BOT_SCOPES:-app_mentions:read,reactions:read,commands,chat:write}
+  BEK_SLACK_USER_PRINCIPAL_MAP: "${BEK_SLACK_USER_PRINCIPAL_MAP:-{}}"
+  BEK_MODEL_ROUTING_MODE: ${BEK_MODEL_ROUTING_MODE:-auto}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  VERCEL_AI_GATEWAY_API_KEY: ${VERCEL_AI_GATEWAY_API_KEY:-}
+  LITELLM_BASE_URL: ${LITELLM_BASE_URL:-}
+  OPENAI_COMPATIBLE_BASE_URL: ${OPENAI_COMPATIBLE_BASE_URL:-}
+  OPENAI_COMPATIBLE_API_KEY: ${OPENAI_COMPATIBLE_API_KEY:-}
+  GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+  GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
+  GITHUB_APP_CLIENT_SECRET: ${GITHUB_APP_CLIENT_SECRET:-}
+  GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+  GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+  MCP_CONFIG_PATH: ${MCP_CONFIG_PATH:-}
+  MCP_GATEWAY_ENCRYPTION_KEY: ${MCP_GATEWAY_ENCRYPTION_KEY:-}
+  BEK_RUNTIME_PROVIDER: ${BEK_RUNTIME_PROVIDER:-ai_sdk}
+  BEK_SANDBOX_PROVIDER: ${BEK_SANDBOX_PROVIDER:-docker}
+  E2B_API_KEY: ${E2B_API_KEY:-}
+  VERCEL_OIDC_TOKEN: ${VERCEL_OIDC_TOKEN:-}
+  OPENCODE_BIN: ${OPENCODE_BIN:-opencode}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-bek}
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
     ports:
-      - "54329:5432"
+      - "${POSTGRES_PORT:-54329}:5432"
     environment:
-      POSTGRES_USER: bek
-      POSTGRES_PASSWORD: bek
-      POSTGRES_DB: bek
+      POSTGRES_USER: ${POSTGRES_USER:-bek}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bek}
+      POSTGRES_DB: ${POSTGRES_DB:-bek}
     volumes:
       - bek-postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bek"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER:-bek} -d $${POSTGRES_DB:-bek}",
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -19,7 +80,7 @@ services:
   redis:
     image: valkey/valkey:8
     ports:
-      - "63799:6379"
+      - "${VALKEY_PORT:-63799}:6379"
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 5s
@@ -30,13 +91,89 @@ services:
     image: minio/minio:RELEASE.2026-06-06T09-32-03Z
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     environment:
-      MINIO_ROOT_USER: bek
-      MINIO_ROOT_PASSWORD: bek-local-dev
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-bek}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-bek-local-dev}
     volumes:
       - bek-minio:/data
+
+  migrate:
+    profiles: ["app"]
+    image: bek-api:local
+    build:
+      <<: *bek-build
+      target: api
+    command: ["pnpm", "db:migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *bek-app-env
+    restart: "no"
+
+  api:
+    profiles: ["app"]
+    image: bek-api:local
+    build:
+      <<: *bek-build
+      target: api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *bek-app-env
+    ports:
+      - "${BEK_API_PORT:-4317}:${BEK_API_PORT:-4317}"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://127.0.0.1:'' + (process.env.BEK_API_PORT || ''4317'') + ''/health'').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  web:
+    profiles: ["app"]
+    image: bek-web:local
+    build:
+      <<: *bek-build
+      target: web
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      BEK_WEB_PORT: ${BEK_WEB_PORT:-5173}
+      VITE_BEK_API_URL: ${VITE_BEK_API_URL:-http://localhost:4317}
+      VITE_BEK_ADMIN_API_TOKEN: ${VITE_BEK_ADMIN_API_TOKEN:-}
+    ports:
+      - "${BEK_WEB_PORT:-5173}:${BEK_WEB_PORT:-5173}"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://127.0.0.1:'' + (process.env.BEK_WEB_PORT || ''5173'') + ''/'').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  worker:
+    profiles: ["worker"]
+    image: bek-worker:local
+    build:
+      <<: *bek-build
+      target: worker
+    environment:
+      <<: *bek-app-env
+    restart: "no"
 
 volumes:
   bek-postgres:

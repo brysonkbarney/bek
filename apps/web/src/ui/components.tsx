@@ -72,15 +72,24 @@ export function StatusBadge({ value }: { value: string }) {
     normalized.includes("denied") ||
     normalized.includes("disabled")
       ? "danger"
-      : normalized.includes("pending") ||
-          normalized.includes("awaiting") ||
-          normalized.includes("ask")
+      : normalized.startsWith("not ") ||
+          normalized.includes("not connected") ||
+          normalized.includes("not configured")
         ? "warning"
-        : normalized.includes("active") ||
-            normalized.includes("connected") ||
-            normalized.includes("completed")
-          ? "success"
-          : "neutral";
+        : normalized.includes("pending") ||
+            normalized.includes("awaiting") ||
+            normalized.includes("ask") ||
+            normalized.includes("paused") ||
+            normalized.includes("required") ||
+            normalized.includes("needs")
+          ? "warning"
+          : normalized.includes("active") ||
+              normalized.includes("connected") ||
+              normalized.includes("completed") ||
+              normalized.includes("configured") ||
+              normalized.includes("ready")
+            ? "success"
+            : "neutral";
   return <span className={`badge ${tone}`}>{value.replaceAll("_", " ")}</span>;
 }
 
@@ -163,6 +172,15 @@ export function WarningCallout({ children }: { children: ReactNode }) {
   return (
     <div className="callout" role="alert">
       <AlertTriangle size={17} aria-hidden="true" />
+      <span>{children}</span>
+    </div>
+  );
+}
+
+export function SuccessCallout({ children }: { children: ReactNode }) {
+  return (
+    <div className="callout success" role="status" aria-live="polite">
+      <CheckCircle2 size={17} aria-hidden="true" />
       <span>{children}</span>
     </div>
   );

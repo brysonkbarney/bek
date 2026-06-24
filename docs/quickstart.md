@@ -1,12 +1,23 @@
 # Quickstart
 
-This quickstart runs the current local Bek spine: the API, seeded in-memory workspace data, and the admin console.
+This quickstart runs the current local Bek spine: the API, seeded in-memory
+workspace data, and the admin console. It does not require Slack, GitHub, model
+provider, MCP, or sandbox credentials.
 
 ## Prerequisites
 
 - Node.js 25, matching CI.
 - pnpm 11.1.3.
 - Docker, optional for local Postgres, Valkey, and MinIO services.
+
+## Environment
+
+No `.env` file is required for the seeded local demo. The API has local defaults
+for ports and demo data.
+
+Use `.env.example` as a checklist when you want explicit values or external
+credentials. Do not commit real secrets. If you need the API process to see a
+value, export it in the shell that starts `pnpm dev` or use your own env loader.
 
 ## Install
 
@@ -16,10 +27,34 @@ pnpm install
 
 ## Start Local Services
 
-The API currently uses an in-memory seed store, so Docker is optional for the local demo. Start the services when you want the self-hosting dependencies available:
+The default local demo uses an in-memory seed store, so Docker is optional.
+Start the services when you want the self-hosting dependencies available:
 
 ```bash
 docker compose up -d
+```
+
+This starts:
+
+- Postgres on `localhost:54329`
+- Valkey on `localhost:63799`
+- MinIO on `localhost:9000` and its console on `localhost:9001`
+
+The Drizzle schema, seed command, and API can target Postgres. Migrate first,
+then either seed explicitly or let the API auto-seed the default demo org on
+first boot:
+
+```bash
+DATABASE_URL=postgres://bek:bek@localhost:54329/bek pnpm db:migrate
+DATABASE_URL=postgres://bek:bek@localhost:54329/bek pnpm db:seed
+```
+
+To run the API against that repository, set `BEK_STORAGE=postgres` with
+`DATABASE_URL`. If you load `.env.example`, override its `BEK_STORAGE=memory`
+line:
+
+```bash
+BEK_STORAGE=postgres DATABASE_URL=postgres://bek:bek@localhost:54329/bek pnpm dev:api
 ```
 
 ## Start Bek
@@ -33,7 +68,43 @@ Open:
 - Admin console: `http://localhost:5173`
 - API health: `http://localhost:4317/health`
 
-## Smoke Test A Run
+You can also run one side at a time:
+
+```bash
+pnpm dev:api
+pnpm dev:web
+```
+
+## Smoke Test The API
+
+The scripted smoke test does not require Slack, GitHub, model-provider, MCP, or
+sandbox credentials:
+
+```bash
+pnpm smoke
+```
+
+By default the script targets `VITE_BEK_API_URL` or
+`http://localhost:${BEK_SMOKE_API_PORT:-4317}`. If that API is already healthy,
+the script exercises it. If not, it starts `apps/api` with `BEK_STORAGE=memory`,
+no `DATABASE_URL`, and no admin token, runs the checks, and stops the process.
+
+The smoke flow verifies:
+
+- `/health`
+- `/api/bootstrap`
+- `/api/setup/status`
+- `/api/policy/evaluate` for allowed read and approval-gated PR policies
+- `/api/runs` creation for a seeded `github.pr` request
+- `/api/runs/:id` pending approval details and run events
+- `/api/approvals/:id/approve`
+- final completed run state
+
+Set `BEK_SMOKE_START_API=never` when you want the script to fail unless an API
+is already running. If you point the script at an API that requires admin auth,
+export `BEK_ADMIN_API_TOKEN` in the shell that runs `pnpm smoke`.
+
+## Smoke Test A Run Manually
 
 Create a read-only run in the seeded `#checkout-eng` place:
 
@@ -68,6 +139,65 @@ curl -s http://localhost:4317/api/approvals
 curl -s http://localhost:4317/api/audit-events
 ```
 
+The scripted smoke test performs the approval-gated version end to end and
+approves it as the seeded `principal_admin` principal.
+
+## Try The Local Worker Runner
+
+`@bek/worker` includes a deterministic local runner that seeds a run, enqueues
+it, processes it through the runtime service, and prints the queue/event trace:
+
+```bash
+pnpm worker:local
+```
+
+This does not call external models, GitHub, Slack, MCP servers, or sandboxes. It
+is the local proof of Bek's worker boundary before durable queue dispatch is
+wired into the API.
+
+## Optional Admin Auth
+
+Local dev may run without an admin token. Shared, hosted, and production
+environments must require one:
+
+```bash
+export BEK_ADMIN_API_TOKEN="$(openssl rand -hex 32)"
+export BEK_REQUIRE_ADMIN_AUTH=true
+export VITE_BEK_ADMIN_API_TOKEN="$BEK_ADMIN_API_TOKEN"
+pnpm dev
+```
+
+When auth is enabled, API requests to `/api/*` need:
+
+```txt
+authorization: Bearer YOUR_TOKEN
+```
+
+Slack callback routes remain public so Slack can reach them, but they still
+verify Slack signatures outside unsigned local demo mode.
+
+## Optional Slack Callback Test
+
+For real Slack callback testing, expose the API with an HTTPS tunnel and set:
+
+```bash
+export SLACK_SIGNING_SECRET=...
+export SLACK_REDIRECT_URI=https://YOUR-TUNNEL.example.com/api/slack/oauth/callback
+```
+
+Use the same tunnel base URL in the Slack app's Events API, slash command, and
+interactivity request URLs. `BEK_PUBLIC_URL` is listed in `.env.example` as an
+operator reference value, but the current API uses explicit Slack callback
+settings such as `SLACK_REDIRECT_URI`.
+
+Unsigned Slack payloads are only for local experiments:
+
+```bash
+BEK_DEV_UNSIGNED_SLACK=true pnpm dev:api
+```
+
+Never enable unsigned mode in shared or production environments.
+
 ## Verify
 
 ```bash
@@ -81,9 +211,14 @@ pnpm check
 - A Checkout Engineering access bundle with Slack read, GitHub read, GitHub PR approval, and sandbox approval grants.
 - An Auto balanced model policy and answer/code runtime profiles.
 
-## Current Alpha Limits
+## Current Product Limits
 
-- Slack OAuth/install is not implemented yet.
-- Persistent storage is not wired into the API yet.
-- Model calls, GitHub writes, sandbox execution, and MCP tool proxying are foundations or stubs.
+- Slack OAuth redirect, callback state validation, and explicit/prod OAuth code
+  exchange exist. Bot token vault storage and live Slack posting are still
+  blocked on the credential broker.
+- Persistent storage exists as a schema/repository package and the API can use
+  it with `BEK_STORAGE=postgres` plus `DATABASE_URL`. The default local mode is
+  still in-memory for zero-credential demos.
+- Model calls, GitHub writes, sandbox execution, and MCP tool proxying are
+  foundations, deterministic local providers, or contracts.
 - Do not use this repo for production workspaces until the launch blockers in `docs/launch-readiness.md` are closed.

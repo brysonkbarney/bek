@@ -1,25 +1,39 @@
 # Launch Readiness
 
-Bek should launch in stages. The current repo is good enough to show the product spine to collaborators, but not yet good enough for real customer Slack workspaces or hosted paid beta.
+Bek should launch in stages. The current repo is good enough to show the product spine to collaborators and self-hosted evaluators, but not yet good enough for broad customer Slack workspaces or hosted paid beta.
 
-## Current Alpha Spine
+## Current OSS Spine
 
 - One visible `@bek` product model is enforced in docs, seed data, UI, and schema.
 - Admin console covers setup, channels, access bundles, runs, run detail, approvals, connectors, models, memory stance, audit, and settings.
-- API supports seeded runs, approvals, audit events, policy evaluation, Slack event ingress, admin auth when configured, and signed Slack request verification.
+- API supports seeded runs, approvals, audit events, policy evaluation, Slack event ingress, Slack OAuth state/exchange, admin auth when configured, signed Slack request verification, and Postgres-backed snapshot persistence when configured.
 - Tests cover policy deny precedence, wildcard scoping, Slack signature tamper/replay, approval tamper/self-approval/double approval/expiry, API behavior, model routing, MCP manifest generation, and redaction.
 - DB, runtime, sandbox, model-router, MCP, Slack, core, API, and web package contracts exist.
-- `pnpm format:check` and `pnpm check` pass locally.
+- Release candidates should pass `pnpm format:check` and `pnpm check` before
+  tagging or inviting outside users.
 
-## OSS Alpha Gate
+## Docs And Operator Entry Points
 
-Bek can be public as an OSS alpha when the repo has:
+- [Docs home](./README.md) orients first-time evaluators.
+- [Quickstart](./quickstart.md) runs the local demo without external
+  credentials.
+- [Docker Compose self-hosting](./self-host/docker-compose.md) explains the
+  local Postgres, Valkey, and MinIO dependency stack.
+- [Operator checklist](./operator-checklist.md) tracks workspace readiness.
+- [Security entry points](./security/threat-model-entry-points.md) maps assets,
+  trust boundaries, and runtime entry points for threat modeling.
+- [Hosted Bek](./commercial/hosted.md) explains the planned managed offering
+  without implying hosted GA availability.
+
+## OSS Public Gate
+
+Bek can be public as an OSS release candidate when the repo has:
 
 - GitHub repo initialized with CI, CodeQL, dependency review, issue templates, PR template, security policy, roadmap, conduct docs, and license.
 - Local quickstart that reliably starts API and web.
 - Browser-verified admin console.
 - Smoke script that creates a run, creates an approval, approves it, and confirms the run state.
-- Docs that state current limits plainly: in-memory API store, no real Slack OAuth install yet, no real GitHub writes, no production sandbox execution yet.
+- Docs that state current limits plainly: bot-token vault storage is pending, no real GitHub writes, no production sandbox execution yet.
 
 ## Product
 
@@ -29,14 +43,14 @@ Bek can be public as an OSS alpha when the repo has:
 - A fake write action creates an approval and resumes after approval.
 - Run timeline shows context, tools, approvals, model/cost, and final output.
 
-These product items block a real design-partner Slack install, not a code-only alpha.
+These product items block broad design-partner rollout, not a code-only release candidate.
 
 ## Engineering
 
 - `pnpm check` passes in CI.
-- Postgres-backed store replaces the local in-memory store for persisted mode.
-- Worker owns run advancement.
-- Slack event dedupe is durable.
+- Postgres-backed store is available for persisted mode.
+- Worker owns run advancement beyond the deterministic local runner.
+- Slack event dedupe is durable instead of in-memory.
 - API has typed errors and request IDs.
 - Docker Compose starts all local dependencies.
 - GitHub App package can validate config, verify webhooks, parse repo resources, and generate PR proposals without network calls.
@@ -53,6 +67,18 @@ These product items block a real design-partner Slack install, not a code-only a
 - CORS stays allowlisted and admin API auth is mandatory for hosted/prod.
 - Slack unsigned demo mode cannot work in production.
 
+## Cost And Limits
+
+- Per-run model budgets are visible in model policies.
+- Current cost totals are demo/local fields and `/api/model-usage`, not a
+  production billing ledger.
+- Hosted or shared pilots need persistent usage accounting by org, channel,
+  model, runtime, and tool.
+- Daily/workspace ceilings, alerting, and budget step-up approvals block hosted
+  paid beta.
+- Expensive fallback models must be opt-in by admin policy, not automatic for
+  every channel.
+
 ## Go-To-Market
 
 - Public README explains the one-teammate thesis in 60 seconds.
@@ -64,7 +90,8 @@ These product items block a real design-partner Slack install, not a code-only a
 
 ## Hosted Paid Beta Gate
 
-- Persistent Postgres store is wired into the API.
+- Postgres persistence has row-level command writes, locks, backups, and
+  tenant-isolation coverage beyond the current snapshot mode.
 - Durable queue/worker handles claim, heartbeat, retry, cancellation, and approval resume.
 - Slack OAuth install stores bot/workspace metadata securely.
 - Slack message posting and approval buttons work end to end.

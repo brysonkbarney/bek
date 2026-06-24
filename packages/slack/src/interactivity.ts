@@ -1,4 +1,11 @@
-export type SlackApprovalDecision = "approved" | "denied";
+import {
+  decisionFromSlackApprovalActionId,
+  isSlackApprovalActionId,
+  parseSlackApprovalActionValue,
+  type SlackApprovalDecision,
+} from "./approval-payloads";
+
+export type { SlackApprovalDecision } from "./approval-payloads";
 
 export interface SlackApprovalInteraction {
   type: "approval";
@@ -10,6 +17,8 @@ export interface SlackApprovalInteraction {
   channelId?: string;
   teamId?: string;
   responseUrl?: string;
+  actionTs?: string;
+  messageTs?: string;
 }
 
 export type SlackInteraction =
@@ -43,8 +52,9 @@ export function parseSlackInteraction(rawBody: string): SlackInteraction {
     };
   }
 
-  const approvalPayload = parseApprovalValue(action.value);
-  const decision = approvalPayload.decision ?? decisionFromActionId(action.id);
+  const approvalPayload = parseSlackApprovalActionValue(action.value);
+  const decision =
+    approvalPayload.decision ?? decisionFromSlackApprovalActionId(action.id);
   if (
     !approvalPayload.approvalId ||
     !approvalPayload.payloadHash ||
@@ -83,6 +93,13 @@ export function parseSlackInteraction(rawBody: string): SlackInteraction {
   if (responseUrl) {
     interaction.responseUrl = responseUrl;
   }
+  if (action.actionTs) {
+    interaction.actionTs = action.actionTs;
+  }
+  const messageTs = nestedString(payload, "container", "message_ts");
+  if (messageTs) {
+    interaction.messageTs = messageTs;
+  }
 
   return interaction;
 }
@@ -101,75 +118,14 @@ function firstApprovalAction(payload: Record<string, unknown>) {
     const id =
       typeof record.action_id === "string" ? record.action_id : undefined;
     const value = typeof record.value === "string" ? record.value : undefined;
-    if (id && value && isApprovalActionId(id)) {
-      return { id, value };
+    const actionTs =
+      typeof record.action_ts === "string" ? record.action_ts : undefined;
+    if (id && value && isSlackApprovalActionId(id)) {
+      return { id, value, actionTs };
     }
   }
 
   return undefined;
-}
-
-function isApprovalActionId(actionId: string): boolean {
-  return (
-    actionId === "bek.approval.approve" ||
-    actionId === "bek.approval.deny" ||
-    actionId === "bek_approval_approve" ||
-    actionId === "bek_approval_deny"
-  );
-}
-
-function decisionFromActionId(
-  actionId: string,
-): SlackApprovalDecision | undefined {
-  if (actionId.endsWith(".approve") || actionId.endsWith("_approve")) {
-    return "approved";
-  }
-  if (actionId.endsWith(".deny") || actionId.endsWith("_deny")) {
-    return "denied";
-  }
-  return undefined;
-}
-
-function parseApprovalValue(value: string): {
-  approvalId?: string;
-  payloadHash?: string;
-  decision?: SlackApprovalDecision;
-} {
-  try {
-    const parsed = JSON.parse(value) as Record<string, unknown>;
-    const result: {
-      approvalId?: string;
-      payloadHash?: string;
-      decision?: SlackApprovalDecision;
-    } = {};
-    if (typeof parsed.approvalId === "string") {
-      result.approvalId = parsed.approvalId;
-    }
-    if (typeof parsed.payloadHash === "string") {
-      result.payloadHash = parsed.payloadHash;
-    }
-    if (parsed.decision === "approved" || parsed.decision === "denied") {
-      result.decision = parsed.decision;
-    }
-    return result;
-  } catch {
-    const [approvalId, payloadHash, decision] = value.split("|");
-    const result: {
-      approvalId?: string;
-      payloadHash?: string;
-      decision?: SlackApprovalDecision;
-    } = {};
-    if (approvalId) {
-      result.approvalId = approvalId;
-    }
-    if (payloadHash) {
-      result.payloadHash = payloadHash;
-    }
-    if (decision === "approved" || decision === "denied") {
-      result.decision = decision;
-    }
-    return result;
-  }
 }
 
 function nestedString(

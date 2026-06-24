@@ -7,13 +7,14 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
+    "start": "tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@bek/core": "workspace:*",
+    "@bek/db": "workspace:*",
     "@bek/slack": "workspace:*",
     "@hono/node-server": "^1.19.6",
     "hono": "^4.11.3",

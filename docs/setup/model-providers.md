@@ -13,7 +13,14 @@ The seed workspace includes one model policy:
 | Fallbacks      | `anthropic/claude-sonnet-4.8`, `openai-compatible/local` |
 | Per-run budget | `$20.00`                                                 |
 
-The model-router package is a foundation. The current local demo does not call external model APIs.
+The model-router package now includes local productization foundations:
+
+- An in-memory provider registry for configured providers and model metadata.
+- A deterministic fake model gateway for tests and demos.
+- Cost ledger helpers for preflight estimates and completed calls.
+- Failover routing that can try configured fallbacks when a provider call fails.
+
+The current local demo still does not call external model APIs. Provider adapters must plug into these contracts without changing the one visible `@bek` user experience.
 
 ## Admin Setup Model
 
@@ -43,10 +50,36 @@ Bek should route internally based on place, task, policy, capability profile, mo
 - Prefer scoped credentials, short-lived tokens, or delegated provider access where possible.
 - Redact provider keys from logs, audit event payloads, screenshots, and issue reports.
 
+## Current Cost Controls
+
+The current repo has the product primitives for cost control:
+
+- model policies with `perRunBudgetCents`,
+- fallback model lists,
+- deterministic route estimates in `@bek/model-router`,
+- model usage ledger helpers,
+- run-level estimated and actual cost fields,
+- `/api/model-usage` summary for seeded/local runs.
+
+These are not yet production billing controls. Before a shared workspace or
+hosted beta, Bek still needs persistent usage records, daily/workspace ceilings,
+provider response accounting, alerts, and approval checkpoints for budget
+step-ups.
+
+Recommended local/pilot defaults:
+
+| Control          | Default posture                                       |
+| ---------------- | ----------------------------------------------------- |
+| Per-run budget   | Low cap per model policy, raised only by admins.      |
+| Fallback models  | Explicit allowlist, ordered by cost and reliability.  |
+| Expensive runs   | Require approval before crossing the configured cap.  |
+| Provider keys    | Stored outside prompts, sandboxes, logs, and tests.   |
+| Usage visibility | Review run costs and `/api/model-usage` during demos. |
+
 ## Launch Blockers
 
 - Concrete provider adapters.
 - Credential broker.
-- Cost estimation and usage ledger wired to real calls.
+- Cost ledger persistence wired to real calls.
 - Admin UI for model policies.
-- Tests for budget enforcement and provider fallback behavior.
+- Production budget enforcement across persisted daily and per-run usage.

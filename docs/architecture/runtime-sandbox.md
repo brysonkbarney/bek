@@ -186,6 +186,29 @@ Provider rules:
   teams already standardized on E2B.
 - Provider-specific IDs, URLs, and tokens are never exposed to Slack users.
 
+### Local Docker Provider Contract
+
+The `@bek/sandbox` local Docker surface is intentionally split into pure
+construction and provider behavior:
+
+- `buildDockerRunCommand` validates a `docker-local` policy and returns a
+  shell-free `docker run` argv array. Tests assert the argv instead of starting
+  Docker.
+- The default network mode produces `--network none`. Allowlisted egress uses
+  an explicit `bek-egress-allowlist` Docker network plus a
+  `BEK_SANDBOX_EGRESS_ALLOWLIST` environment hint for the egress proxy layer.
+- The builder never emits `--privileged`; it uses a read-only root filesystem,
+  tmpfs scratch, `no-new-privileges`, dropped capabilities, PID/memory/CPU
+  limits, a non-root user, and explicit bind mounts.
+- Policy validation rejects disabled-network allowlists, empty egress
+  allowlists, wildcard/path/CIDR allowlist entries, metadata services, and
+  private/link-local/localhost targets while `blockPrivateNetworks` is true.
+- Docker mounts cannot include the Docker socket or common host credential
+  paths. Source mounts must be read-only.
+- `FakeSandboxProvider` implements the provider interface for unit tests. It
+  validates policies and commands, records executed argv, hashes uploaded
+  artifacts, and enforces destroyed leases without spawning containers.
+
 ## Filesystem Policy
 
 Default layout inside a sandbox:

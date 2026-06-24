@@ -38,3 +38,54 @@ Migration-safe UUID plan:
 - `credential_metadata`: secret broker references and rotation metadata only; raw secrets do not belong in Postgres.
 - `audit_events`: append-only side-effect and governance log entries.
 - `model_usage`, `tool_usage`: cost, latency, decision, and execution accounting for model calls and tool calls.
+
+## Persistence Runtime
+
+`@bek/db` is the persistence package. It exports:
+
+- `createBekDbClient()`: creates a Drizzle `pg` client from `DATABASE_URL`.
+- `DrizzleBekSnapshotRepository`: reads and writes the current `BekSnapshot` domain without exposing internal capability rows to users.
+- `seedBekSnapshot()`: writes the demo seed snapshot into Postgres.
+
+The repository keeps the launch invariant explicit: each org must read back as exactly one visible `@bek` agent. Capability profiles, grants, runtime profiles, model policies, and budget policies remain internal governed capabilities behind that handle.
+
+## DATABASE_URL
+
+Local Docker Compose uses:
+
+```bash
+DATABASE_URL=postgres://bek:bek@localhost:54329/bek
+```
+
+Set `DATABASE_URL` before running migration or seed commands. The Drizzle config falls back to the local Docker Compose URL for developer convenience, but hosted and shared environments must pass their own URL through the environment.
+
+## Migration Flow
+
+Generate a migration from the Drizzle schema:
+
+```bash
+pnpm db:generate
+```
+
+Apply migrations to the database selected by `DATABASE_URL`:
+
+```bash
+pnpm db:migrate
+```
+
+For local development, start Postgres first:
+
+```bash
+docker compose up -d postgres
+DATABASE_URL=postgres://bek:bek@localhost:54329/bek pnpm db:migrate
+```
+
+## Seed Flow
+
+Seed the current demo workspace into the migrated database:
+
+```bash
+DATABASE_URL=postgres://bek:bek@localhost:54329/bek pnpm db:seed
+```
+
+The seed command replaces the persisted rows for the current `BekSnapshot` domain in that org: org, principals, the single `@bek` agent, capability profiles, places, access bundles, grants, policies, runs, events, and approvals. The API uses this repository when `BEK_STORAGE=postgres` or a `DATABASE_URL`-backed Postgres mode is selected.

@@ -27,10 +27,19 @@ It can:
 - normalize `app_mention` and `reaction_added` events,
 - create a local Bek run when the event or slash-command channel matches seeded channel IDs,
 - redirect installers to Slack OAuth with signed state,
-- validate OAuth callback state before token exchange,
-- parse Bek approval button actions and apply them when the Slack user is mapped to a Bek principal.
+- validate OAuth callback state and exchange OAuth codes when
+  `BEK_SLACK_OAUTH_EXCHANGE=true` or `NODE_ENV=production`,
+- parse Bek approval button actions and apply them when the Slack user is mapped to a Bek principal,
+- build Slack Web API message payloads for queued runs, approval requests, approval decisions, and final answers,
+- provide a typed Slack Web API client interface plus a fake in-memory client for tests,
+- build durable Slack ingress keys for events, slash commands, and approval interactions.
 
-It does not yet include Slack OAuth token exchange, bot token storage, message posting, durable event dedupe, or persistent Slack user/principal mapping.
+When exchange is enabled, the callback returns redacted install metadata for
+verification. Bek does not persist the bot token yet, and `SLACK_BOT_TOKEN` is
+reserved until live Slack Web API posting is wired.
+
+It does not yet include bot token vault storage, real Slack Web API posting,
+persistent durable-event storage, or persistent Slack user/principal mapping.
 
 ## Create A Slack App
 
@@ -65,6 +74,7 @@ It does not yet include Slack OAuth token exchange, bot token storage, message p
    export SLACK_CLIENT_SECRET=...
    export SLACK_STATE_SECRET="$(openssl rand -hex 32)"
    export SLACK_REDIRECT_URI=https://YOUR-TUNNEL.example.com/api/slack/oauth/callback
+   export BEK_SLACK_OAUTH_EXCHANGE=true
    ```
 
    Then open:
@@ -82,9 +92,10 @@ It does not yet include Slack OAuth token exchange, bot token storage, message p
    Interactivity request URL: https://YOUR-TUNNEL.example.com/api/slack/interactivity
    ```
 
-   The local approval-button skeleton expects action IDs
+   Bek approval buttons use action IDs
    `bek.approval.approve` or `bek.approval.deny` and a button `value` JSON
-   object containing `approvalId` and `payloadHash`.
+   object containing `approvalId`, `payloadHash`, and optional run/action
+   context. The parser still accepts the older pipe-delimited local test value.
 
 ## Local Tunnel
 
@@ -129,9 +140,8 @@ Before inviting Bek broadly, decide:
 
 ## Launch Blockers
 
-- Slack OAuth token exchange and bot token storage through a credential broker.
-- Thread replies and message posting.
-- Production approval message rendering.
-- Durable Slack event dedupe.
+- Bot token storage through a credential broker.
+- Thread replies and real Slack Web API message posting.
+- Persistent durable Slack event dedupe storage.
 - Persistent Slack user/principal mapping.
 - Admin UI for channel discovery and bundle attachment.

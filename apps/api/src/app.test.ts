@@ -3,11 +3,13 @@ import {
   createSlackSignature,
   verifySlackOAuthState,
 } from "@bek/slack";
-import { afterEach, describe, expect, it } from "vitest";
+import { BekStore } from "@bek/core";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "./app";
 
 const managedEnvKeys = [
   "BEK_ADMIN_API_TOKEN",
+  "BEK_SLACK_OAUTH_EXCHANGE",
   "BEK_SLACK_USER_PRINCIPAL_MAP",
   "SLACK_BOT_SCOPES",
   "SLACK_CLIENT_ID",
@@ -24,6 +26,7 @@ for (const key of managedEnvKeys) {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const key of managedEnvKeys) {
     if (originalEnv[key] === undefined) {
       delete process.env[key];
@@ -85,6 +88,15 @@ async function createPrApproval(
   return { run, approval: json.approvals[0]! };
 }
 
+async function expectJson<T = unknown>(
+  app: ReturnType<typeof createApp>,
+  path: string,
+): Promise<T> {
+  const res = await app.request(path);
+  expect(res.status).toBe(200);
+  return (await res.json()) as T;
+}
+
 describe("Bek API", () => {
   it("protects admin API routes when an admin token is configured", async () => {
     const previousToken = process.env.BEK_ADMIN_API_TOKEN;
@@ -107,6 +119,35 @@ describe("Bek API", () => {
     }
   });
 
+  it("keeps Slack callbacks public when admin auth is configured", async () => {
+    process.env.BEK_ADMIN_API_TOKEN = "test-admin-token";
+    const rawBody = JSON.stringify({
+      event_id: "EvAdminAuthBypass",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek hello",
+      },
+    });
+
+    const denied = await createApp().request("/api/bootstrap", {
+      headers: { authorization: "Bearer wrong-token" },
+    });
+    expect(denied.status).toBe(401);
+
+    const slack = await createApp().request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+    expect(slack.status).toBe(200);
+    await expect(slack.json()).resolves.toMatchObject({
+      ok: true,
+      runId: expect.any(String),
+    });
+  });
+
   it("allows local dev admin origins when Vite falls back to another port", async () => {
     const res = await createApp().request("/api/bootstrap", {
       headers: { origin: "http://localhost:5174" },
@@ -125,6 +166,537 @@ describe("Bek API", () => {
       ok: true,
       name: "bek-api",
     });
+  });
+
+  it("reports setup status for the local product spine", async () => {
+    const res = await createApp().request("/api/setup/status");
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      visibleHandle: "@bek",
+      singleVisibleAgent: true,
+      readyForLocalDemo: true,
+    });
+  });
+
+  it("serves every read-only admin resource", async () => {
+    const app = createApp();
+
+    const bootstrap = await expectJson<{
+      org: { id: string };
+      agent: { handle: string };
+    }>(app, "/api/bootstrap");
+    expect(bootstrap).toMatchObject({
+      org: { id: "org_demo" },
+      agent: { handle: "@bek" },
+    });
+
+    await expect(expectJson(app, "/api/org")).resolves.toMatchObject({
+      id: "org_demo",
+    });
+    await expect(expectJson(app, "/api/agent")).resolves.toMatchObject({
+      handle: "@bek",
+    });
+    await expect(expectJson(app, "/api/capabilities")).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "cap_answer" })]),
+    );
+    await expect(expectJson(app, "/api/channels")).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "place_checkout" }),
+      ]),
+    );
+    await expect(
+      expectJson(app, "/api/channels/C_CHECKOUT"),
+    ).resolves.toMatchObject({
+      channel: { id: "place_checkout" },
+      bundles: [expect.objectContaining({ id: "bundle_checkout" })],
+      runs: [expect.objectContaining({ id: "run_demo" })],
+    });
+    await expect(expectJson(app, "/api/access-bundles")).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "bundle_checkout" }),
+      ]),
+    );
+    await expect(expectJson(app, "/api/model-policies")).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "model_auto" })]),
+    );
+    await expect(expectJson(app, "/api/runtime-profiles")).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "runtime_answer" }),
+      ]),
+    );
+    await expect(expectJson(app, "/api/runs")).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "run_demo" })]),
+    );
+    await expect(expectJson(app, "/api/approvals")).resolves.toEqual([]);
+    await expect(expectJson(app, "/api/audit-events")).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "run.completed" }),
+      ]),
+    );
+    await expect(expectJson(app, "/api/model-usage")).resolves.toMatchObject({
+      runs: 1,
+      totalEstimatedCents: 4,
+      totalActualCents: 3,
+    });
+    await expect(expectJson(app, "/api/runs/run_demo")).resolves.toMatchObject({
+      run: { id: "run_demo" },
+      events: expect.any(Array),
+      approvals: [],
+    });
+    await expect(expectJson(app, "/api/runs/run_demo/events")).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ runId: "run_demo" })]),
+    );
+  });
+
+  it("updates the agent while preserving the single visible handle", async () => {
+    const res = await createApp().request("/api/agent", {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: "Bek Teammate",
+        status: "paused",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      name: "Bek Teammate",
+      handle: "@bek",
+      status: "paused",
+    });
+  });
+
+  it("rejects invalid agent control-plane mutations", async () => {
+    const app = createApp();
+
+    const unknownField = await app.request("/api/agent", {
+      method: "PATCH",
+      body: JSON.stringify({ handle: "@not-bek" }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(unknownField.status).toBe(400);
+    await expect(expectJson(app, "/api/agent")).resolves.toMatchObject({
+      handle: "@bek",
+    });
+
+    const empty = await app.request("/api/agent", {
+      method: "PATCH",
+      body: JSON.stringify({}),
+      headers: { "content-type": "application/json" },
+    });
+    expect(empty.status).toBe(400);
+
+    const missingPolicy = await app.request("/api/agent", {
+      method: "PATCH",
+      body: JSON.stringify({ defaultModelPolicyId: "model_missing" }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(missingPolicy.status).toBe(404);
+  });
+
+  it("creates, updates, and protects channel scopes", async () => {
+    const app = createApp();
+    const created = await app.request("/api/channels", {
+      method: "POST",
+      body: JSON.stringify({
+        externalId: "C_PRODUCT",
+        name: "#product",
+        sensitivity: "confidential",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+
+    expect(created.status).toBe(201);
+    const channel = (await created.json()) as { id: string };
+    const updated = await app.request(`/api/channels/${channel.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: "#product-ai",
+        sensitivity: "restricted",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(updated.status).toBe(200);
+    await expect(updated.json()).resolves.toMatchObject({
+      id: channel.id,
+      name: "#product-ai",
+      sensitivity: "restricted",
+    });
+
+    const duplicate = await app.request("/api/channels", {
+      method: "POST",
+      body: JSON.stringify({
+        externalId: "C_PRODUCT",
+        name: "#dup",
+        sensitivity: "internal",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(duplicate.status).toBe(400);
+  });
+
+  it("rejects invalid channel payloads and protects channel deletion edges", async () => {
+    const app = createApp();
+
+    const invalidCreate = await app.request("/api/channels", {
+      method: "POST",
+      body: JSON.stringify({
+        externalId: "C_INVALID",
+        name: "#invalid",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(invalidCreate.status).toBe(400);
+
+    const emptyPatch = await app.request("/api/channels/place_checkout", {
+      method: "PATCH",
+      body: JSON.stringify({}),
+      headers: { "content-type": "application/json" },
+    });
+    expect(emptyPatch.status).toBe(400);
+
+    const duplicateExternalId = await app.request(
+      "/api/channels/place_general",
+      {
+        method: "PATCH",
+        body: JSON.stringify({ externalId: "C_CHECKOUT" }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(duplicateExternalId.status).toBe(400);
+
+    const protectedDelete = await app.request("/api/channels/place_checkout", {
+      method: "DELETE",
+    });
+    expect(protectedDelete.status).toBe(400);
+
+    const created = await app.request("/api/channels", {
+      method: "POST",
+      body: JSON.stringify({
+        externalId: "C_TEMP_DELETE",
+        name: "#temp-delete",
+        sensitivity: "internal",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    const channel = (await created.json()) as { id: string };
+    const deleted = await app.request(`/api/channels/${channel.id}`, {
+      method: "DELETE",
+    });
+    expect(deleted.status).toBe(200);
+    await expect(deleted.json()).resolves.toMatchObject({ id: channel.id });
+
+    const deletedAgain = await app.request(`/api/channels/${channel.id}`, {
+      method: "DELETE",
+    });
+    expect(deletedAgain.status).toBe(404);
+  });
+
+  it("creates access bundles, attaches places, and manages grants", async () => {
+    const app = createApp();
+    const channel = (await (
+      await app.request("/api/channels", {
+        method: "POST",
+        body: JSON.stringify({
+          externalId: "C_SUPPORT",
+          name: "#support",
+          sensitivity: "internal",
+        }),
+        headers: { "content-type": "application/json" },
+      })
+    ).json()) as { id: string };
+
+    const bundleRes = await app.request("/api/access-bundles", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Support",
+        description: "Support grants",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(bundleRes.status).toBe(201);
+    const bundle = (await bundleRes.json()) as { id: string };
+
+    const attached = await app.request(
+      `/api/access-bundles/${bundle.id}/places`,
+      {
+        method: "POST",
+        body: JSON.stringify({ placeId: channel.id }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(attached.status).toBe(200);
+    await expect(attached.json()).resolves.toMatchObject({
+      attachedPlaceIds: [channel.id],
+    });
+
+    const grantRes = await app.request(
+      `/api/access-bundles/${bundle.id}/grants`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          capability: "mcp.tool",
+          resource: "mcp:linear/create_issue",
+          decision: "ask",
+          risk: "write_external",
+          requiresApproval: true,
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(grantRes.status).toBe(201);
+    const grant = (await grantRes.json()) as { id: string };
+
+    const patched = await app.request(
+      `/api/access-bundles/${bundle.id}/grants/${grant.id}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          decision: "deny",
+          requiresApproval: false,
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(patched.status).toBe(200);
+    await expect(patched.json()).resolves.toMatchObject({
+      decision: "deny",
+      requiresApproval: false,
+    });
+  });
+
+  it("handles access bundle idempotency and invalid grant mutations", async () => {
+    const app = createApp();
+    const bundleRes = await app.request("/api/access-bundles", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "QA",
+        description: "QA grants",
+        attachedPlaceIds: ["place_checkout", "place_checkout"],
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(bundleRes.status).toBe(201);
+    const bundle = (await bundleRes.json()) as {
+      id: string;
+      attachedPlaceIds: string[];
+    };
+    expect(bundle.attachedPlaceIds).toEqual(["place_checkout"]);
+
+    const firstAttach = await app.request(
+      `/api/access-bundles/${bundle.id}/places`,
+      {
+        method: "POST",
+        body: JSON.stringify({ placeId: "place_general" }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(firstAttach.status).toBe(200);
+
+    const secondAttach = await app.request(
+      `/api/access-bundles/${bundle.id}/places`,
+      {
+        method: "POST",
+        body: JSON.stringify({ placeId: "place_general" }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(secondAttach.status).toBe(200);
+    const attached = (await secondAttach.json()) as {
+      attachedPlaceIds: string[];
+    };
+    expect(
+      attached.attachedPlaceIds.filter((id) => id === "place_general"),
+    ).toHaveLength(1);
+
+    const firstDetach = await app.request(
+      `/api/access-bundles/${bundle.id}/places/place_general`,
+      { method: "DELETE" },
+    );
+    expect(firstDetach.status).toBe(200);
+
+    const secondDetach = await app.request(
+      `/api/access-bundles/${bundle.id}/places/place_general`,
+      { method: "DELETE" },
+    );
+    expect(secondDetach.status).toBe(200);
+    await expect(secondDetach.json()).resolves.toMatchObject({
+      attachedPlaceIds: ["place_checkout"],
+    });
+
+    const missingPlace = await app.request(
+      `/api/access-bundles/${bundle.id}/places/place_missing`,
+      { method: "DELETE" },
+    );
+    expect(missingPlace.status).toBe(404);
+
+    const invalidBundle = await app.request("/api/access-bundles", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Invalid",
+        description: "Invalid budget",
+        budgetPolicyId: "budget_missing",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(invalidBundle.status).toBe(404);
+
+    const emptyPatch = await app.request(`/api/access-bundles/${bundle.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({}),
+      headers: { "content-type": "application/json" },
+    });
+    expect(emptyPatch.status).toBe(400);
+
+    const invalidGrant = await app.request(
+      `/api/access-bundles/${bundle.id}/grants`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          capability: "mcp.tool",
+          resource: "mcp:linear/create_issue",
+          decision: "maybe",
+          risk: "write_external",
+          requiresApproval: true,
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(invalidGrant.status).toBe(400);
+
+    const grantRes = await app.request(
+      `/api/access-bundles/${bundle.id}/grants`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          capability: "github.read",
+          resource: "github:redohq/checkout",
+          decision: "allow",
+          risk: "read_internal",
+          requiresApproval: false,
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(grantRes.status).toBe(201);
+    const grant = (await grantRes.json()) as { id: string };
+
+    const emptyGrantPatch = await app.request(
+      `/api/access-bundles/${bundle.id}/grants/${grant.id}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({}),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(emptyGrantPatch.status).toBe(400);
+
+    const deletedGrant = await app.request(
+      `/api/access-bundles/${bundle.id}/grants/${grant.id}`,
+      { method: "DELETE" },
+    );
+    expect(deletedGrant.status).toBe(200);
+
+    const deletedAgain = await app.request(
+      `/api/access-bundles/${bundle.id}/grants/${grant.id}`,
+      { method: "DELETE" },
+    );
+    expect(deletedAgain.status).toBe(404);
+  });
+
+  it("updates model and runtime policies through admin endpoints", async () => {
+    const app = createApp();
+    const model = await app.request("/api/model-policies/model_auto", {
+      method: "PATCH",
+      body: JSON.stringify({
+        defaultModel: "openai/gpt-5.5",
+        fallbackModels: ["openai-compatible/local"],
+        perRunBudgetCents: 500,
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(model.status).toBe(200);
+    await expect(model.json()).resolves.toMatchObject({
+      defaultModel: "openai/gpt-5.5",
+      fallbackModels: ["openai-compatible/local"],
+      perRunBudgetCents: 500,
+    });
+
+    const runtime = await app.request("/api/runtime-profiles/runtime_answer", {
+      method: "PATCH",
+      body: JSON.stringify({
+        runtimeKind: "external",
+        adapter: "customer-runner",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(runtime.status).toBe(200);
+    await expect(runtime.json()).resolves.toMatchObject({
+      runtimeKind: "external",
+      adapter: "customer-runner",
+    });
+  });
+
+  it("rejects invalid model and runtime profile mutations", async () => {
+    const app = createApp();
+
+    const emptyModelPatch = await app.request(
+      "/api/model-policies/model_auto",
+      {
+        method: "PATCH",
+        body: JSON.stringify({}),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(emptyModelPatch.status).toBe(400);
+
+    const invalidBudget = await app.request("/api/model-policies/model_auto", {
+      method: "PATCH",
+      body: JSON.stringify({ perRunBudgetCents: 0 }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(invalidBudget.status).toBe(400);
+
+    const missingModel = await app.request(
+      "/api/model-policies/model_missing",
+      {
+        method: "PATCH",
+        body: JSON.stringify({ defaultModel: "openai/gpt-5.5" }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(missingModel.status).toBe(404);
+
+    const emptyRuntimePatch = await app.request(
+      "/api/runtime-profiles/runtime_answer",
+      {
+        method: "PATCH",
+        body: JSON.stringify({}),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(emptyRuntimePatch.status).toBe(400);
+
+    const invalidRuntimeKind = await app.request(
+      "/api/runtime-profiles/runtime_answer",
+      {
+        method: "PATCH",
+        body: JSON.stringify({ runtimeKind: "shell" }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(invalidRuntimeKind.status).toBe(400);
+
+    const missingRuntime = await app.request(
+      "/api/runtime-profiles/runtime_missing",
+      {
+        method: "PATCH",
+        body: JSON.stringify({ adapter: "missing" }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(missingRuntime.status).toBe(404);
   });
 
   it("creates a run and approval for PR capability", async () => {
@@ -275,6 +847,141 @@ describe("Bek API", () => {
     expect(approvedAgain.status).toBe(400);
   });
 
+  it("denies approvals and validates approval decision payloads", async () => {
+    const app = createApp();
+    const { run, approval } = await createPrApproval(
+      app,
+      "@bek open a denied PR",
+    );
+
+    const invalidBody = await app.request(
+      `/api/approvals/${approval.id}/deny`,
+      {
+        method: "POST",
+        body: JSON.stringify({ principalId: "principal_admin" }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(invalidBody.status).toBe(400);
+
+    const missingApproval = await app.request(
+      "/api/approvals/approval_missing/deny",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          principalId: "principal_admin",
+          payloadHash: approval.payloadHash,
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(missingApproval.status).toBe(404);
+
+    const denied = await app.request(`/api/approvals/${approval.id}/deny`, {
+      method: "POST",
+      body: JSON.stringify({
+        principalId: "principal_admin",
+        payloadHash: approval.payloadHash,
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(denied.status).toBe(200);
+    await expect(denied.json()).resolves.toMatchObject({
+      status: "denied",
+      decidedByPrincipalId: "principal_admin",
+    });
+
+    await expect(expectJson(app, `/api/runs/${run.id}`)).resolves.toMatchObject(
+      {
+        run: { status: "cancelled" },
+      },
+    );
+  });
+
+  it("validates run creation and run detail lookups", async () => {
+    const app = createApp();
+
+    const invalidRun = await app.request("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: "",
+        placeScopeId: "place_checkout",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(invalidRun.status).toBe(400);
+
+    const unknownPlace = await app.request("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: "@bek hello",
+        placeScopeId: "place_missing",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(unknownPlace.status).toBe(400);
+
+    const missingRun = await app.request("/api/runs/run_missing");
+    expect(missingRun.status).toBe(404);
+
+    const missingRunEvents = await app.request("/api/runs/run_missing/events");
+    expect(missingRunEvents.status).toBe(200);
+    await expect(missingRunEvents.json()).resolves.toEqual([]);
+  });
+
+  it("evaluates policy decisions and rejects malformed policy requests", async () => {
+    const app = createApp();
+
+    const allowed = await app.request("/api/policy/evaluate", {
+      method: "POST",
+      body: JSON.stringify({
+        placeScopeId: "place_checkout",
+        capability: "github.read",
+        resource: "github:redohq/checkout",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(allowed.status).toBe(200);
+    await expect(allowed.json()).resolves.toMatchObject({
+      decision: "allow",
+      requiresApproval: false,
+    });
+
+    const denied = await app.request("/api/policy/evaluate", {
+      method: "POST",
+      body: JSON.stringify({
+        placeScopeId: "place_general",
+        capability: "github.read",
+        resource: "github:redohq/checkout",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(denied.status).toBe(200);
+    await expect(denied.json()).resolves.toMatchObject({
+      decision: "deny",
+    });
+
+    const unknownPlace = await app.request("/api/policy/evaluate", {
+      method: "POST",
+      body: JSON.stringify({
+        placeScopeId: "place_missing",
+        capability: "github.read",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(unknownPlace.status).toBe(404);
+
+    const malformed = await app.request("/api/policy/evaluate", {
+      method: "POST",
+      body: JSON.stringify({
+        placeScopeId: "place_checkout",
+        capability: "github.admin",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(malformed.status).toBe(400);
+  });
+
   it("fails Slack event requests closed when a signing secret is configured", async () => {
     process.env.SLACK_SIGNING_SECRET = "test-slack-secret";
     const res = await createApp().request("/api/slack/events", {
@@ -364,6 +1071,29 @@ describe("Bek API", () => {
     expect(res.status).toBe(401);
   });
 
+  it("handles Slack URL verification and malformed event payloads", async () => {
+    const app = createApp();
+    const challenge = await app.request("/api/slack/events", {
+      method: "POST",
+      body: JSON.stringify({
+        type: "url_verification",
+        challenge: "challenge-token",
+      }),
+    });
+    expect(challenge.status).toBe(200);
+    await expect(challenge.json()).resolves.toEqual({
+      challenge: "challenge-token",
+    });
+
+    const rawBody = "{not-json";
+    const malformed = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+    expect(malformed.status).toBe(400);
+  });
+
   it("does not silently admit unknown Slack channels", async () => {
     const app = createApp();
     const res = await app.request("/api/slack/events", {
@@ -399,6 +1129,19 @@ describe("Bek API", () => {
     });
   });
 
+  it("protects Slack install behind admin auth when configured", async () => {
+    process.env.BEK_ADMIN_API_TOKEN = "test-admin-token";
+    configureFakeSlackOAuth();
+
+    const denied = await createApp().request("/api/slack/install");
+    expect(denied.status).toBe(401);
+
+    const allowed = await createApp().request("/api/slack/install", {
+      headers: { authorization: "Bearer test-admin-token" },
+    });
+    expect(allowed.status).toBe(302);
+  });
+
   it("redirects Slack install with signed OAuth state", async () => {
     configureFakeSlackOAuth();
 
@@ -429,6 +1172,26 @@ describe("Bek API", () => {
     }
   });
 
+  it("handles Slack OAuth callback errors before token exchange", async () => {
+    const slackError = await createApp().request(
+      "/api/slack/oauth/callback?error=access_denied",
+    );
+    expect(slackError.status).toBe(400);
+    await expect(slackError.json()).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("access_denied"),
+    });
+
+    const missingCode = await createApp().request(
+      "/api/slack/oauth/callback?state=unused",
+    );
+    expect(missingCode.status).toBe(400);
+    await expect(missingCode.json()).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("missing code"),
+    });
+  });
+
   it("validates Slack OAuth callback state before token exchange", async () => {
     configureFakeSlackOAuth();
     const state = createSlackOAuthState({
@@ -449,6 +1212,57 @@ describe("Bek API", () => {
       status: "state_validated",
       codeReceived: true,
     });
+  });
+
+  it("exchanges Slack OAuth callbacks in explicit exchange mode", async () => {
+    configureFakeSlackOAuth();
+    process.env.BEK_SLACK_OAUTH_EXCHANGE = "true";
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        ok: true,
+        app_id: "A123",
+        access_token: "xoxb-super-secret-token",
+        scope: "app_mentions:read,commands,chat:write",
+        bot_user_id: "U_BEK",
+        team: { id: "T123", name: "Redo" },
+        authed_user: { id: "U_ADMIN" },
+      }),
+    );
+    const state = createSlackOAuthState({
+      stateSecret: process.env.SLACK_STATE_SECRET!,
+      nonce: "test-nonce",
+      nowSeconds: Math.floor(Date.now() / 1000),
+      returnTo: "/settings/slack",
+    });
+
+    const res = await createApp().request(
+      `/api/slack/oauth/callback?code=fake-code&state=${encodeURIComponent(
+        state,
+      )}`,
+    );
+    const json = (await res.json()) as {
+      status: string;
+      install: Record<string, unknown>;
+      returnTo: string;
+    };
+
+    expect(res.status).toBe(200);
+    expect(json).toMatchObject({
+      status: "installed",
+      returnTo: "/settings/slack",
+      install: {
+        teamId: "T123",
+        teamName: "Redo",
+        botTokenRedacted: "xoxb...oken",
+      },
+    });
+    expect(json.install.botToken).toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      "https://slack.com/api/oauth.v2.access",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
   });
 
   it("rejects invalid Slack OAuth callback state", async () => {
@@ -507,6 +1321,103 @@ describe("Bek API", () => {
     await expect(second.json()).resolves.toMatchObject({ deduped: true });
   });
 
+  it("does not dedupe Slack event retries before persistence succeeds", async () => {
+    let flushes = 0;
+    const store = new BekStore(undefined, {
+      onSnapshotChanged: async () => {
+        flushes += 1;
+        if (flushes === 1) {
+          throw new Error("database unavailable");
+        }
+      },
+    });
+    const app = createApp(store);
+    const payload = {
+      event_id: "EvRetryAfterFlushFailure",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek hello",
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+
+    const first = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+    expect(first.status).toBe(400);
+
+    const second = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(second.status).toBe(200);
+    await expect(second.json()).resolves.toMatchObject({
+      ok: true,
+      runId: expect.any(String),
+    });
+    expect(flushes).toBe(2);
+  });
+
+  it("rejects Slack approval interactions without an approver mapping", async () => {
+    const app = createApp();
+    const { approval } = await createPrApproval(
+      app,
+      "@bek open an unmapped Slack PR",
+    );
+    const approvalAction = {
+      action_id: "bek.approval.approve",
+      value: JSON.stringify({
+        approvalId: approval.id,
+        payloadHash: approval.payloadHash,
+      }),
+    };
+
+    const missingUserBody = slackForm({
+      payload: JSON.stringify({
+        type: "block_actions",
+        channel: { id: "C_CHECKOUT" },
+        team: { id: "T_DEMO" },
+        actions: [approvalAction],
+      }),
+    });
+    const missingUser = await app.request("/api/slack/interactivity", {
+      method: "POST",
+      body: missingUserBody,
+      headers: signedSlackHeaders(
+        missingUserBody,
+        Math.floor(Date.now() / 1000).toString(),
+        "application/x-www-form-urlencoded",
+      ),
+    });
+    expect(missingUser.status).toBe(400);
+
+    const unmappedUserBody = slackForm({
+      payload: JSON.stringify({
+        type: "block_actions",
+        user: { id: "U_UNMAPPED" },
+        channel: { id: "C_CHECKOUT" },
+        team: { id: "T_DEMO" },
+        actions: [approvalAction],
+      }),
+    });
+    const unmappedUser = await app.request("/api/slack/interactivity", {
+      method: "POST",
+      body: unmappedUserBody,
+      headers: signedSlackHeaders(
+        unmappedUserBody,
+        Math.floor(Date.now() / 1000).toString(),
+        "application/x-www-form-urlencoded",
+      ),
+    });
+    expect(unmappedUser.status).toBe(400);
+  });
+
   it("applies mapped Slack approval button decisions", async () => {
     process.env.BEK_SLACK_USER_PRINCIPAL_MAP = JSON.stringify({
       U_APPROVER: "principal_admin",
@@ -521,6 +1432,7 @@ describe("Bek API", () => {
       actions: [
         {
           action_id: "bek.approval.approve",
+          action_ts: "1710000000.000100",
           value: JSON.stringify({
             approvalId: approval.id,
             payloadHash: approval.payloadHash,
@@ -548,6 +1460,96 @@ describe("Bek API", () => {
         status: "approved",
         decidedByPrincipalId: "principal_admin",
       },
+    });
+
+    const retry = await app.request("/api/slack/interactivity", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(
+        rawBody,
+        Math.floor(Date.now() / 1000).toString(),
+        "application/x-www-form-urlencoded",
+      ),
+    });
+    expect(retry.status).toBe(200);
+    await expect(retry.json()).resolves.toMatchObject({
+      ok: true,
+      deduped: true,
+    });
+  });
+
+  it("validates slash commands and dedupes Slack command retries", async () => {
+    const app = createApp();
+
+    const missingChannelBody = slackForm({
+      command: "/bek",
+      user_id: "U123",
+      text: "hello",
+      team_id: "T_DEMO",
+    });
+    const missingChannel = await app.request("/api/slack/commands", {
+      method: "POST",
+      body: missingChannelBody,
+      headers: signedSlackHeaders(
+        missingChannelBody,
+        Math.floor(Date.now() / 1000).toString(),
+        "application/x-www-form-urlencoded",
+      ),
+    });
+    expect(missingChannel.status).toBe(400);
+
+    const unknownChannelBody = slackForm({
+      command: "/bek",
+      channel_id: "C_UNKNOWN",
+      user_id: "U123",
+      text: "hello",
+      team_id: "T_DEMO",
+    });
+    const unknownChannel = await app.request("/api/slack/commands", {
+      method: "POST",
+      body: unknownChannelBody,
+      headers: signedSlackHeaders(
+        unknownChannelBody,
+        Math.floor(Date.now() / 1000).toString(),
+        "application/x-www-form-urlencoded",
+      ),
+    });
+    expect(unknownChannel.status).toBe(200);
+    await expect(unknownChannel.json()).resolves.toMatchObject({
+      ok: false,
+      ignored: true,
+    });
+
+    const retryBody = slackForm({
+      command: "/bek",
+      channel_id: "C_CHECKOUT",
+      user_id: "U123",
+      text: "summarize the rollout",
+      team_id: "T_DEMO",
+      trigger_id: "1337.42",
+    });
+    const retryHeaders = signedSlackHeaders(
+      retryBody,
+      Math.floor(Date.now() / 1000).toString(),
+      "application/x-www-form-urlencoded",
+    );
+    const first = await app.request("/api/slack/commands", {
+      method: "POST",
+      body: retryBody,
+      headers: retryHeaders,
+    });
+    expect(first.status).toBe(200);
+    const firstJson = (await first.json()) as { runId: string };
+
+    const second = await app.request("/api/slack/commands", {
+      method: "POST",
+      body: retryBody,
+      headers: retryHeaders,
+    });
+    expect(second.status).toBe(200);
+    await expect(second.json()).resolves.toMatchObject({
+      runId: firstJson.runId,
+      deduped: true,
     });
   });
 

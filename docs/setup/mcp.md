@@ -4,7 +4,15 @@ Bek treats MCP tools as governed capabilities behind the single visible `@bek` t
 
 ## Current Status
 
-The repo includes an MCP gateway package foundation, but remote MCP registration and tool proxying are not live yet.
+The repo includes local MCP gateway productization foundations:
+
+- An in-memory MCP server registry.
+- A tool schema cache with deterministic schema hashes.
+- Schema drift quarantine until admin review.
+- A risk classifier for read, draft-write, external-write, and privileged tools.
+- Proxy request objects that bind run, grant, server, schema hash, input hash, risk, approval, and resource.
+
+Remote MCP discovery, credentialed transport, and live tool execution are not active yet.
 
 The target flow is:
 
@@ -42,9 +50,9 @@ The user still only types:
 
 ## Launch Blockers
 
-- MCP server registry.
-- Tool schema cache and drift detection.
-- Tool proxy runtime.
+- Durable MCP server registry storage.
+- Live schema discovery and credentialed transport adapters.
+- Tool proxy runtime execution.
 - Risk classification UI.
 - Redaction and audit integration.
 - Per-tool approval flows.

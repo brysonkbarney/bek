@@ -14,8 +14,14 @@ import {
   Panel,
   RunLink,
   StatusBadge,
+  SuccessCallout,
+  WarningCallout,
 } from "./components";
 import { formatDateTime } from "./product-model";
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
 
 const columnHelper = createColumnHelper<Run>();
 
@@ -95,6 +101,14 @@ export function DashboardPage() {
           {runMutation.isPending ? "Starting..." : "Demo PR Run"}
         </button>
       </header>
+      {runMutation.isError ? (
+        <WarningCallout>
+          {errorMessage(runMutation.error, "Bek could not start that run.")}
+        </WarningCallout>
+      ) : null}
+      {runMutation.isSuccess ? (
+        <SuccessCallout>Demo run started.</SuccessCallout>
+      ) : null}
 
       <section className="metrics">
         <MetricCard
@@ -148,7 +162,7 @@ export function DashboardPage() {
           />
         ) : (
           <div className="table-scroll">
-            <table>
+            <table className="responsive-table">
               <caption className="sr-only">Recent Bek runs</caption>
               <thead>
                 {table.getHeaderGroups().map((headerGroup) => (
@@ -168,7 +182,14 @@ export function DashboardPage() {
                 {table.getRowModel().rows.map((row) => (
                   <tr key={row.id}>
                     {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id}>
+                      <td
+                        key={cell.id}
+                        data-label={
+                          typeof cell.column.columnDef.header === "string"
+                            ? cell.column.columnDef.header
+                            : cell.column.id
+                        }
+                      >
                         {flexRender(
                           cell.column.columnDef.cell,
                           cell.getContext(),

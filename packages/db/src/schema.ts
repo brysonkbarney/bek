@@ -992,6 +992,10 @@ export type PlaceRow = InferSelectModel<typeof places>;
 export type NewPlaceRow = InferInsertModel<typeof places>;
 export type AccessBundleRow = InferSelectModel<typeof accessBundles>;
 export type NewAccessBundleRow = InferInsertModel<typeof accessBundles>;
+export type AccessBundlePlaceRow = InferSelectModel<typeof accessBundlePlaces>;
+export type NewAccessBundlePlaceRow = InferInsertModel<
+  typeof accessBundlePlaces
+>;
 export type GrantRow = InferSelectModel<typeof grants>;
 export type NewGrantRow = InferInsertModel<typeof grants>;
 export type ModelPolicyRow = InferSelectModel<typeof modelPolicies>;

@@ -1,10 +1,30 @@
-import { redactSecrets, redactUnknown, type ApprovalRequest } from "@bek/core";
-import type {
-  RunWorkItem,
-  RuntimeObservabilityEvent,
-  RuntimeObservabilityEventType,
-  RuntimeResult,
+import {
+  adapterMatchesProfile,
+  type RunWorkItem,
+  type RuntimeAdapter,
+  type RuntimeAdapterKind,
+  type RuntimeModelRoute,
+  type RuntimeObservabilityEvent,
+  type RuntimeObservabilityEventType,
+  type RuntimeResult,
+  type RuntimeStartInput,
+  type RuntimeToolProxy,
 } from "@bek/runtime";
+import {
+  bundlesForPlace,
+  createApprovalRequest,
+  redactSecrets,
+  redactUnknown,
+  type AccessBundle,
+  type ApprovalRequest,
+  type BekSnapshot,
+  type CapabilityGrant,
+  type ModelPolicy,
+  type PlaceScope,
+  type Principal,
+  type Run,
+  type RuntimeProfile,
+} from "@bek/core";
 
 export type WorkerLifecycleEventType =
   | "worker.enqueued"
@@ -14,8 +34,10 @@ export type WorkerLifecycleEventType =
   | "worker.approval_waiting"
   | "worker.approval_resumed"
   | "worker.approval_blocked"
+  | "worker.cancel_requested"
   | "worker.completed"
   | "worker.failed"
+  | "worker.dead_lettered"
   | "worker.cancelled";
 
 export type WorkerEventType =
@@ -31,6 +53,38 @@ export type WorkerWorkStatus =
   | "cancelled"
   | "dead";
 
+export type WorkerRunAttemptState =
+  | "queued"
+  | "claimed"
+  | "awaiting_approval"
+  | "retry_scheduled"
+  | "cancel_requested"
+  | "completed"
+  | "cancelled"
+  | "dead_lettered";
+
+export const workerRunAttemptStateTransitions: Record<
+  WorkerRunAttemptState,
+  readonly WorkerRunAttemptState[]
+> = {
+  queued: ["claimed", "cancelled"],
+  claimed: [
+    "queued",
+    "awaiting_approval",
+    "retry_scheduled",
+    "cancel_requested",
+    "completed",
+    "cancelled",
+    "dead_lettered",
+  ],
+  awaiting_approval: ["queued", "cancelled"],
+  retry_scheduled: [],
+  cancel_requested: ["cancelled"],
+  completed: [],
+  cancelled: [],
+  dead_lettered: [],
+};
+
 export interface WorkerRetryPolicy {
   maxAttempts: number;
   baseDelayMs: number;
@@ -45,6 +99,7 @@ export const defaultWorkerRetryPolicy: WorkerRetryPolicy = {
 
 export interface WorkerLease {
   id: string;
+  idempotencyKey: string;
   workerId: string;
   orgId: string;
   runId: string;
@@ -59,6 +114,7 @@ export interface WorkerApprovalGate {
   approvalId: string;
   payloadHash: string;
   action: string;
+  risk: ApprovalRequest["risk"];
   status: ApprovalRequest["status"];
   createdAt: string;
   expiresAt: string;
@@ -67,8 +123,10 @@ export interface WorkerApprovalGate {
 export interface WorkerWorkRecord {
   id: string;
   sequence: number;
+  idempotencyKey: string;
   item: RunWorkItem;
   status: WorkerWorkStatus;
+  attemptState: WorkerRunAttemptState;
   availableAt: string;
   createdAt: string;
   updatedAt: string;
@@ -79,6 +137,18 @@ export interface WorkerWorkRecord {
   cancelReason?: string | undefined;
   terminalReason?: string | undefined;
   result?: RuntimeResult | undefined;
+}
+
+export interface WorkerDeadLetterRecord {
+  id: string;
+  sequence: number;
+  workId: string;
+  idempotencyKey: string;
+  item: RunWorkItem;
+  reason: string;
+  failedAt: string;
+  result: RuntimeResult;
+  retryPolicy: WorkerRetryPolicy;
 }
 
 export interface WorkerEvent {
@@ -157,7 +227,11 @@ export type SettleRunWorkDecision =
       nextRecord: WorkerWorkRecord;
       retryAt: string;
     }
-  | { decision: "dead"; record: WorkerWorkRecord }
+  | {
+      decision: "dead";
+      record: WorkerWorkRecord;
+      deadLetter: WorkerDeadLetterRecord;
+    }
   | { decision: "cancelled"; record: WorkerWorkRecord }
   | { decision: "lost_lease"; reason: string };
 
@@ -184,19 +258,48 @@ export interface ResumeAfterApprovalInput {
 
 export type ResumeAfterApprovalDecision =
   | { decision: "resume_enqueued"; record: WorkerWorkRecord }
+  | { decision: "already_resumed"; record: WorkerWorkRecord }
   | { decision: "waiting"; record: WorkerWorkRecord }
   | { decision: "cancelled"; record: WorkerWorkRecord }
   | { decision: "blocked"; reason: string; record?: WorkerWorkRecord }
   | { decision: "not_found"; reason: string };
 
+export interface ExpireWorkerLeasesInput {
+  now?: string | undefined;
+}
+
+export type ExpireWorkerLeasesDecision =
+  | { decision: "expired"; records: WorkerWorkRecord[] }
+  | { decision: "none"; records: [] };
+
 export interface InMemoryWorkerQueueOptions {
   now?: (() => string) | undefined;
   idFactory?: ((prefix: string) => string) | undefined;
   retryPolicy?: Partial<WorkerRetryPolicy> | undefined;
+  eventSink?: WorkerEventSink | undefined;
+}
+
+export interface WorkerEventSink {
+  emit(event: WorkerEvent): void;
+}
+
+export class InMemoryWorkerEventSink implements WorkerEventSink {
+  private events: WorkerEvent[] = [];
+
+  emit(event: WorkerEvent): void {
+    this.events.push(clone(event));
+  }
+
+  read(): WorkerEvent[] {
+    return clone(this.events).sort(
+      (left, right) => left.sequence - right.sequence,
+    );
+  }
 }
 
 export interface WorkerSnapshot {
   records: WorkerWorkRecord[];
+  deadLetters: WorkerDeadLetterRecord[];
   events: WorkerEvent[];
 }
 
@@ -204,6 +307,7 @@ export interface WorkerQueueContract {
   enqueue(input: EnqueueRunWorkInput): EnqueueRunWorkDecision;
   claimNext(input: ClaimRunWorkInput): ClaimRunWorkDecision;
   heartbeat(input: HeartbeatRunWorkInput): HeartbeatRunWorkDecision;
+  expireLeases(input?: ExpireWorkerLeasesInput): ExpireWorkerLeasesDecision;
   settle(input: SettleRunWorkInput): SettleRunWorkDecision;
   cancelRun(input: CancelRunWorkInput): CancelRunWorkDecision;
   resumeAfterApproval(
@@ -222,7 +326,9 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
   private readonly nowFn: () => string;
   private readonly idFactory: (prefix: string) => string;
   private readonly retryPolicy: WorkerRetryPolicy;
+  private readonly eventSink?: WorkerEventSink | undefined;
   private records: WorkerWorkRecord[] = [];
+  private deadLetters: WorkerDeadLetterRecord[] = [];
   private events: WorkerEvent[] = [];
   private nextSequence = 1;
 
@@ -233,16 +339,16 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
       ...defaultWorkerRetryPolicy,
       ...options.retryPolicy,
     };
+    this.eventSink = options.eventSink;
     assertRetryPolicy(this.retryPolicy);
   }
 
   enqueue(input: EnqueueRunWorkInput): EnqueueRunWorkDecision {
     const now = this.time(input.now);
+    const idempotencyKey = createWorkerIdempotencyKey(input.item);
     const duplicate = this.records.find(
       (record) =>
-        record.item.orgId === input.item.orgId &&
-        record.item.runId === input.item.runId &&
-        record.item.attempt === input.item.attempt &&
+        record.idempotencyKey === idempotencyKey &&
         isActiveStatus(record.status),
     );
     if (duplicate) {
@@ -252,8 +358,10 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
     const record: WorkerWorkRecord = {
       id: this.idFactory("work"),
       sequence: this.nextSequence++,
+      idempotencyKey,
       item: clone(input.item),
       status: "queued",
+      attemptState: "queued",
       availableAt: input.availableAt ?? input.item.enqueuedAt,
       createdAt: now,
       updatedAt: now,
@@ -298,6 +406,7 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
 
     const lease: WorkerLease = {
       id: this.idFactory("lease"),
+      idempotencyKey: record.idempotencyKey,
       workerId: input.workerId,
       orgId: record.item.orgId,
       runId: record.item.runId,
@@ -307,9 +416,8 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
       heartbeatAt: now,
       expiresAt: addMs(now, input.leaseMs),
     };
-    record.status = "claimed";
+    this.transitionRecord(record, "claimed", "claimed", now);
     record.lease = lease;
-    record.updatedAt = now;
 
     this.emit({
       type: "worker.claimed",
@@ -386,6 +494,17 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
     };
   }
 
+  expireLeases(
+    input: ExpireWorkerLeasesInput = {},
+  ): ExpireWorkerLeasesDecision {
+    const expiredRecords = this.requeueExpiredLeases(this.time(input.now));
+    if (expiredRecords.length === 0) {
+      return { decision: "none", records: [] };
+    }
+
+    return { decision: "expired", records: expiredRecords };
+  }
+
   settle(input: SettleRunWorkInput): SettleRunWorkDecision {
     const now = this.time(input.now);
     const record = this.findByLeaseId(input.leaseId);
@@ -402,12 +521,11 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
     }
 
     if (record.cancelRequestedAt || input.result.status === "cancelled") {
-      record.status = "cancelled";
+      this.transitionRecord(record, "cancelled", "cancelled", now);
       record.lease = undefined;
       record.result = clone(input.result);
       record.terminalReason =
         record.cancelReason ?? input.result.error ?? "Run cancelled.";
-      record.updatedAt = now;
       this.emit({
         type: "worker.cancelled",
         orgId: record.item.orgId,
@@ -421,11 +539,10 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
     }
 
     if (input.result.status === "completed") {
-      record.status = "completed";
+      this.transitionRecord(record, "completed", "completed", now);
       record.lease = undefined;
       record.result = clone(input.result);
       record.terminalReason = input.result.finalText ?? "Run completed.";
-      record.updatedAt = now;
       this.emit({
         type: "worker.completed",
         orgId: record.item.orgId,
@@ -449,11 +566,15 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
       ) {
         throw new Error("Approval request does not belong to claimed work.");
       }
-      record.status = "awaiting_approval";
+      this.transitionRecord(
+        record,
+        "awaiting_approval",
+        "awaiting_approval",
+        now,
+      );
       record.lease = undefined;
       record.result = clone(input.result);
       record.approval = approvalGateFromRequest(input.approval);
-      record.updatedAt = now;
       this.emit({
         type: "worker.approval_waiting",
         orgId: record.item.orgId,
@@ -497,14 +618,8 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
     for (const record of activeRecords) {
       record.cancelRequestedAt = now;
       record.cancelReason = input.reason;
-      record.updatedAt = now;
-      if (record.status !== "claimed") {
-        record.status = "cancelled";
-        record.lease = undefined;
-        record.terminalReason = input.reason;
-      }
       this.emit({
-        type: "worker.cancelled",
+        type: "worker.cancel_requested",
         orgId: record.item.orgId,
         runId: record.item.runId,
         attempt: record.item.attempt,
@@ -512,6 +627,22 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
         message: input.reason,
         now,
       });
+      if (record.status !== "claimed") {
+        this.transitionRecord(record, "cancelled", "cancelled", now);
+        record.lease = undefined;
+        record.terminalReason = input.reason;
+        this.emit({
+          type: "worker.cancelled",
+          orgId: record.item.orgId,
+          runId: record.item.runId,
+          attempt: record.item.attempt,
+          traceId: record.item.traceId,
+          message: input.reason,
+          now,
+        });
+      } else {
+        this.transitionRecord(record, "claimed", "cancel_requested", now);
+      }
     }
 
     return {
@@ -526,7 +657,6 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
     const now = this.time(input.now);
     const record = this.records.find(
       (candidate) =>
-        candidate.status === "awaiting_approval" &&
         candidate.item.orgId === input.approval.orgId &&
         candidate.item.runId === input.approval.runId &&
         candidate.approval?.approvalId === input.approval.id,
@@ -562,6 +692,32 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
       };
     }
 
+    if (record.status !== "awaiting_approval") {
+      if (record.approval.status === "approved") {
+        return { decision: "already_resumed", record: clone(record) };
+      }
+      if (record.status === "cancelled") {
+        return { decision: "cancelled", record: clone(record) };
+      }
+      return {
+        decision: "blocked",
+        reason: `Approval gate is ${record.status}, not awaiting approval.`,
+        record: clone(record),
+      };
+    }
+
+    if (
+      input.approval.status === "pending" &&
+      Date.parse(record.approval.expiresAt) <= Date.parse(now)
+    ) {
+      return this.cancelApprovalWait(
+        record,
+        "expired",
+        "Approval expired.",
+        now,
+      );
+    }
+
     if (input.approval.status === "pending") {
       return { decision: "waiting", record: clone(record) };
     }
@@ -570,28 +726,14 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
       input.approval.status === "denied" ||
       input.approval.status === "expired"
     ) {
-      const reason =
+      return this.cancelApprovalWait(
+        record,
+        input.approval.status,
         input.approval.status === "denied"
           ? "Approval denied."
-          : "Approval expired.";
-      record.status = "cancelled";
-      record.approval = {
-        ...record.approval,
-        status: input.approval.status,
-      };
-      record.terminalReason = reason;
-      record.updatedAt = now;
-      this.emit({
-        type: "worker.cancelled",
-        orgId: record.item.orgId,
-        runId: record.item.runId,
-        attempt: record.item.attempt,
-        traceId: record.item.traceId,
-        message: reason,
-        data: { approvalId: input.approval.id },
+          : "Approval expired.",
         now,
-      });
-      return { decision: "cancelled", record: clone(record) };
+      );
     }
 
     record.item = {
@@ -600,13 +742,12 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
       traceId: input.traceId ?? record.item.traceId,
       enqueuedAt: now,
     };
-    record.status = "queued";
+    this.transitionRecord(record, "queued", "queued", now);
     record.availableAt = now;
     record.approval = {
       ...record.approval,
       status: input.approval.status,
     };
-    record.updatedAt = now;
     this.emit({
       type: "worker.approval_resumed",
       orgId: record.item.orgId,
@@ -643,6 +784,7 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
       event.data = redactUnknown(input.data) as Record<string, unknown>;
     }
     this.events.push(event);
+    this.eventSink?.emit(clone(event));
     return clone(event);
   }
 
@@ -672,6 +814,9 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
       records: clone(this.records).sort(
         (left, right) => left.sequence - right.sequence,
       ),
+      deadLetters: clone(this.deadLetters).sort(
+        (left, right) => left.sequence - right.sequence,
+      ),
       events: clone(this.events).sort(
         (left, right) => left.sequence - right.sequence,
       ),
@@ -689,7 +834,19 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
     record.updatedAt = now;
 
     if (record.item.attempt >= this.retryPolicy.maxAttempts) {
-      record.status = "dead";
+      this.transitionRecord(record, "dead", "dead_lettered", now);
+      const deadLetter: WorkerDeadLetterRecord = {
+        id: this.idFactory("dead"),
+        sequence: this.nextSequence++,
+        workId: record.id,
+        idempotencyKey: record.idempotencyKey,
+        item: clone(record.item),
+        reason: record.terminalReason,
+        failedAt: now,
+        result: clone(result),
+        retryPolicy: clone(this.retryPolicy),
+      };
+      this.deadLetters.push(deadLetter);
       this.emit({
         type: "worker.failed",
         orgId: record.item.orgId,
@@ -697,13 +854,30 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
         attempt: record.item.attempt,
         traceId: record.item.traceId,
         message: record.terminalReason,
-        data: { maxAttempts: this.retryPolicy.maxAttempts },
+        data: {
+          maxAttempts: this.retryPolicy.maxAttempts,
+          deadLetterId: deadLetter.id,
+        },
         now,
       });
-      return { decision: "dead", record: clone(record) };
+      this.emit({
+        type: "worker.dead_lettered",
+        orgId: record.item.orgId,
+        runId: record.item.runId,
+        attempt: record.item.attempt,
+        traceId: record.item.traceId,
+        message: "Run work moved to dead-letter queue.",
+        data: { deadLetterId: deadLetter.id },
+        now,
+      });
+      return {
+        decision: "dead",
+        record: clone(record),
+        deadLetter: clone(deadLetter),
+      };
     }
 
-    record.status = "failed";
+    this.transitionRecord(record, "failed", "retry_scheduled", now);
     const retryAt = addMs(
       now,
       retryDelayMs(record.item.attempt, this.retryPolicy),
@@ -717,8 +891,10 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
     const nextRecord: WorkerWorkRecord = {
       id: this.idFactory("work"),
       sequence: this.nextSequence++,
+      idempotencyKey: createWorkerIdempotencyKey(retryItem),
       item: retryItem,
       status: "queued",
+      attemptState: "queued",
       availableAt: retryAt,
       createdAt: now,
       updatedAt: now,
@@ -743,7 +919,42 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
     };
   }
 
-  private requeueExpiredLeases(now: string): void {
+  private cancelApprovalWait(
+    record: WorkerWorkRecord,
+    status: "denied" | "expired",
+    reason: string,
+    now: string,
+  ): ResumeAfterApprovalDecision {
+    if (!record.approval) {
+      return {
+        decision: "blocked",
+        reason: "Paused work is missing its approval gate.",
+        record: clone(record),
+      };
+    }
+
+    const approvalId = record.approval.approvalId;
+    this.transitionRecord(record, "cancelled", "cancelled", now);
+    record.approval = {
+      ...record.approval,
+      status,
+    };
+    record.terminalReason = reason;
+    this.emit({
+      type: "worker.cancelled",
+      orgId: record.item.orgId,
+      runId: record.item.runId,
+      attempt: record.item.attempt,
+      traceId: record.item.traceId,
+      message: reason,
+      data: { approvalId },
+      now,
+    });
+    return { decision: "cancelled", record: clone(record) };
+  }
+
+  private requeueExpiredLeases(now: string): WorkerWorkRecord[] {
+    const expiredRecords: WorkerWorkRecord[] = [];
     for (const record of this.records) {
       if (
         record.status === "claimed" &&
@@ -755,8 +966,10 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
           now,
           "Worker lease expired; work returned to queue.",
         );
+        expiredRecords.push(clone(record));
       }
     }
+    return expiredRecords;
   }
 
   private expireClaimedRecord(
@@ -765,11 +978,10 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
     message: string,
   ): void {
     if (record.cancelRequestedAt) {
-      record.status = "cancelled";
+      this.transitionRecord(record, "cancelled", "cancelled", now);
       record.lease = undefined;
       record.terminalReason =
         record.cancelReason ?? "Run cancellation requested.";
-      record.updatedAt = now;
       this.emit({
         type: "worker.cancelled",
         orgId: record.item.orgId,
@@ -782,9 +994,8 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
       return;
     }
 
-    record.status = "queued";
+    this.transitionRecord(record, "queued", "queued", now);
     record.lease = undefined;
-    record.updatedAt = now;
     this.emit({
       type: "worker.lease_expired",
       orgId: record.item.orgId,
@@ -800,9 +1011,675 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
     return this.records.find((record) => record.lease?.id === leaseId);
   }
 
+  private transitionRecord(
+    record: WorkerWorkRecord,
+    status: WorkerWorkStatus,
+    attemptState: WorkerRunAttemptState,
+    now: string,
+  ): void {
+    if (!canTransitionRunAttemptState(record.attemptState, attemptState)) {
+      throw new Error(
+        `Invalid run attempt transition ${record.attemptState} -> ${attemptState}.`,
+      );
+    }
+    record.status = status;
+    record.attemptState = attemptState;
+    record.updatedAt = now;
+  }
+
   private time(override?: string | undefined): string {
     return override ?? this.nowFn();
   }
+}
+
+export interface WorkerRuntimeStateReader {
+  read(): BekSnapshot;
+}
+
+export type WorkerRuntimeStateSource =
+  | BekSnapshot
+  | WorkerRuntimeStateReader
+  | (() => BekSnapshot);
+
+export interface WorkerRuntimeContext {
+  snapshot: BekSnapshot;
+  run: Run;
+  requester: Principal;
+  place: PlaceScope;
+  accessBundles: AccessBundle[];
+  modelPolicy: ModelPolicy;
+  modelRoute: RuntimeModelRoute;
+  runtimeProfile: RuntimeProfile;
+  grants: CapabilityGrant[];
+}
+
+export interface WorkerRuntimeServiceOptions {
+  queue: WorkerQueueContract;
+  state: WorkerRuntimeStateSource;
+  adapters?: readonly RuntimeAdapter[] | undefined;
+  workerId?: string | undefined;
+  leaseMs?: number | undefined;
+  now?: (() => string) | undefined;
+  tools?: RuntimeToolProxy | undefined;
+  approvalExpiresInMs?: number | undefined;
+  approvalProvider?:
+    | ((input: {
+        record: WorkerWorkRecord;
+        snapshot: BekSnapshot;
+      }) => ApprovalRequest | Promise<ApprovalRequest | undefined> | undefined)
+    | undefined;
+  modelRouteProvider?:
+    | ((input: {
+        modelPolicy: ModelPolicy;
+        runtimeProfile: RuntimeProfile;
+        run: Run;
+      }) => RuntimeModelRoute)
+    | undefined;
+}
+
+export interface ProcessNextRunWorkInput {
+  workerId?: string | undefined;
+  leaseMs?: number | undefined;
+  now?: string | undefined;
+}
+
+export type ProcessNextRunWorkDecision =
+  | { decision: "empty"; reason: "no_available_work" }
+  | {
+      decision: "processed";
+      adapterId: string;
+      lease: WorkerLease;
+      record: WorkerWorkRecord;
+      result: RuntimeResult;
+      settlement: SettleRunWorkDecision;
+    }
+  | {
+      decision: "lost_lease";
+      lease: WorkerLease;
+      record: WorkerWorkRecord;
+      reason: string;
+    };
+
+export interface DrainRunWorkInput extends ProcessNextRunWorkInput {
+  maxItems?: number | undefined;
+}
+
+export interface DrainRunWorkResult {
+  processed: number;
+  decisions: ProcessNextRunWorkDecision[];
+  stoppedReason: "empty" | "lost_lease" | "max_items";
+}
+
+export class WorkerRuntimeService {
+  private readonly queue: WorkerQueueContract;
+  private readonly state: WorkerRuntimeStateSource;
+  private readonly adapters: readonly RuntimeAdapter[];
+  private readonly workerId: string;
+  private readonly leaseMs: number;
+  private readonly nowFn: () => string;
+  private readonly tools: RuntimeToolProxy;
+  private readonly approvalExpiresInMs: number;
+  private readonly approvalProvider:
+    | ((input: {
+        record: WorkerWorkRecord;
+        snapshot: BekSnapshot;
+      }) => ApprovalRequest | Promise<ApprovalRequest | undefined> | undefined)
+    | undefined;
+  private readonly modelRouteProvider:
+    | ((input: {
+        modelPolicy: ModelPolicy;
+        runtimeProfile: RuntimeProfile;
+        run: Run;
+      }) => RuntimeModelRoute)
+    | undefined;
+
+  constructor(options: WorkerRuntimeServiceOptions) {
+    this.queue = options.queue;
+    this.state = options.state;
+    this.adapters =
+      options.adapters ?? createDeterministicLocalRuntimeAdapters();
+    this.workerId = options.workerId ?? "worker_local";
+    this.leaseMs = options.leaseMs ?? 30_000;
+    this.nowFn = options.now ?? (() => new Date().toISOString());
+    this.tools = options.tools ?? deterministicLocalToolProxy;
+    this.approvalExpiresInMs = options.approvalExpiresInMs ?? 30 * 60 * 1000;
+    this.approvalProvider = options.approvalProvider;
+    this.modelRouteProvider = options.modelRouteProvider;
+  }
+
+  async processNext(
+    input: ProcessNextRunWorkInput = {},
+  ): Promise<ProcessNextRunWorkDecision> {
+    const claim = this.queue.claimNext({
+      workerId: input.workerId ?? this.workerId,
+      leaseMs: input.leaseMs ?? this.leaseMs,
+      now: this.time(input.now),
+    });
+    if (claim.decision === "empty") {
+      return { decision: "empty", reason: claim.reason };
+    }
+
+    const snapshot = this.readSnapshot();
+    let adapterId = "unresolved";
+    try {
+      const context = this.resolveRuntimeContext(claim.record, snapshot);
+      const adapter = this.selectAdapter(context.runtimeProfile);
+      adapterId = adapter.id;
+      const result = await this.runAdapter(adapter, claim, context);
+      const cancellation = await this.coerceCancelledResult(
+        adapter,
+        claim,
+        result,
+      );
+      if (cancellation.decision === "lost_lease") {
+        return {
+          decision: "lost_lease",
+          lease: claim.lease,
+          record: claim.record,
+          reason: cancellation.reason,
+        };
+      }
+
+      const settlement = this.queue.settle({
+        leaseId: claim.lease.id,
+        result: cancellation.result,
+        approval: cancellation.approval,
+        now: this.time(input.now),
+      });
+      return {
+        decision: "processed",
+        adapterId,
+        lease: claim.lease,
+        record: claim.record,
+        result: cancellation.result,
+        settlement,
+      };
+    } catch (error: unknown) {
+      const result = runtimeFailureResult(error);
+      const settlement = this.queue.settle({
+        leaseId: claim.lease.id,
+        result,
+        now: this.time(input.now),
+      });
+      return {
+        decision: "processed",
+        adapterId,
+        lease: claim.lease,
+        record: claim.record,
+        result,
+        settlement,
+      };
+    }
+  }
+
+  async drain(input: DrainRunWorkInput = {}): Promise<DrainRunWorkResult> {
+    const maxItems = input.maxItems ?? 100;
+    if (maxItems < 1) {
+      throw new Error("maxItems must be at least 1.");
+    }
+
+    const decisions: ProcessNextRunWorkDecision[] = [];
+    let processed = 0;
+    for (let index = 0; index < maxItems; index += 1) {
+      const decision = await this.processNext(input);
+      decisions.push(decision);
+      if (decision.decision === "empty") {
+        return { processed, decisions, stoppedReason: "empty" };
+      }
+      if (decision.decision === "lost_lease") {
+        return { processed, decisions, stoppedReason: "lost_lease" };
+      }
+      processed += 1;
+    }
+
+    return { processed, decisions, stoppedReason: "max_items" };
+  }
+
+  private async runAdapter(
+    adapter: RuntimeAdapter,
+    claim: Extract<ClaimRunWorkDecision, { decision: "claimed" }>,
+    context: WorkerRuntimeContext,
+  ): Promise<{
+    result: RuntimeResult;
+    approval?: ApprovalRequest | undefined;
+  }> {
+    let requestedApproval: ApprovalRequest | undefined;
+    const runtimeInput = this.createRuntimeInput(
+      claim.lease.id,
+      claim.record,
+      context,
+      (approval) => {
+        requestedApproval = approval;
+      },
+    );
+
+    this.queue.emitRuntimeEvent({
+      leaseId: claim.lease.id,
+      event: {
+        type: "runtime.selected",
+        message: `Selected runtime adapter ${adapter.id}.`,
+        data: {
+          adapterId: adapter.id,
+          runtimeKind: adapter.kind,
+          model: context.modelRoute.model,
+        },
+      },
+      now: this.time(),
+    });
+
+    const result =
+      claim.record.item.reason === "approval_granted"
+        ? await adapter.resume({
+            ...runtimeInput,
+            approval: await this.resolveResumeApproval(claim.record, context),
+          })
+        : await adapter.start(runtimeInput);
+
+    if (result.status === "awaiting_approval" && !requestedApproval) {
+      throw new Error(
+        "Runtime returned awaiting_approval without requesting approval.",
+      );
+    }
+
+    return { result, approval: requestedApproval };
+  }
+
+  private createRuntimeInput(
+    leaseId: string,
+    record: WorkerWorkRecord,
+    context: WorkerRuntimeContext,
+    rememberApproval: (approval: ApprovalRequest) => void,
+  ): RuntimeStartInput {
+    return {
+      workItem: clone(record.item),
+      run: clone(context.run),
+      requester: clone(context.requester),
+      place: clone(context.place),
+      accessBundles: clone(context.accessBundles),
+      modelPolicy: clone(context.modelPolicy),
+      modelRoute: clone(context.modelRoute),
+      runtimeProfile: clone(context.runtimeProfile),
+      grants: clone(context.grants),
+      tools: this.tools,
+      requestApproval: async (checkpoint) => {
+        const now = this.time();
+        const approval = createApprovalRequest(
+          record.item.orgId,
+          record.item.runId,
+          context.run.requesterPrincipalId,
+          checkpoint.action,
+          checkpoint.payload,
+          checkpoint.risk,
+          now,
+          addMs(now, this.approvalExpiresInMs),
+        );
+        rememberApproval(approval);
+        this.queue.emitRuntimeEvent({
+          leaseId,
+          event: {
+            type: "tool.requested",
+            message: `Approval requested for ${checkpoint.action}.`,
+            data: {
+              approvalId: approval.id,
+              action: checkpoint.action,
+              kind: checkpoint.kind,
+              resource: checkpoint.resource,
+              risk: checkpoint.risk,
+            },
+          },
+          now,
+        });
+        return approval;
+      },
+      emit: async (event) => {
+        this.queue.emitRuntimeEvent({
+          leaseId,
+          event,
+          now: this.time(),
+        });
+      },
+    };
+  }
+
+  private async coerceCancelledResult(
+    adapter: RuntimeAdapter,
+    claim: Extract<ClaimRunWorkDecision, { decision: "claimed" }>,
+    output: { result: RuntimeResult; approval?: ApprovalRequest | undefined },
+  ): Promise<
+    | {
+        decision: "continue";
+        result: RuntimeResult;
+        approval?: ApprovalRequest;
+      }
+    | { decision: "lost_lease"; reason: string }
+  > {
+    const heartbeat = this.queue.heartbeat({
+      leaseId: claim.lease.id,
+      now: this.time(),
+    });
+    if (heartbeat.decision === "continue") {
+      return output.approval
+        ? {
+            decision: "continue",
+            result: output.result,
+            approval: output.approval,
+          }
+        : { decision: "continue", result: output.result };
+    }
+    if (heartbeat.decision === "cancel") {
+      await adapter.cancel(claim.record.item.runId);
+      return {
+        decision: "continue",
+        result: {
+          status: "cancelled",
+          artifactRefs: [],
+          actualCostCents: output.result.actualCostCents,
+          error: heartbeat.reason,
+        },
+      };
+    }
+    return { decision: "lost_lease", reason: heartbeat.reason };
+  }
+
+  private resolveRuntimeContext(
+    record: WorkerWorkRecord,
+    snapshot: BekSnapshot,
+  ): WorkerRuntimeContext {
+    const run = snapshot.runs.find(
+      (candidate) =>
+        candidate.orgId === record.item.orgId &&
+        candidate.id === record.item.runId,
+    );
+    if (!run) {
+      throw new Error(`Run ${record.item.runId} was not found.`);
+    }
+    const requester = snapshot.principals.find(
+      (candidate) =>
+        candidate.orgId === run.orgId &&
+        candidate.id === run.requesterPrincipalId,
+    );
+    if (!requester) {
+      throw new Error(`Requester ${run.requesterPrincipalId} was not found.`);
+    }
+    const place = snapshot.places.find(
+      (candidate) =>
+        candidate.orgId === run.orgId && candidate.id === run.placeScopeId,
+    );
+    if (!place) {
+      throw new Error(`Place ${run.placeScopeId} was not found.`);
+    }
+    const modelPolicy = snapshot.modelPolicies.find(
+      (candidate) =>
+        candidate.orgId === run.orgId && candidate.id === run.modelPolicyId,
+    );
+    if (!modelPolicy) {
+      throw new Error(`Model policy ${run.modelPolicyId} was not found.`);
+    }
+    const runtimeProfile = snapshot.runtimeProfiles.find(
+      (candidate) =>
+        candidate.orgId === run.orgId && candidate.id === run.runtimeProfileId,
+    );
+    if (!runtimeProfile) {
+      throw new Error(`Runtime profile ${run.runtimeProfileId} was not found.`);
+    }
+
+    const accessBundles = bundlesForPlace(snapshot.accessBundles, place);
+    const grants = accessBundles.flatMap((bundle) => bundle.grants);
+    const modelRoute =
+      this.modelRouteProvider?.({ modelPolicy, runtimeProfile, run }) ??
+      defaultModelRoute(modelPolicy, runtimeProfile);
+
+    return {
+      snapshot,
+      run,
+      requester,
+      place,
+      accessBundles,
+      modelPolicy,
+      modelRoute,
+      runtimeProfile,
+      grants,
+    };
+  }
+
+  private selectAdapter(profile: RuntimeProfile): RuntimeAdapter {
+    const adapter = this.adapters.find(
+      (candidate) =>
+        adapterMatchesProfile(candidate, profile) && candidate.canRun(profile),
+    );
+    if (!adapter) {
+      throw new Error(
+        `No runtime adapter registered for ${profile.runtimeKind}:${profile.adapter}.`,
+      );
+    }
+    return adapter;
+  }
+
+  private async resolveResumeApproval(
+    record: WorkerWorkRecord,
+    context: WorkerRuntimeContext,
+  ): Promise<ApprovalRequest> {
+    const provided = await this.approvalProvider?.({
+      record: clone(record),
+      snapshot: clone(context.snapshot),
+    });
+    if (provided) {
+      return provided;
+    }
+
+    const gate = record.approval;
+    if (!gate) {
+      throw new Error("Approval resume work is missing an approval gate.");
+    }
+
+    return {
+      id: gate.approvalId,
+      orgId: record.item.orgId,
+      runId: record.item.runId,
+      action: gate.action,
+      risk: gate.risk,
+      status: gate.status,
+      payloadHash: gate.payloadHash,
+      requestedByPrincipalId: context.run.requesterPrincipalId,
+      createdAt: gate.createdAt,
+      expiresAt: gate.expiresAt,
+    };
+  }
+
+  private readSnapshot(): BekSnapshot {
+    const source = this.state;
+    if (typeof source === "function") {
+      return clone(source());
+    }
+    if (isWorkerRuntimeStateReader(source)) {
+      return clone(source.read());
+    }
+    return clone(source);
+  }
+
+  private time(override?: string | undefined): string {
+    return override ?? this.nowFn();
+  }
+}
+
+export const deterministicLocalToolProxy: RuntimeToolProxy = {
+  async call(request) {
+    return {
+      ok: true,
+      output: {
+        deterministic: true,
+        tool: request.name,
+        capability: request.capabilityGrant.capability,
+        input: request.input,
+      },
+    };
+  },
+};
+
+export interface DeterministicLocalRuntimeAdapterOptions {
+  id?: string | undefined;
+  kind?: RuntimeAdapterKind | undefined;
+  approvalPromptPattern?: RegExp | undefined;
+}
+
+export function createDeterministicLocalRuntimeAdapter(
+  options: DeterministicLocalRuntimeAdapterOptions = {},
+): RuntimeAdapter {
+  const id = options.id ?? "ai-sdk-local-stub";
+  const kind = options.kind ?? "ai_sdk";
+  const approvalPromptPattern =
+    options.approvalPromptPattern ?? /\bapproval\b/i;
+
+  return {
+    id,
+    kind,
+    canRun(profile) {
+      return profile.runtimeKind === kind && profile.adapter === id;
+    },
+    async start(input) {
+      await input.emit({
+        type: "runtime.started",
+        message: `Local runtime ${id} started.`,
+        data: { reason: input.workItem.reason },
+      });
+
+      if (approvalPromptPattern.test(input.run.prompt)) {
+        await input.requestApproval({
+          kind: "external.write",
+          action: "local.approval",
+          resource: `run:${input.run.id}`,
+          risk: "write_external",
+          payload: {
+            runId: input.run.id,
+            prompt: input.run.prompt,
+            adapterId: id,
+          },
+        });
+        return {
+          status: "awaiting_approval",
+          artifactRefs: [],
+          actualCostCents: 1,
+        };
+      }
+
+      await input.emit({
+        type: "model.requested",
+        message: `Local model route ${input.modelRoute.model} requested.`,
+        data: { provider: input.modelRoute.provider },
+      });
+      await input.emit({
+        type: "model.completed",
+        message: "Local model response completed.",
+      });
+      await input.emit({
+        type: "runtime.completed",
+        message: `Local runtime ${id} completed.`,
+      });
+
+      return {
+        status: "completed",
+        finalText: localFinalText(input),
+        artifactRefs: [],
+        actualCostCents: Math.max(1, input.run.estimatedCostCents),
+      };
+    },
+    async resume(input) {
+      await input.emit({
+        type: "tool.approved",
+        message: `Approval ${input.approval.id} accepted by local runtime.`,
+        data: { approvalId: input.approval.id },
+      });
+      await input.emit({
+        type: "runtime.completed",
+        message: `Local runtime ${id} resumed and completed.`,
+      });
+      return {
+        status: "completed",
+        finalText: localFinalText(input),
+        artifactRefs: [],
+        actualCostCents: Math.max(1, input.run.estimatedCostCents),
+      };
+    },
+    async cancel() {
+      return;
+    },
+  };
+}
+
+export function createDeterministicLocalRuntimeAdapters(): RuntimeAdapter[] {
+  return [
+    createDeterministicLocalRuntimeAdapter({
+      id: "ai-sdk-local-stub",
+      kind: "ai_sdk",
+    }),
+    createDeterministicLocalRuntimeAdapter({
+      id: "opencode-sandbox",
+      kind: "opencode",
+    }),
+    createDeterministicLocalRuntimeAdapter({
+      id: "langgraph-local-stub",
+      kind: "langgraph",
+    }),
+    createDeterministicLocalRuntimeAdapter({
+      id: "external-local-stub",
+      kind: "external",
+    }),
+  ];
+}
+
+function defaultModelRoute(
+  modelPolicy: ModelPolicy,
+  runtimeProfile: RuntimeProfile,
+): RuntimeModelRoute {
+  const separatorIndex = modelPolicy.defaultModel.indexOf("/");
+  const provider =
+    separatorIndex > 0
+      ? modelPolicy.defaultModel.slice(0, separatorIndex)
+      : "local";
+  return {
+    provider,
+    model: modelPolicy.defaultModel,
+    reason: `Using ${modelPolicy.name} for ${runtimeProfile.name}.`,
+  };
+}
+
+function localFinalText(input: RuntimeStartInput): string {
+  return `Bek local worker completed ${input.run.id} with ${input.runtimeProfile.adapter}.`;
+}
+
+function runtimeFailureResult(error: unknown): RuntimeResult {
+  return {
+    status: "failed",
+    artifactRefs: [],
+    actualCostCents: 0,
+    error: error instanceof Error ? error.message : String(error),
+  };
+}
+
+function isWorkerRuntimeStateReader(
+  source: WorkerRuntimeStateSource,
+): source is WorkerRuntimeStateReader {
+  return (
+    typeof source === "object" &&
+    source !== null &&
+    "read" in source &&
+    typeof source.read === "function"
+  );
+}
+
+export function canTransitionRunAttemptState(
+  current: WorkerRunAttemptState,
+  next: WorkerRunAttemptState,
+): boolean {
+  return (
+    current === next || workerRunAttemptStateTransitions[current].includes(next)
+  );
+}
+
+export function createWorkerIdempotencyKey(
+  item: Pick<RunWorkItem, "orgId" | "runId" | "attempt">,
+): string {
+  return `run_attempt:${item.orgId}:${item.runId}:${item.attempt}`;
 }
 
 export function retryDelayMs(
@@ -828,6 +1705,7 @@ function approvalGateFromRequest(
     approvalId: approval.id,
     payloadHash: approval.payloadHash,
     action: approval.action,
+    risk: approval.risk,
     status: approval.status,
     createdAt: approval.createdAt,
     expiresAt: approval.expiresAt,

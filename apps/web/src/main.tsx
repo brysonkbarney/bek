@@ -9,9 +9,11 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { AppShell } from "./ui/AppShell";
 import {
+  AccessBundleDetailPage,
   AccessBundlesPage,
   ApprovalsPage,
   AuditPage,
+  ChannelDetailPage,
   ChannelsPage,
   ConnectorsPage,
   MemoryPage,
@@ -58,10 +60,22 @@ const channelsRoute = createRoute({
   component: ChannelsPage,
 });
 
+const channelDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/channels/$channelId",
+  component: ChannelDetailPage,
+});
+
 const accessBundlesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/access-bundles",
   component: AccessBundlesPage,
+});
+
+const accessBundleDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/access-bundles/$bundleId",
+  component: AccessBundleDetailPage,
 });
 
 const approvalsRoute = createRoute({
@@ -104,7 +118,9 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   setupRoute,
   channelsRoute,
+  channelDetailRoute,
   accessBundlesRoute,
+  accessBundleDetailRoute,
   runsRoute,
   runDetailRoute,
   approvalsRoute,

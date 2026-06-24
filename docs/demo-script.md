@@ -28,13 +28,16 @@ Expected local MVP behavior:
 
 ## CLI Version
 
-After `pnpm dev` is running:
+Run:
 
 ```bash
 pnpm smoke
 ```
 
-The smoke script checks API health, creates an approval-gated PR run, approves it as the seeded admin principal, and prints the run ID.
+The smoke script uses an already-running API when one is healthy. Otherwise it
+starts a temporary memory-backed API, checks bootstrap/setup/policy, creates an
+approval-gated PR run, approves it as the seeded admin principal, confirms the
+completed run state, and prints the run ID.
 
 ## UI Version
 

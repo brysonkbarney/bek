@@ -3,3 +3,8 @@ export * from "./events";
 export * from "./oauth";
 export * from "./commands";
 export * from "./interactivity";
+export * from "./blocks";
+export * from "./approval-payloads";
+export * from "./messages";
+export * from "./client";
+export * from "./event-keys";

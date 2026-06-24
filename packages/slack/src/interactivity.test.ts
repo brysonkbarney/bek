@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { parseSlackCommand } from "./commands";
+import {
+  buildSlackCommandErrorResponse,
+  buildSlackCommandIgnoredResponse,
+  buildSlackCommandQueuedResponse,
+  parseSlackCommand,
+} from "./commands";
 import { parseSlackInteraction } from "./interactivity";
+import { buildSlackApprovalActionValue } from "./approval-payloads";
 
 describe("Slack command parsing", () => {
   it("normalizes slash command form payloads", () => {
@@ -20,6 +26,36 @@ describe("Slack command parsing", () => {
       teamId: "T123",
     });
   });
+
+  it("builds slash command responses", () => {
+    expect(buildSlackCommandQueuedResponse({ runId: "run_123" })).toEqual({
+      ok: true,
+      runId: "run_123",
+      response_type: "ephemeral",
+      text: "Bek queued this command as run_123.",
+    });
+
+    expect(
+      buildSlackCommandIgnoredResponse({
+        reason: "Bek is not configured for this Slack channel.",
+      }),
+    ).toMatchObject({
+      ok: false,
+      ignored: true,
+      response_type: "ephemeral",
+    });
+
+    expect(
+      buildSlackCommandErrorResponse({
+        error: "Slack command payload is missing channel_id.",
+        text: "Bek could not identify the Slack channel for this command.",
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("channel_id"),
+      response_type: "ephemeral",
+    });
+  });
 });
 
 describe("Slack interactivity parsing", () => {
@@ -33,12 +69,16 @@ describe("Slack interactivity parsing", () => {
         actions: [
           {
             action_id: "bek.approval.deny",
-            value: JSON.stringify({
+            action_ts: "1700000000.000100",
+            value: buildSlackApprovalActionValue({
               approvalId: "approval_123",
               payloadHash: "payload_hash_123456",
+              runId: "run_123",
             }),
           },
         ],
+        container: { message_ts: "1700000000.000001" },
+        response_url: "https://hooks.slack.test/actions/123",
       }),
     }).toString();
 
@@ -50,6 +90,9 @@ describe("Slack interactivity parsing", () => {
       slackUserId: "U123",
       channelId: "C123",
       teamId: "T123",
+      responseUrl: "https://hooks.slack.test/actions/123",
+      actionTs: "1700000000.000100",
+      messageTs: "1700000000.000001",
     });
   });
 
