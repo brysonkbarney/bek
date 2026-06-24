@@ -1,8 +1,11 @@
 # Runtime And Sandbox Architecture
 
-Status: implementation in progress. Bek has runtime/sandbox contracts and a
-local Docker sandbox provider; worker runtime execution still defaults to
-deterministic local adapters until the sandbox runtime adapter is wired.
+Status: implementation in progress. Bek has runtime/sandbox contracts, a local
+Docker sandbox provider, and a worker runtime adapter that can create a sandbox
+lease, execute a command, collect an optional artifact, emit sandbox timeline
+events, and destroy the lease. The current sandbox runtime command is a
+controlled placeholder; full OpenCode repo checkout/edit/test/PR orchestration
+is the next integration layer.
 
 Bek has one visible Slack teammate, `@bek`. Runtime profiles, model providers,
 coding agents, sandboxes, and tool bundles are internal control-plane choices
@@ -49,7 +52,9 @@ Slack event or API request
 ```
 
 The worker owns run advancement. The API should only create runs, receive
-Slack/webhook callbacks, record approval decisions, and expose state.
+Slack/webhook callbacks, record approval decisions, and expose state. In local
+worker mode, `BEK_SANDBOX_PROVIDER=docker-local` selects the executable Docker
+provider for the `opencode-sandbox` runtime profile.
 
 ## Queue And Worker Boundary
 
@@ -213,6 +218,10 @@ construction and provider behavior:
 - `FakeSandboxProvider` implements the provider interface for unit tests. It
   validates policies and commands, records executed argv, hashes uploaded
   artifacts, and enforces destroyed leases without spawning containers.
+- `createSandboxRuntimeAdapter` lets the worker run a command through any
+  `SandboxProvider`. When `BEK_SANDBOX_PROVIDER=docker-local` is set, the API's
+  local worker controller wires this adapter to the `opencode-sandbox` runtime
+  profile.
 - The Docker provider is not a hosted multitenant isolation claim. Use it for
   local OSS development, trusted single-tenant self-hosting, and CI-style
   validation; use a microVM provider for hosted untrusted code.

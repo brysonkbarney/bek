@@ -1,5 +1,6 @@
 import {
   adapterMatchesProfile,
+  type RuntimeArtifactRef,
   type RunWorkItem,
   type RuntimeAdapter,
   type RuntimeAdapterKind,
@@ -7,9 +8,16 @@ import {
   type RuntimeObservabilityEvent,
   type RuntimeObservabilityEventType,
   type RuntimeResult,
+  type RuntimeSandboxContext,
   type RuntimeStartInput,
   type RuntimeToolProxy,
 } from "@bek/runtime";
+import {
+  DockerSandboxProvider,
+  createDefaultSandboxPolicy,
+  type SandboxPolicy,
+  type SandboxProvider,
+} from "@bek/sandbox";
 import {
   bundlesForPlace,
   createApprovalRequest,
@@ -1306,6 +1314,14 @@ export interface WorkerRuntimeServiceOptions {
   queue: WorkerQueueContract;
   state: WorkerRuntimeStateSource;
   adapters?: readonly RuntimeAdapter[] | undefined;
+  sandboxProvider?: SandboxProvider | undefined;
+  sandboxPolicyProvider?:
+    | ((input: {
+        record: WorkerWorkRecord;
+        context: WorkerRuntimeContext;
+        provider: SandboxProvider;
+      }) => SandboxPolicy | Promise<SandboxPolicy>)
+    | undefined;
   workerId?: string | undefined;
   leaseMs?: number | undefined;
   now?: (() => string) | undefined;
@@ -1363,6 +1379,14 @@ export class WorkerRuntimeService {
   private readonly queue: WorkerQueueContract;
   private readonly state: WorkerRuntimeStateSource;
   private readonly adapters: readonly RuntimeAdapter[];
+  private readonly sandboxProvider?: SandboxProvider | undefined;
+  private readonly sandboxPolicyProvider:
+    | ((input: {
+        record: WorkerWorkRecord;
+        context: WorkerRuntimeContext;
+        provider: SandboxProvider;
+      }) => SandboxPolicy | Promise<SandboxPolicy>)
+    | undefined;
   private readonly workerId: string;
   private readonly leaseMs: number;
   private readonly nowFn: () => string;
@@ -1387,6 +1411,8 @@ export class WorkerRuntimeService {
     this.state = options.state;
     this.adapters =
       options.adapters ?? createDeterministicLocalRuntimeAdapters();
+    this.sandboxProvider = options.sandboxProvider;
+    this.sandboxPolicyProvider = options.sandboxPolicyProvider;
     this.workerId = options.workerId ?? "worker_local";
     this.leaseMs = options.leaseMs ?? 30_000;
     this.nowFn = options.now ?? (() => new Date().toISOString());
@@ -1493,53 +1519,67 @@ export class WorkerRuntimeService {
     approval?: ApprovalRequest | undefined;
   }> {
     let requestedApproval: ApprovalRequest | undefined;
-    const runtimeInput = this.createRuntimeInput(
+    const sandbox = await this.createSandboxContext(
       claim.lease.id,
       claim.record,
       context,
-      (approval) => {
-        requestedApproval = approval;
-      },
     );
 
-    this.queue.emitRuntimeEvent({
-      leaseId: claim.lease.id,
-      event: {
-        type: "runtime.selected",
-        message: `Selected runtime adapter ${adapter.id}.`,
-        data: {
-          adapterId: adapter.id,
-          runtimeKind: adapter.kind,
-          model: context.modelRoute.model,
+    try {
+      const runtimeInput = this.createRuntimeInput(
+        claim.lease.id,
+        claim.record,
+        context,
+        sandbox,
+        (approval) => {
+          requestedApproval = approval;
         },
-      },
-      now: this.time(),
-    });
-
-    const result =
-      claim.record.item.reason === "approval_granted"
-        ? await adapter.resume({
-            ...runtimeInput,
-            approval: await this.resolveResumeApproval(claim.record, context),
-          })
-        : await adapter.start(runtimeInput);
-
-    if (result.status === "awaiting_approval" && !requestedApproval) {
-      throw new Error(
-        "Runtime returned awaiting_approval without requesting approval.",
       );
-    }
 
-    return { result, approval: requestedApproval };
+      this.queue.emitRuntimeEvent({
+        leaseId: claim.lease.id,
+        event: {
+          type: "runtime.selected",
+          message: `Selected runtime adapter ${adapter.id}.`,
+          data: {
+            adapterId: adapter.id,
+            runtimeKind: adapter.kind,
+            model: context.modelRoute.model,
+          },
+        },
+        now: this.time(),
+      });
+
+      const result =
+        claim.record.item.reason === "approval_granted"
+          ? await adapter.resume({
+              ...runtimeInput,
+              approval: await this.resolveResumeApproval(claim.record, context),
+            })
+          : await adapter.start(runtimeInput);
+
+      if (result.status === "awaiting_approval" && !requestedApproval) {
+        throw new Error(
+          "Runtime returned awaiting_approval without requesting approval.",
+        );
+      }
+
+      return { result, approval: requestedApproval };
+    } finally {
+      if (sandbox?.lease && this.sandboxProvider) {
+        await this.sandboxProvider.destroy(sandbox.lease);
+      }
+    }
   }
 
   private createRuntimeInput(
     leaseId: string,
     record: WorkerWorkRecord,
     context: WorkerRuntimeContext,
+    sandbox: RuntimeSandboxContext | undefined,
     rememberApproval: (approval: ApprovalRequest) => void,
   ): RuntimeStartInput {
-    return {
+    const input: RuntimeStartInput = {
       workItem: clone(record.item),
       run: clone(context.run),
       requester: clone(context.requester),
@@ -1588,6 +1628,66 @@ export class WorkerRuntimeService {
         });
       },
     };
+    if (sandbox) {
+      input.sandbox = clone(sandbox);
+    }
+    return input;
+  }
+
+  private async createSandboxContext(
+    workerLeaseId: string,
+    record: WorkerWorkRecord,
+    context: WorkerRuntimeContext,
+  ): Promise<RuntimeSandboxContext | undefined> {
+    const provider = this.sandboxProvider;
+    if (!provider || !runtimeProfileRequiresSandbox(context.runtimeProfile)) {
+      return undefined;
+    }
+
+    const policy =
+      (await this.sandboxPolicyProvider?.({
+        record,
+        context,
+        provider,
+      })) ?? defaultSandboxPolicyForContext(context, provider);
+
+    this.queue.emitRuntimeEvent({
+      leaseId: workerLeaseId,
+      event: {
+        type: "sandbox.requested",
+        message: `Sandbox provider ${provider.id} requested.`,
+        data: {
+          providerKind: provider.kind,
+          runtimeProfileId: context.runtimeProfile.id,
+          risk: policy.risk,
+        },
+      },
+      now: this.time(),
+    });
+
+    const lease = await provider.create({
+      orgId: record.item.orgId,
+      runId: record.item.runId,
+      attempt: record.item.attempt,
+      policy,
+      traceId: record.item.traceId,
+    });
+
+    this.queue.emitRuntimeEvent({
+      leaseId: workerLeaseId,
+      event: {
+        type: "sandbox.started",
+        message: `Sandbox ${lease.id} started.`,
+        data: {
+          sandboxLeaseId: lease.id,
+          providerKind: lease.providerKind,
+          expiresAt: lease.expiresAt,
+        },
+      },
+      now: this.time(),
+    });
+
+    return { policy, lease };
   }
 
   private async coerceCancelledResult(
@@ -1855,6 +1955,132 @@ export function createDeterministicLocalRuntimeAdapter(
   };
 }
 
+export interface SandboxRuntimeAdapterOptions {
+  id?: string | undefined;
+  kind?: RuntimeAdapterKind | undefined;
+  provider: SandboxProvider;
+  command?: string[] | undefined;
+  cwd?: string | undefined;
+  artifactPath?: string | undefined;
+}
+
+export function createSandboxRuntimeAdapter(
+  options: SandboxRuntimeAdapterOptions,
+): RuntimeAdapter {
+  const id = options.id ?? "opencode-sandbox";
+  const kind = options.kind ?? "opencode";
+  const command = options.command ?? [
+    "sh",
+    "-lc",
+    "printf 'Bek sandbox runtime executed for run %s\\n' \"$BEK_RUN_ID\"",
+  ];
+  const cwd = options.cwd ?? "/workspace/worktree";
+
+  async function runInSandbox(
+    input: RuntimeStartInput,
+  ): Promise<RuntimeResult> {
+    await input.emit({
+      type: "runtime.started",
+      message: `Sandbox runtime ${id} started.`,
+      data: { providerId: options.provider.id },
+    });
+
+    const lease = input.sandbox?.lease;
+    const policy = input.sandbox?.policy;
+    if (!lease || !policy) {
+      return {
+        status: "failed",
+        artifactRefs: [],
+        actualCostCents: 1,
+        error: "Sandbox runtime requires a sandbox lease.",
+      };
+    }
+
+    await input.emit({
+      type: "sandbox.command.started",
+      message: `Sandbox command started for ${id}.`,
+      data: { command: command[0], cwd },
+    });
+    const result = await options.provider.exec(lease, {
+      idempotencyKey: `sandbox:${input.workItem.runId}:${input.workItem.attempt}:${input.workItem.reason}`,
+      command,
+      cwd,
+      env: { BEK_RUN_ID: input.run.id },
+      timeoutMs: policy.resourceLimits.timeoutMs,
+      risk: policy.risk,
+    });
+    await input.emit({
+      type: "sandbox.command.completed",
+      message: `Sandbox command exited with ${result.exitCode}.`,
+      data: {
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+        durationMs: result.durationMs,
+        stdoutBytes: result.stdout.length,
+        stderrBytes: result.stderr.length,
+      },
+    });
+
+    if (result.timedOut || result.exitCode !== 0) {
+      return {
+        status: "failed",
+        artifactRefs: [],
+        actualCostCents: Math.max(1, input.run.estimatedCostCents),
+        error: sandboxError(result),
+      };
+    }
+
+    const artifactRefs: RuntimeArtifactRef[] = [];
+    if (options.artifactPath) {
+      const artifact = await options.provider.download(
+        lease,
+        options.artifactPath,
+      );
+      artifactRefs.push({
+        id: `sandbox_artifact_${input.workItem.runId}_${input.workItem.attempt}`,
+        kind: "summary" as const,
+        contentHash: artifact.contentHash,
+        sizeBytes: artifact.sizeBytes,
+        uri: `sandbox:${artifact.path}`,
+      });
+      await input.emit({
+        type: "sandbox.artifact.created",
+        message: `Sandbox artifact ${artifact.path} collected.`,
+        data: {
+          artifactId: artifactRefs[0]?.id,
+          contentHash: artifact.contentHash,
+          sizeBytes: artifact.sizeBytes,
+        },
+      });
+    }
+
+    await input.emit({
+      type: "runtime.completed",
+      message: `Sandbox runtime ${id} completed.`,
+    });
+
+    return {
+      status: "completed",
+      finalText: sandboxFinalText(result),
+      artifactRefs,
+      actualCostCents: Math.max(1, input.run.estimatedCostCents),
+    };
+  }
+
+  return {
+    id,
+    kind,
+    canRun(profile) {
+      return profile.runtimeKind === kind && profile.adapter === id;
+    },
+    start: runInSandbox,
+    resume: runInSandbox,
+    async cancel() {
+      return;
+    },
+  };
+}
+
 export function createDeterministicLocalRuntimeAdapters(): RuntimeAdapter[] {
   return [
     createDeterministicLocalRuntimeAdapter({
@@ -1874,6 +2100,102 @@ export function createDeterministicLocalRuntimeAdapters(): RuntimeAdapter[] {
       kind: "external",
     }),
   ];
+}
+
+export function createLocalRuntimeAdapters(
+  options: { sandboxProvider?: SandboxProvider | undefined } = {},
+): RuntimeAdapter[] {
+  return [
+    createDeterministicLocalRuntimeAdapter({
+      id: "ai-sdk-local-stub",
+      kind: "ai_sdk",
+    }),
+    options.sandboxProvider
+      ? createSandboxRuntimeAdapter({ provider: options.sandboxProvider })
+      : createDeterministicLocalRuntimeAdapter({
+          id: "opencode-sandbox",
+          kind: "opencode",
+        }),
+    createDeterministicLocalRuntimeAdapter({
+      id: "langgraph-local-stub",
+      kind: "langgraph",
+    }),
+    createDeterministicLocalRuntimeAdapter({
+      id: "external-local-stub",
+      kind: "external",
+    }),
+  ];
+}
+
+export function createSandboxProviderFromEnv(
+  value = process.env.BEK_SANDBOX_PROVIDER,
+): SandboxProvider | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized || normalized === "none" || normalized === "noop") {
+    return undefined;
+  }
+  if (normalized === "docker" || normalized === "docker-local") {
+    return new DockerSandboxProvider();
+  }
+  throw new Error(`Unsupported BEK_SANDBOX_PROVIDER ${value}.`);
+}
+
+function runtimeProfileRequiresSandbox(profile: RuntimeProfile): boolean {
+  return (
+    profile.runtimeKind === "opencode" || profile.adapter.includes("sandbox")
+  );
+}
+
+function defaultSandboxPolicyForContext(
+  context: WorkerRuntimeContext,
+  provider: SandboxProvider,
+): SandboxPolicy {
+  const sandboxGrant = context.grants.find(
+    (grant) => grant.capability === "sandbox.exec" && grant.decision !== "deny",
+  );
+  return createDefaultSandboxPolicy({
+    providerKind: provider.kind,
+    risk: sandboxGrant?.risk ?? "privileged",
+  });
+}
+
+function sandboxFinalText(result: {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}): string {
+  const stdout = redactSecrets(result.stdout.trim());
+  if (stdout) {
+    return `Sandbox command completed.\n\n${truncateForWorkerOutput(stdout)}`;
+  }
+  const stderr = redactSecrets(result.stderr.trim());
+  if (stderr) {
+    return `Sandbox command completed with no stdout.\n\n${truncateForWorkerOutput(
+      stderr,
+    )}`;
+  }
+  return `Sandbox command completed with exit code ${result.exitCode}.`;
+}
+
+function sandboxError(result: {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  timedOut: boolean;
+}): string {
+  const output = redactSecrets(
+    result.stderr.trim() ||
+      result.stdout.trim() ||
+      "Sandbox returned no output.",
+  );
+  const reason = result.timedOut
+    ? "Sandbox command timed out."
+    : `Sandbox command exited with code ${result.exitCode}.`;
+  return `${reason} ${truncateForWorkerOutput(output)}`;
+}
+
+function truncateForWorkerOutput(value: string, maxLength = 4_000): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }
 
 function defaultModelRoute(

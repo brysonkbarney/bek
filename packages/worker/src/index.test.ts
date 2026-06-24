@@ -4,12 +4,14 @@ import {
   type RuntimeAdapter,
   type RuntimeResult,
 } from "@bek/runtime";
+import { FakeSandboxProvider } from "@bek/sandbox";
 import { describe, expect, it } from "vitest";
 import {
   InMemoryWorkerEventSink,
   InMemoryWorkerQueue,
   WorkerRuntimeService,
   canTransitionRunAttemptState,
+  createSandboxRuntimeAdapter,
   createWorkerIdempotencyKey,
   createSequentialIdFactory,
   retryDelayMs,
@@ -677,6 +679,85 @@ describe("worker runtime service", () => {
         "worker.completed",
       ]),
     );
+  });
+
+  it("creates and destroys sandbox leases for sandbox runtime adapters", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_sandbox_service",
+      runtimeProfileId: "runtime_code",
+    });
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_sandbox_service",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+    const sandboxProvider = new FakeSandboxProvider({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+      execResults: [
+        {
+          exitCode: 0,
+          stdout: "sandbox hello",
+          stderr: "",
+          durationMs: 20,
+          timedOut: false,
+        },
+      ],
+    });
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [createSandboxRuntimeAdapter({ provider: sandboxProvider })],
+      sandboxProvider,
+      workerId: "worker_sandbox_service",
+      now: () => baseNow,
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected sandbox service processing.");
+    }
+    expect(decision.settlement.decision).toBe("completed");
+    expect(decision.result.finalText).toContain("sandbox hello");
+    expect(sandboxProvider.read().commands[0]).toMatchObject({
+      command: {
+        command: ["sh", "-lc", expect.stringContaining("Bek sandbox runtime")],
+        cwd: "/workspace/worktree",
+        env: { BEK_RUN_ID: run.id },
+      },
+    });
+    expect(queue.read().events.map((event) => event.type)).toEqual(
+      expect.arrayContaining([
+        "sandbox.requested",
+        "sandbox.started",
+        "sandbox.command.started",
+        "sandbox.command.completed",
+        "runtime.completed",
+        "worker.completed",
+      ]),
+    );
+    const lease = sandboxProvider.read().leases[0];
+    if (!lease) {
+      throw new Error("Expected sandbox lease.");
+    }
+    await expect(
+      sandboxProvider.exec(lease, {
+        idempotencyKey: "after_destroy",
+        command: ["true"],
+        risk: "read_internal",
+      }),
+    ).rejects.toThrow(/destroyed/);
   });
 
   it("pauses through the service and resumes the same attempt after approval", async () => {

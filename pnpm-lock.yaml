@@ -255,6 +255,9 @@ importers:
       "@bek/runtime":
         specifier: workspace:*
         version: link:../runtime
+      "@bek/sandbox":
+        specifier: workspace:*
+        version: link:../sandbox
     devDependencies:
       tsx:
         specifier: ^4.21.0

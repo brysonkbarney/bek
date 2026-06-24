@@ -15,7 +15,8 @@
   },
   "dependencies": {
     "@bek/core": "workspace:*",
-    "@bek/runtime": "workspace:*"
+    "@bek/runtime": "workspace:*",
+    "@bek/sandbox": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.21.0",

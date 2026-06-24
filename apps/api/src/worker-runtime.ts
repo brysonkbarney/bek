@@ -10,7 +10,8 @@ import {
   InMemoryWorkerQueue,
   SnapshotPersistedWorkerQueue,
   WorkerRuntimeService,
-  createDeterministicLocalRuntimeAdapters,
+  createLocalRuntimeAdapters,
+  createSandboxProviderFromEnv,
   type DrainRunWorkInput,
   type DrainRunWorkResult,
   type EnqueueRunWorkDecision,
@@ -66,10 +67,12 @@ export class LocalWorkerController {
           onSnapshotChanged: options.persistence.onSnapshotChanged,
         })
       : memoryQueue;
+    const sandboxProvider = createSandboxProviderFromEnv();
     this.service = new WorkerRuntimeService({
       queue: this.queue,
       state: () => this.store.read(),
-      adapters: createDeterministicLocalRuntimeAdapters(),
+      adapters: createLocalRuntimeAdapters({ sandboxProvider }),
+      sandboxProvider,
       workerId: "worker_api_local",
       approvalProvider: ({ record }) => this.findApprovalForRecord(record),
     });
