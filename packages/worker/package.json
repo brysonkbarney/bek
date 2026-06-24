@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@bek/core": "workspace:*",
+    "@bek/model-router": "workspace:*",
     "@bek/runtime": "workspace:*",
     "@bek/sandbox": "workspace:*"
   },

@@ -3,10 +3,14 @@
 Status: implementation in progress. Bek has runtime/sandbox contracts, a local
 Docker sandbox provider, and a worker runtime adapter that can create a sandbox
 lease, execute a command, collect an optional artifact, emit sandbox timeline
-events, and destroy the lease. Worker runtime routing now attaches deterministic
-selected-model cost and budget preflight metadata to runtime inputs. The current
-sandbox runtime command is a controlled placeholder; full OpenCode repo
-checkout/edit/test/PR orchestration is the next integration layer.
+events, and destroy the lease. Worker runtime routing now attaches selected-model
+cost and budget preflight metadata to runtime inputs, and the AI SDK Gateway
+runtime can make live text-generation calls when explicitly enabled with
+`BEK_MODEL_GATEWAY=vercel_ai_sdk`. The current sandbox runtime command is still
+a controlled placeholder; full OpenCode repo checkout/edit/test/PR orchestration
+is the next integration layer. Slack-visible runtime outcomes are now returned to
+Bek and queued through the durable Slack outbound-delivery outbox; runtimes still
+must not post to Slack directly.
 
 Bek has one visible Slack teammate, `@bek`. Runtime profiles, model providers,
 coding agents, sandboxes, and tool bundles are internal control-plane choices
@@ -49,13 +53,18 @@ Slack event or API request
   -> optional sandbox lease is created
   -> runtime requests model/tool/sandbox actions through Bek gateways
   -> approvals pause and resume the run
-  -> artifacts, final Slack reply, audit events, and cost ledger are written
+  -> artifacts, audit events, and cost ledger are written
+  -> final Slack-visible reply is queued in the durable Slack outbox
+  -> Slack outbox dispatcher posts to the originating channel/thread
 ```
 
 The worker owns run advancement. The API should only create runs, receive
 Slack/webhook callbacks, record approval decisions, and expose state. In local
 worker mode, `BEK_SANDBOX_PROVIDER=docker-local` selects the executable Docker
-provider for the `opencode-sandbox` runtime profile.
+provider for the `opencode-sandbox` runtime profile. Slack callbacks persist the
+outbound intent before Web API posting, and `POST /api/worker/drain` queues any
+worker-produced Slack follow-up messages before draining the Slack outbox in the
+local/self-hosted path.
 
 ## Queue And Worker Boundary
 
@@ -125,7 +134,7 @@ The adapter returns:
 
 - final answer text,
 - artifact references,
-- suggested Slack thread updates,
+- suggested Slack thread updates to be persisted as outbound deliveries,
 - cost/token usage,
 - structured failure reason when it cannot continue.
 
@@ -145,6 +154,11 @@ runs. It should call models through the model router and expose only Bek proxy
 tools. It is the safest first runtime because the worker can keep all effects in
 process and pause cleanly for approvals.
 
+The first live implementation is the AI SDK Gateway adapter, selected with
+`BEK_MODEL_GATEWAY=vercel_ai_sdk`. Streaming, tool-call mediation, durable
+usage persistence, and billed-cost reconciliation still need to be layered on
+top of that text-generation path.
+
 ### OpenCode Runtime
 
 Use this for coding runs that need repo inspection, edits, tests, and PR prep.
@@ -163,6 +177,14 @@ OpenCode configuration should be generated per run:
 OpenCode supports multiple internal agents. Bek must not surface those as Slack
 handles. If OpenCode uses plan/build subagents internally, every Slack response
 still comes from `@bek`.
+
+OpenCode also needs a heartbeat/watchdog layer before it can be trusted for
+hosted long-running work. The worker should heartbeat its lease while OpenCode's
+headless server or process is active, detect stalled sessions, cancel the
+sandbox/process on lost lease or human cancellation, capture partial logs and
+artifacts, and settle the run with a retryable or terminal failure. The current
+`opencode-sandbox` path is a sandbox-command adapter, not full OpenCode process
+supervision.
 
 ### External Runtime
 
@@ -369,24 +391,22 @@ and output token estimates. It is not live provider accounting; real adapters
 must still reconcile actual token usage and billed cost from provider responses
 into the durable model usage ledger.
 
-## First Implementation Steps
+## Remaining Implementation Steps
 
-1. Add durable queue tables and a worker process that can claim, heartbeat,
-   retry, cancel, and resume runs.
-2. Expand `RunEvent` to include runtime, sandbox, worker, budget, credential,
-   and artifact events.
-3. Implement `@bek/runtime` contracts and a deterministic runtime adapter that
-   produces traceable fake tool/sandbox requests.
-4. Implement `@bek/sandbox` contracts and a Docker provider with rootless,
-   no-network, resource-limited defaults.
-5. Add approval handling for sandbox start, network upgrade, branch/PR writes,
-   and privileged commands.
-6. Add the AI SDK runtime for non-coding runs.
-7. Add the OpenCode runtime inside the Docker provider, with generated
-   per-run config and Bek MCP/model proxies.
-8. Add hosted provider adapters: Vercel Sandbox first for Vercel deployments,
-   then E2B for portable hosted execution.
-9. Add artifact collection for patches, logs, test summaries, and screenshots.
-10. Add red-team tests for prompt injection, unsafe package scripts, metadata
-    access, leaked secrets, stale policy, approval hash mismatch, and tenant
-    boundary failures.
+1. Replace request-scoped local drains with daemonized worker and outbox
+   processes that can claim, heartbeat, retry, cancel, resume, dispatch, and
+   settle work outside API request handlers.
+2. Move worker queue claims and Slack outbound-delivery claims to row-level
+   transactional operations, such as `FOR UPDATE SKIP LOCKED` or an equivalent
+   queue backend, before enabling concurrent drainers.
+3. Extend AI SDK Gateway execution with streaming, tool-call mediation,
+   provider error dashboards, and durable actual usage/cost reconciliation.
+4. Add the OpenCode runtime inside the sandbox with generated per-run config,
+   Bek MCP/model proxies, lease heartbeat, stalled-process watchdog, cancellation
+   handling, and partial artifact capture.
+5. Add hosted sandbox provider adapters: Vercel Sandbox first for Vercel
+   deployments, then E2B for portable hosted execution.
+6. Add artifact collection for patches, logs, test summaries, and screenshots.
+7. Add red-team tests for prompt injection, unsafe package scripts, metadata
+   access, leaked secrets, stale policy, approval hash mismatch, row-level queue
+   claim races, outbox replay, and tenant boundary failures.

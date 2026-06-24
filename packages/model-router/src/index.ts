@@ -1,4 +1,15 @@
 import type { ModelPolicy } from "@bek/core";
+import {
+  generateText,
+  type JSONValue,
+  type LanguageModel,
+  type LanguageModelUsage,
+} from "ai";
+
+type AiSdkGenerateTextInput = Parameters<typeof generateText>[0];
+export type AiSdkProviderOptions = NonNullable<
+  AiSdkGenerateTextInput["providerOptions"]
+>;
 
 export type ModelRouteMode = "auto" | "best" | "fast" | "cheap";
 export type ModelProviderKind =
@@ -382,6 +393,14 @@ export interface ModelGatewayRequest {
   inputTokens?: number | undefined;
   outputTokens?: number | undefined;
   createdAt?: string | undefined;
+  context?: ModelGatewayRunContext | undefined;
+}
+
+export interface ModelGatewayRunContext {
+  orgId?: string | undefined;
+  requesterId?: string | undefined;
+  traceId?: string | undefined;
+  tags?: string[] | undefined;
 }
 
 export interface ModelGatewayResponse {
@@ -392,6 +411,10 @@ export interface ModelGatewayResponse {
   inputTokens: number;
   outputTokens: number;
   costCents: number;
+  latencyMs?: number | undefined;
+  finishReason?: string | undefined;
+  rawFinishReason?: string | undefined;
+  gatewayResponseId?: string | undefined;
   createdAt: string;
 }
 
@@ -496,6 +519,101 @@ export class FakeModelGateway implements ModelGateway {
   }
 }
 
+export interface AiSdkTextGenerationResult {
+  text: string;
+  usage?: Partial<LanguageModelUsage> | undefined;
+  totalUsage?: Partial<LanguageModelUsage> | undefined;
+  finishReason?: string | undefined;
+  rawFinishReason?: string | undefined;
+  response?:
+    | { id?: string | undefined; modelId?: string | undefined }
+    | undefined;
+}
+
+export interface AiSdkTextGenerationInput {
+  model: LanguageModel;
+  prompt: string;
+  maxRetries?: number | undefined;
+  timeout?: number | undefined;
+  providerOptions?: AiSdkProviderOptions | undefined;
+}
+
+export type AiSdkTextGenerationFunction = (
+  input: AiSdkTextGenerationInput,
+) => Promise<AiSdkTextGenerationResult>;
+
+export interface VercelAiGatewayOptions {
+  generateText?: AiSdkTextGenerationFunction | undefined;
+  maxRetries?: number | undefined;
+  timeoutMs?: number | undefined;
+  now?: (() => string) | undefined;
+  clock?: (() => number) | undefined;
+  context?: ModelGatewayRunContext | undefined;
+}
+
+export class VercelAiGatewayModelGateway implements ModelGateway {
+  private readonly generate: AiSdkTextGenerationFunction;
+  private readonly maxRetries: number;
+  private readonly timeoutMs: number;
+  private readonly now: () => string;
+  private readonly clock: () => number;
+  private readonly context?: ModelGatewayRunContext | undefined;
+
+  constructor(options: VercelAiGatewayOptions = {}) {
+    this.generate = options.generateText ?? defaultAiSdkGenerateText;
+    this.maxRetries = options.maxRetries ?? 0;
+    this.timeoutMs = options.timeoutMs ?? 120_000;
+    this.now = options.now ?? (() => new Date().toISOString());
+    this.clock = options.clock ?? (() => Date.now());
+    this.context = options.context;
+  }
+
+  async complete(request: ModelGatewayRequest): Promise<ModelGatewayResponse> {
+    const startedAt = this.clock();
+    try {
+      const result = await this.generate({
+        model: request.route.model as LanguageModel,
+        prompt: request.prompt,
+        maxRetries: this.maxRetries,
+        timeout: this.timeoutMs,
+        providerOptions: createGatewayProviderOptions(
+          request,
+          request.context ?? this.context,
+        ),
+      });
+      const usage = normalizeAiSdkUsage(result.totalUsage ?? result.usage, {
+        inputTokens:
+          request.inputTokens ?? estimatePromptTokens(request.prompt),
+        outputTokens: request.outputTokens ?? 0,
+      });
+      const costCents = calculateModelUsageCostCents(
+        request.route.benchmark,
+        usage,
+      );
+      return {
+        runId: request.runId,
+        provider: request.route.provider,
+        model: result.response?.modelId ?? request.route.model,
+        content: result.text,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        costCents,
+        latencyMs: Math.max(0, this.clock() - startedAt),
+        ...(result.finishReason ? { finishReason: result.finishReason } : {}),
+        ...(result.rawFinishReason
+          ? { rawFinishReason: result.rawFinishReason }
+          : {}),
+        ...(result.response?.id
+          ? { gatewayResponseId: result.response.id }
+          : {}),
+        createdAt: request.createdAt ?? this.now(),
+      };
+    } catch (error) {
+      throw createGatewayError(request, error);
+    }
+  }
+}
+
 export interface ModelFailoverAttempt {
   route: ModelRoute;
   status: "succeeded" | "failed";
@@ -521,6 +639,7 @@ export interface ModelFailoverInput {
   policy: ModelPolicy;
   prompt: string;
   gateway: ModelGateway;
+  context?: ModelGatewayRunContext | undefined;
   mode?: ModelRouteMode | undefined;
   estimatedInputTokens?: number | undefined;
   estimatedOutputTokens?: number | undefined;
@@ -573,6 +692,7 @@ export async function runModelWithFailover(
           ? { outputTokens: input.estimatedOutputTokens }
           : {}),
         ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+        ...(input.context ? { context: input.context } : {}),
       });
       ledger.recordActual({
         runId: input.runId,
@@ -862,6 +982,108 @@ function filterRoutableModels(
 
 function policyCandidateModels(policy: ModelPolicy): string[] {
   return [...new Set([policy.defaultModel, ...policy.fallbackModels])];
+}
+
+async function defaultAiSdkGenerateText(
+  input: AiSdkTextGenerationInput,
+): Promise<AiSdkTextGenerationResult> {
+  return generateText({
+    model: input.model,
+    prompt: input.prompt,
+    ...(input.maxRetries !== undefined ? { maxRetries: input.maxRetries } : {}),
+    ...(input.timeout !== undefined ? { timeout: input.timeout } : {}),
+    ...(input.providerOptions
+      ? { providerOptions: input.providerOptions }
+      : {}),
+  });
+}
+
+function createGatewayProviderOptions(
+  request: ModelGatewayRequest,
+  context: ModelGatewayRunContext | undefined,
+): AiSdkProviderOptions {
+  const tags = [
+    "bek",
+    `provider:${request.route.provider}`,
+    `model:${request.route.model}`,
+    ...(context?.orgId ? [`org:${context.orgId}`] : []),
+    ...(context?.tags ?? []),
+  ];
+  const gateway: Record<string, JSONValue | undefined> = {
+    tags: uniqueStrings(tags),
+  };
+  if (context?.requesterId) {
+    gateway.user = context.requesterId;
+  }
+  return { gateway };
+}
+
+function normalizeAiSdkUsage(
+  usage: Partial<LanguageModelUsage> | undefined,
+  fallback: ModelTokenUsage,
+): ModelTokenUsage {
+  return {
+    inputTokens: normalizeTokenCount(usage?.inputTokens, fallback.inputTokens),
+    outputTokens: normalizeTokenCount(
+      usage?.outputTokens,
+      fallback.outputTokens,
+    ),
+  };
+}
+
+function normalizeTokenCount(
+  value: number | undefined,
+  fallback: number,
+): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return Math.max(0, fallback);
+  }
+  return Math.max(0, Math.ceil(value));
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function createGatewayError(
+  request: ModelGatewayRequest,
+  error: unknown,
+): ModelGatewayError {
+  return new ModelGatewayError({
+    provider: request.route.provider,
+    model: request.route.model,
+    message: gatewayErrorMessage(error),
+    retryable: gatewayErrorIsRetryable(error),
+  });
+}
+
+function gatewayErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
+function gatewayErrorIsRetryable(error: unknown): boolean {
+  const candidate = error as
+    | {
+        isRetryable?: unknown;
+        statusCode?: unknown;
+      }
+    | undefined;
+  if (typeof candidate?.isRetryable === "boolean") {
+    return candidate.isRetryable;
+  }
+  if (typeof candidate?.statusCode === "number") {
+    return (
+      candidate.statusCode === 408 ||
+      candidate.statusCode === 409 ||
+      candidate.statusCode === 425 ||
+      candidate.statusCode === 429 ||
+      candidate.statusCode >= 500
+    );
+  }
+  return true;
 }
 
 function normalizeProvider(

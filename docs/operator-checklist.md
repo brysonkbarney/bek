@@ -87,11 +87,23 @@ the current OSS spine.
 ## Models, Budgets, And Cost
 
 - [ ] Define a default model policy and fallback models.
+- [ ] Confirm every model policy string uses the live provider catalog's
+      `provider/model` format before a pilot; seed strings are metadata until a
+      live adapter consumes them.
 - [ ] Set per-run budgets low for pilots.
 - [ ] Decide which channels or bundles can call expensive models.
-- [ ] Review `/api/model-usage` and run detail cost fields during demos.
-- [ ] Blocked: wire real provider adapters and persistent usage ledgers before
-      billing or shared budget enforcement.
+- [ ] For Vercel AI Gateway execution, set
+      `BEK_MODEL_GATEWAY=vercel_ai_sdk` and use `AI_GATEWAY_API_KEY` for static
+      key auth or `VERCEL_OIDC_TOKEN` for Vercel OIDC auth. Do not use
+      `VERCEL_AI_GATEWAY_API_KEY`.
+- [ ] Verify real execution is actually enabled before announcing it by running
+      a worker drain and checking for AI SDK Gateway `model.requested` and
+      `model.completed` events instead of local stub events.
+- [ ] Reconcile each live model attempt against a persistent usage ledger with
+      provider, model, estimated cost, actual usage, actual cost, latency,
+      status, error code, and fallback metadata.
+- [ ] Blocked: wire persistent usage ledgers before billing or shared budget
+      enforcement.
 - [ ] Blocked: add daily/workspace ceilings and alerting before hosted beta.
 
 ## MCP And Tools

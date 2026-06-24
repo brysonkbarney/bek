@@ -17,12 +17,25 @@ The model-router package now includes local productization foundations:
 
 - An in-memory provider registry for configured providers and model metadata.
 - A deterministic fake model gateway for tests and demos.
+- An optional AI SDK Gateway runtime adapter selected with `BEK_MODEL_GATEWAY`.
 - Cost ledger helpers for preflight estimates and completed calls.
 - A budget preflight result shape with per-model estimates and remaining-budget status.
 - Failover routing that can try configured fallbacks when a provider call fails.
 - Failover attempt metadata that records whether each tried route was primary or fallback, its estimate, and its budget decision.
 
-The current local demo still does not call external model APIs. Provider adapters must plug into these contracts without changing the one visible `@bek` user experience.
+The default local demo is still deterministic and does not spend provider money. Live text generation is available when an operator explicitly sets `BEK_MODEL_GATEWAY=vercel_ai_sdk` and provides either `AI_GATEWAY_API_KEY` or `VERCEL_OIDC_TOKEN`. `VERCEL_AI_GATEWAY_API_KEY` is not read by the AI SDK and should not be used for new installs.
+
+## AI Gateway Execution
+
+Vercel AI Gateway is the preferred first live model path for hosted or shared deployments because it can route many providers through one API, model catalog, and spend surface. Bek uses:
+
+- `AI_GATEWAY_API_KEY` for static API-key authentication in local, CI, or non-Vercel environments.
+- `VERCEL_OIDC_TOKEN` for Vercel project authentication where the platform can issue OIDC credentials.
+- `provider/model` policy strings selected from the live Gateway model catalog, such as `openai/...`, `anthropic/...`, or another available provider prefix.
+- `BEK_MODEL_GATEWAY=vercel_ai_sdk` to select live calls over the deterministic local runtime.
+- `BEK_AI_GATEWAY_TAGS` for optional low-cardinality reporting tags such as `env:staging` or `team:platform`.
+
+The adapter emits `model.requested` and `model.completed` worker events with route attempts, provider, model, usage counts, estimated cost, actual estimate, latency, finish reason, and Gateway response ID when the provider returns one. Durable `model_usage` persistence and billed-cost reconciliation are still launch blockers.
 
 ## Admin Setup Model
 
@@ -64,11 +77,19 @@ The current repo has the product primitives for cost control:
 - run-level estimated and actual cost fields,
 - `/api/model-usage` summary for seeded/local runs.
 
-These are not yet production billing controls. Before a shared workspace or
-hosted beta, Bek still needs persistent usage records, daily/workspace ceilings,
-live provider response accounting, alerts, and approval checkpoints for budget
-step-ups. Current preflight data is deterministic local metadata; it is not a
-substitute for reconciling actual token usage from provider responses.
+These are not yet production billing controls. The Drizzle schema includes a
+`model_usage` table, but the current API summary is still derived from run-level
+estimated and actual cost fields, and the model-router ledger is in-memory test
+infrastructure. Before a shared workspace or hosted beta, Bek still needs
+persistent usage records, daily/workspace ceilings, billed provider response
+accounting, alerts, and approval checkpoints for budget step-ups.
+
+Usage ledger entries should record each attempt with org, run, model policy,
+provider, model, input/output usage counts, estimated cost, actual cost,
+latency, status, error code, and enough metadata to reconcile Bek totals with
+Gateway/provider dashboards. Failed attempts and fallback attempts should be
+recorded too; otherwise budget and incident review will undercount real
+execution.
 
 Recommended local/pilot defaults:
 
@@ -82,8 +103,7 @@ Recommended local/pilot defaults:
 
 ## Launch Blockers
 
-- Concrete provider adapters.
 - Credential broker.
 - Cost ledger persistence wired to real calls.
-- Admin UI for model policies.
+- Model catalog picker and live Gateway model discovery in the admin UI.
 - Production budget enforcement across persisted daily and per-run usage.

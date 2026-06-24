@@ -20,6 +20,13 @@ import {
   type SandboxProvider,
 } from "@bek/sandbox";
 import {
+  VercelAiGatewayModelGateway,
+  runModelWithFailover,
+  type ModelGateway,
+  type ModelGatewayRunContext,
+  type ModelRouteMode,
+} from "@bek/model-router";
+import {
   bundlesForPlace,
   createApprovalRequest,
   redactSecrets,
@@ -1895,6 +1902,131 @@ export interface DeterministicLocalRuntimeAdapterOptions {
   approvalPromptPattern?: RegExp | undefined;
 }
 
+export interface AiSdkGatewayRuntimeAdapterOptions {
+  id?: string | undefined;
+  kind?: RuntimeAdapterKind | undefined;
+  gateway?: ModelGateway | undefined;
+  modelRoutingMode?: ModelRouteMode | undefined;
+  gatewayContext?: ModelGatewayRunContext | undefined;
+  gatewayTags?: string[] | undefined;
+}
+
+export function createAiSdkGatewayRuntimeAdapter(
+  options: AiSdkGatewayRuntimeAdapterOptions = {},
+): RuntimeAdapter {
+  const id = options.id ?? "ai-sdk-local-stub";
+  const kind = options.kind ?? "ai_sdk";
+  const gateway = options.gateway ?? new VercelAiGatewayModelGateway();
+
+  async function run(input: RuntimeStartInput): Promise<RuntimeResult> {
+    await input.emit({
+      type: "runtime.started",
+      message: `AI SDK Gateway runtime ${id} started.`,
+      data: { reason: input.workItem.reason },
+    });
+    await input.emit({
+      type: "model.requested",
+      message: `AI SDK Gateway route ${input.modelRoute.model} requested.`,
+      data: modelRouteEventData(input.modelRoute),
+    });
+
+    const result = await runModelWithFailover({
+      runId: input.run.id,
+      policy: input.modelPolicy,
+      prompt: input.run.prompt,
+      gateway,
+      mode: options.modelRoutingMode,
+      estimatedInputTokens: input.modelRoute.budget?.estimatedInputTokens,
+      estimatedOutputTokens: input.modelRoute.budget?.estimatedOutputTokens,
+      context: createGatewayRunContext(input, options),
+    });
+
+    if (!result.ok || !result.response) {
+      await input.emit({
+        type: "model.completed",
+        message: "AI SDK Gateway model call failed.",
+        data: {
+          status: "failed",
+          error: result.error,
+          attempts: result.attempts.map((attempt) => ({
+            provider: attempt.route.provider,
+            model: attempt.route.model,
+            status: attempt.status,
+            retryable: attempt.retryable,
+          })),
+        },
+      });
+      return {
+        status: "failed",
+        artifactRefs: [],
+        actualCostCents: 0,
+        error: result.error ?? "AI SDK Gateway model call failed.",
+      };
+    }
+
+    const response = result.response;
+    const estimatedCostCents = Math.max(
+      normalizeEstimatedCostCents(result.route?.estimatedCostCents ?? 0),
+      normalizeEstimatedCostCents(input.modelRoute.estimatedCostCents ?? 0),
+      normalizeEstimatedCostCents(input.run.estimatedCostCents),
+    );
+    const actualCostCents = normalizeGatewayActualCostCents(
+      response.costCents,
+      estimatedCostCents,
+    );
+    await input.emit({
+      type: "model.completed",
+      message: "AI SDK Gateway model response completed.",
+      data: {
+        status: "succeeded",
+        provider: response.provider,
+        model: response.model,
+        usage: {
+          input: response.inputTokens,
+          output: response.outputTokens,
+          total: response.inputTokens + response.outputTokens,
+        },
+        estimatedCostCents,
+        actualCostCents,
+        latencyMs: response.latencyMs,
+        finishReason: response.finishReason,
+        rawFinishReason: response.rawFinishReason,
+        gatewayResponseId: response.gatewayResponseId,
+        attempts: result.attempts.map((attempt) => ({
+          provider: attempt.route.provider,
+          model: attempt.route.model,
+          status: attempt.status,
+          retryable: attempt.retryable,
+        })),
+      },
+    });
+    await input.emit({
+      type: "runtime.completed",
+      message: `AI SDK Gateway runtime ${id} completed.`,
+    });
+
+    return {
+      status: "completed",
+      finalText: response.content,
+      artifactRefs: [],
+      actualCostCents,
+    };
+  }
+
+  return {
+    id,
+    kind,
+    canRun(profile) {
+      return profile.runtimeKind === kind && profile.adapter === id;
+    },
+    start: run,
+    resume: run,
+    async cancel() {
+      return;
+    },
+  };
+}
+
 export function createDeterministicLocalRuntimeAdapter(
   options: DeterministicLocalRuntimeAdapterOptions = {},
 ): RuntimeAdapter {
@@ -2127,13 +2259,25 @@ export function createDeterministicLocalRuntimeAdapters(): RuntimeAdapter[] {
 }
 
 export function createLocalRuntimeAdapters(
-  options: { sandboxProvider?: SandboxProvider | undefined } = {},
+  options: {
+    sandboxProvider?: SandboxProvider | undefined;
+    modelGateway?: ModelGateway | undefined;
+  } = {},
 ): RuntimeAdapter[] {
+  const envModelGateway = options.modelGateway ?? createModelGatewayFromEnv();
   return [
-    createDeterministicLocalRuntimeAdapter({
-      id: "ai-sdk-local-stub",
-      kind: "ai_sdk",
-    }),
+    envModelGateway
+      ? createAiSdkGatewayRuntimeAdapter({
+          id: "ai-sdk-local-stub",
+          kind: "ai_sdk",
+          gateway: envModelGateway,
+          modelRoutingMode: modelRouteModeFromEnv(),
+          gatewayTags: parseCsvEnv(process.env.BEK_AI_GATEWAY_TAGS),
+        })
+      : createDeterministicLocalRuntimeAdapter({
+          id: "ai-sdk-local-stub",
+          kind: "ai_sdk",
+        }),
     options.sandboxProvider
       ? createSandboxRuntimeAdapter({ provider: options.sandboxProvider })
       : createDeterministicLocalRuntimeAdapter({
@@ -2149,6 +2293,54 @@ export function createLocalRuntimeAdapters(
       kind: "external",
     }),
   ];
+}
+
+export function createModelGatewayFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): ModelGateway | undefined {
+  const mode = normalizeEnvString(env.BEK_MODEL_GATEWAY);
+  if (!mode || mode === "local" || mode === "stub" || mode === "none") {
+    return undefined;
+  }
+  if (
+    mode !== "vercel_ai_sdk" &&
+    mode !== "vercel_ai" &&
+    mode !== "ai_gateway"
+  ) {
+    throw new Error(`Unsupported BEK_MODEL_GATEWAY ${env.BEK_MODEL_GATEWAY}.`);
+  }
+  if (!env.AI_GATEWAY_API_KEY && !env.VERCEL_OIDC_TOKEN) {
+    if (env.VERCEL_AI_GATEWAY_API_KEY) {
+      throw new Error(
+        "BEK_MODEL_GATEWAY=vercel_ai_sdk requires AI_GATEWAY_API_KEY or VERCEL_OIDC_TOKEN; VERCEL_AI_GATEWAY_API_KEY is deprecated and is not read by the AI SDK.",
+      );
+    }
+    throw new Error(
+      "BEK_MODEL_GATEWAY=vercel_ai_sdk requires AI_GATEWAY_API_KEY or VERCEL_OIDC_TOKEN.",
+    );
+  }
+  return new VercelAiGatewayModelGateway({
+    maxRetries: parseIntegerEnv(env.BEK_AI_GATEWAY_MAX_RETRIES, 0),
+    timeoutMs: parseIntegerEnv(env.BEK_AI_GATEWAY_TIMEOUT_MS, 120_000),
+  });
+}
+
+export function modelRouteModeFromEnv(
+  value = process.env.BEK_MODEL_ROUTING_MODE,
+): ModelRouteMode {
+  const mode = normalizeEnvString(value);
+  if (!mode) {
+    return "auto";
+  }
+  if (
+    mode === "auto" ||
+    mode === "best" ||
+    mode === "fast" ||
+    mode === "cheap"
+  ) {
+    return mode;
+  }
+  throw new Error(`Unsupported BEK_MODEL_ROUTING_MODE ${value}.`);
 }
 
 export function createSandboxProviderFromEnv(
@@ -2296,11 +2488,62 @@ function estimateRuntimeOutputTokens(runtimeProfile: RuntimeProfile): number {
   return estimatedOutputTokensByRuntimeKind[runtimeProfile.runtimeKind];
 }
 
+function createGatewayRunContext(
+  input: RuntimeStartInput,
+  options: AiSdkGatewayRuntimeAdapterOptions,
+): ModelGatewayRunContext {
+  return {
+    ...options.gatewayContext,
+    orgId: options.gatewayContext?.orgId ?? input.run.orgId,
+    requesterId: options.gatewayContext?.requesterId ?? input.requester.id,
+    traceId: options.gatewayContext?.traceId ?? input.workItem.traceId,
+    tags: [
+      ...(options.gatewayContext?.tags ?? []),
+      ...(options.gatewayTags ?? []),
+    ],
+  };
+}
+
+function normalizeGatewayActualCostCents(
+  actualCostCents: number,
+  fallbackEstimateCents: number | undefined,
+): number {
+  if (Number.isFinite(actualCostCents) && actualCostCents > 0) {
+    return Math.ceil(actualCostCents);
+  }
+  return Math.max(1, normalizeEstimatedCostCents(fallbackEstimateCents ?? 0));
+}
+
 function normalizeEstimatedCostCents(value: number): number {
   if (!Number.isFinite(value)) {
     return 0;
   }
   return Math.max(0, Math.ceil(value));
+}
+
+function parseIntegerEnv(value: string | undefined, fallback: number): number {
+  if (!value?.trim()) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`Expected a non-negative integer, received ${value}.`);
+  }
+  return parsed;
+}
+
+function parseCsvEnv(value: string | undefined): string[] {
+  if (!value?.trim()) {
+    return [];
+  }
+  return value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function normalizeEnvString(value: string | undefined): string {
+  return value?.trim().toLowerCase().replace(/-/g, "_") ?? "";
 }
 
 function providerFromModel(model: string): string {

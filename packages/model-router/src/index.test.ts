@@ -3,11 +3,14 @@ import { describe, expect, it } from "vitest";
 import {
   FakeModelGateway,
   InMemoryModelCostLedger,
+  VercelAiGatewayModelGateway,
   calculateModelUsageCostCents,
   createModelProviderRegistry,
   preflightModelBudget,
   runModelWithFailover,
   selectModel,
+  type AiSdkTextGenerationFunction,
+  type AiSdkTextGenerationInput,
   type ModelBenchmark,
 } from "./index";
 
@@ -282,6 +285,112 @@ describe("model router", () => {
       runId: "run_failover",
       entries: 3,
       actualCostCents: 6,
+    });
+  });
+
+  it("calls AI SDK Gateway models with run metadata and measured usage", async () => {
+    const calls: AiSdkTextGenerationInput[] = [];
+    const generate: AiSdkTextGenerationFunction = async (input) => {
+      calls.push(input);
+      return {
+        text: "Real provider response.",
+        totalUsage: {
+          inputTokens: 12,
+          outputTokens: 34,
+        },
+        finishReason: "stop",
+        rawFinishReason: "stop",
+        response: { id: "gen_gateway", modelId: "openai/gpt-5.4" },
+      };
+    };
+    const clockValues = [1_000, 1_123];
+    const gateway = new VercelAiGatewayModelGateway({
+      generateText: generate,
+      now: () => "2026-06-24T00:00:00.000Z",
+      clock: () => clockValues.shift() ?? 1_123,
+      context: {
+        orgId: "org_demo",
+        requesterId: "principal_human",
+        traceId: "trace_gateway",
+        tags: ["slack"],
+      },
+    });
+    const route = selectModel({
+      policy,
+      benchmarks,
+      estimatedInputTokens: 10_000,
+      estimatedOutputTokens: 2_000,
+    });
+
+    const response = await gateway.complete({
+      runId: "run_gateway",
+      route,
+      prompt: "@bek summarize the launch blocker",
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      model: "openai/gpt-5.4",
+      prompt: "@bek summarize the launch blocker",
+      maxRetries: 0,
+      timeout: 120_000,
+      providerOptions: {
+        gateway: {
+          user: "principal_human",
+          tags: expect.arrayContaining([
+            "bek",
+            "org:org_demo",
+            "provider:openai",
+            "model:openai/gpt-5.4",
+            "slack",
+          ]),
+        },
+      },
+    });
+    expect(response).toMatchObject({
+      runId: "run_gateway",
+      provider: "openai",
+      model: "openai/gpt-5.4",
+      content: "Real provider response.",
+      inputTokens: 12,
+      outputTokens: 34,
+      costCents: 1,
+      latencyMs: 123,
+      finishReason: "stop",
+      rawFinishReason: "stop",
+      gatewayResponseId: "gen_gateway",
+      createdAt: "2026-06-24T00:00:00.000Z",
+    });
+    expect(
+      (calls[0]?.providerOptions?.gateway as { tags?: string[] }).tags,
+    ).not.toEqual(expect.arrayContaining(["run:run_gateway"]));
+  });
+
+  it("marks auth and invalid request Gateway failures as non-retryable", async () => {
+    const generate: AiSdkTextGenerationFunction = async () => {
+      const error = new Error("AI Gateway authentication failed.") as Error & {
+        statusCode: number;
+      };
+      error.statusCode = 401;
+      throw error;
+    };
+    const gateway = new VercelAiGatewayModelGateway({
+      generateText: generate,
+    });
+    const route = selectModel({ policy, benchmarks });
+
+    await expect(
+      gateway.complete({
+        runId: "run_bad_auth",
+        route,
+        prompt: "@bek respond",
+      }),
+    ).rejects.toMatchObject({
+      name: "ModelGatewayError",
+      provider: "openai",
+      model: "openai/gpt-5.4",
+      retryable: false,
+      message: "AI Gateway authentication failed.",
     });
   });
 });

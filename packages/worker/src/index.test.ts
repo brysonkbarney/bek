@@ -5,6 +5,7 @@ import {
   type RuntimeModelRoute,
   type RuntimeResult,
 } from "@bek/runtime";
+import { FakeModelGateway } from "@bek/model-router";
 import { FakeSandboxProvider } from "@bek/sandbox";
 import { describe, expect, it } from "vitest";
 import {
@@ -12,9 +13,12 @@ import {
   InMemoryWorkerQueue,
   WorkerRuntimeService,
   canTransitionRunAttemptState,
+  createAiSdkGatewayRuntimeAdapter,
+  createModelGatewayFromEnv,
   createSandboxRuntimeAdapter,
   createWorkerIdempotencyKey,
   createSequentialIdFactory,
+  modelRouteModeFromEnv,
   retryDelayMs,
 } from "./index";
 
@@ -780,6 +784,110 @@ describe("worker runtime service", () => {
         budgetDecision: "over_budget",
       },
     });
+  });
+
+  it("processes queued runs through the AI SDK Gateway adapter", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_gateway_service",
+      prompt: "@bek summarize the incident for support",
+    });
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_gateway_service",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+    const gateway = new FakeModelGateway({
+      behaviors: {
+        "openai/gpt-5.4": {
+          content: "Support summary is ready.",
+          inputTokens: 17,
+          outputTokens: 23,
+        },
+      },
+    });
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [
+        createAiSdkGatewayRuntimeAdapter({
+          gateway,
+          gatewayTags: ["env:test"],
+        }),
+      ],
+      workerId: "worker_gateway_service",
+      now: () => baseNow,
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected gateway service processing.");
+    }
+    expect(decision.result).toMatchObject({
+      status: "completed",
+      finalText: "Support summary is ready.",
+      actualCostCents: 4,
+    });
+    expect(queue.read().records[0]).toMatchObject({
+      status: "completed",
+      attemptState: "completed",
+    });
+    const events = queue.read().events;
+    expect(events.map((event) => event.type)).toEqual(
+      expect.arrayContaining([
+        "model.requested",
+        "model.completed",
+        "runtime.completed",
+        "worker.completed",
+      ]),
+    );
+    expect(
+      events.find((event) => event.type === "model.completed"),
+    ).toMatchObject({
+      data: {
+        status: "succeeded",
+        provider: "openai",
+        model: "openai/gpt-5.4",
+        usage: {
+          input: 17,
+          output: 23,
+          total: 40,
+        },
+        actualCostCents: 4,
+      },
+    });
+  });
+
+  it("requires explicit current AI Gateway auth before enabling real model calls", () => {
+    expect(
+      createModelGatewayFromEnv({ BEK_MODEL_GATEWAY: "local" }),
+    ).toBeUndefined();
+    expect(
+      createModelGatewayFromEnv({
+        BEK_MODEL_GATEWAY: "vercel_ai_sdk",
+        AI_GATEWAY_API_KEY: "gateway_key",
+      }),
+    ).toBeDefined();
+    expect(() =>
+      createModelGatewayFromEnv({
+        BEK_MODEL_GATEWAY: "vercel_ai_sdk",
+        VERCEL_AI_GATEWAY_API_KEY: "old_key",
+      }),
+    ).toThrow(/AI_GATEWAY_API_KEY/);
+    expect(modelRouteModeFromEnv("cheap")).toBe("cheap");
+    expect(() => modelRouteModeFromEnv("wild")).toThrow(
+      /BEK_MODEL_ROUTING_MODE/,
+    );
   });
 
   it("creates and destroys sandbox leases for sandbox runtime adapters", async () => {

@@ -1,19 +1,22 @@
 # Worker Orchestrator Foundation
 
 Status: deterministic queue/runtime service, local runner, API
-`worker_local` bridge, and Postgres-backed local durability. API and
-Slack-created runs can be advanced through the worker path by setting
-`BEK_RUN_ADVANCEMENT=worker_local`. Use `BEK_WORKER_QUEUE_BACKEND=memory` for
-zero-config demos, or `BEK_STORAGE=postgres` plus
-`BEK_WORKER_QUEUE_BACKEND=postgres` to persist worker records, dead letters,
-and worker events across API restarts.
+`worker_local` bridge, Postgres-backed local worker durability, and a durable
+Slack outbound-delivery outbox. API and Slack-created runs can be advanced
+through the worker path by setting `BEK_RUN_ADVANCEMENT=worker_local`. Use
+`BEK_WORKER_QUEUE_BACKEND=memory` for zero-config demos, or `BEK_STORAGE=postgres`
+plus `BEK_WORKER_QUEUE_BACKEND=postgres` to persist worker records, dead letters,
+worker events, ingress dedupe, and Slack outbound deliveries across API
+restarts.
 
 This is restart-safe self-hosting durability, not the final hosted worker fleet.
 Postgres snapshot writes are idempotent merge-upserts so duplicate flushes and
 stale snapshot writers do not delete live queue rows, but hosted production
-still needs daemonized workers, transactional claims with `FOR UPDATE SKIP
-LOCKED` or an equivalent queue backend, lease sweepers, idempotent side-effect
-outboxes, metrics, autoscaling, and tenant-isolation hardening.
+still needs daemonized workers, row-level transactional claims with `FOR UPDATE
+SKIP LOCKED` or an equivalent queue backend, lease sweepers, daemonized outbox
+dispatch, metrics, autoscaling, and tenant-isolation hardening. The Slack outbox
+is the first durable side-effect outbox; GitHub, Linear, MCP, artifact, and
+other external writes still need the same pattern.
 
 Bek keeps one visible Slack teammate, `@bek`. The worker is an internal control
 plane component: it chooses runtimes, claims work, retries safely, pauses for
@@ -99,21 +102,81 @@ assert exact claim, heartbeat, retry, and resume decisions.
   enqueues and drains queued work through `WorkerRuntimeService`.
 - Slack mentions and slash commands use the same helper, so Slack ingress,
   direct API calls, and future UI-triggered runs share one execution path.
-- Allowed reads complete through the deterministic local runtime adapter.
+- Allowed reads complete through the deterministic local runtime adapter by
+  default, or through the AI SDK Gateway adapter when
+  `BEK_MODEL_GATEWAY=vercel_ai_sdk` and Gateway auth are configured.
 - Policy-gated work, such as `github.pr`, stays `awaiting_approval` until a
   human approves it; approval then enqueues `approval_granted` work and resumes
   the runtime.
 - Runtime-requested approvals are upserted into core approvals from the worker
   pause record, so mid-run checkpoints show up in the same admin approval UI.
+- Slack run outcomes and approval decisions are queued as durable outbound
+  deliveries before Slack Web API posting.
 - `GET /api/worker/queue` exposes the local worker queue snapshot, including
   records, dead letters, and worker events.
 - `POST /api/worker/drain` manually drains pending local work when the mode is
-  enabled, and flushes queue/store state before returning.
+  enabled, queues any resulting Slack follow-up messages, drains the Slack
+  outbox, and flushes queue/store state before returning.
 
 This bridge is deliberately in-process for the local product loop. The
 Postgres-backed queue survives restarts, but multi-instance deployments must
-move claim, lease, event publication, and settlement to transactional queue
-operations before enabling multiple concurrent drainers.
+move claim, lease, event publication, settlement, and outbound delivery dispatch
+to transactional row-level operations before enabling multiple concurrent
+drainers.
+
+## Slack Durable Outbox
+
+Slack ingress now records outbound message intent instead of coupling callback
+success to the Slack Web API. Mentions, slash commands, and approval callbacks
+persist ingress dedupe, run/approval state, worker queue changes, and Slack
+outbound-delivery rows before posting to Slack.
+
+`outbound_deliveries` stores Slack Web API intents with:
+
+- provider `slack`,
+- kind `slack.run_outcome` or `slack.approval_decision`,
+- stable idempotency key scoped to message kind, run, approval/run marker,
+  channel, and thread,
+- target channel, thread, team, and rendered Slack payload,
+- attempts, max attempts, next-attempt timestamp, delivered/failed terminal
+  state, and redacted last error.
+
+Delivery uses a stored Slack OAuth bot token for the target team when available
+and falls back to `SLACK_BOT_TOKEN` for local/self-hosted operation. The drain
+path classifies Slack failures, retries transient post attempts inside a single
+delivery call, requeues retryable saved deliveries with a future
+`nextAttemptAt`, and records sanitized diagnostics on the run timeline.
+
+Operators can inspect and retry the outbox through:
+
+```txt
+GET  /api/outbound/slack
+POST /api/outbound/slack/drain
+```
+
+`BEK_SLACK_BACKGROUND_DRAIN=false` disables the best-effort local background
+drain. In that mode, callbacks still persist the outbox entry, and operators can
+drain it explicitly. The current outbox protects Slack callback budgets and
+survives local API restarts when Postgres storage is enabled, but hosted
+production still needs a daemonized dispatcher that claims outbound rows
+transactionally, recovers stale `delivering` rows, and dedupes run-event
+diagnostics by delivery attempt.
+
+## Remaining Hosted Gaps
+
+- Daemonized worker processes that run outside request handlers and own claim,
+  heartbeat, lease expiry, cancellation, retry, approval resume, and settlement.
+- Row-level queue claims for worker records and outbound deliveries, using
+  `FOR UPDATE SKIP LOCKED`, advisory locks, or an equivalent queue backend
+  instead of snapshot read/mutate/write drains.
+- Lease sweepers and watchdogs that return expired worker attempts and stale
+  Slack `delivering` rows to retryable state.
+- Durable model-usage persistence and billed-cost reconciliation for AI SDK
+  Gateway runs, plus real coding-adapter execution beyond the sandbox-command
+  placeholder.
+- OpenCode heartbeat/watchdog integration for long-running coding sessions, so
+  the worker lease remains fresh while OpenCode runs and hung processes are
+  cancelled with partial artifacts captured.
 
 ## Attempt State Machine
 

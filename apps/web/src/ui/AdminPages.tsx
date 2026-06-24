@@ -1490,8 +1490,12 @@ function ModelPolicyPanel({ policy }: { policy: ModelPolicy }) {
     .map((model) => model.trim())
     .filter(Boolean);
   const parsedBudget = Number(perRunBudgetCents);
+  const defaultModelLooksValid = modelIdLooksValid(defaultModel);
+  const fallbackModelsLookValid = parsedFallbacks.every(modelIdLooksValid);
   const canSave =
     defaultModel.trim().length > 0 &&
+    defaultModelLooksValid &&
+    fallbackModelsLookValid &&
     Number.isFinite(parsedBudget) &&
     parsedBudget > 0 &&
     !modelMutation.isPending;
@@ -1509,13 +1513,19 @@ function ModelPolicyPanel({ policy }: { policy: ModelPolicy }) {
       {modelMutation.isSuccess ? (
         <SuccessCallout>Model policy saved.</SuccessCallout>
       ) : null}
+      {!defaultModelLooksValid || !fallbackModelsLookValid ? (
+        <WarningCallout>
+          Use Gateway model IDs in provider/model format. Secrets stay in server
+          env; set BEK_MODEL_GATEWAY=vercel_ai_sdk to run live calls.
+        </WarningCallout>
+      ) : null}
       <div className="split-row">
         <div>
-          <span className="muted">Default</span>
+          <span className="muted">Default Gateway model</span>
           <strong>{policy.defaultModel}</strong>
         </div>
         <div>
-          <span className="muted">Per-run limit</span>
+          <span className="muted">Per-run estimate cap</span>
           <strong>{formatMoney(policy.perRunBudgetCents)}</strong>
         </div>
       </div>
@@ -1544,23 +1554,24 @@ function ModelPolicyPanel({ policy }: { policy: ModelPolicy }) {
         }}
       >
         <label>
-          Default model
+          Default Gateway model ID
           <input
             value={defaultModel}
             required
+            placeholder="openai/gpt-5.4"
             onChange={(event) => setDefaultModel(event.target.value)}
           />
         </label>
         <label>
-          Fallback models
+          Fallback Gateway model IDs, attempted in order
           <input
             value={fallbackModels}
-            placeholder="provider/model, provider/model-lite"
+            placeholder="anthropic/claude-sonnet-4.8, openai-compatible/local"
             onChange={(event) => setFallbackModels(event.target.value)}
           />
         </label>
         <label>
-          Budget cents
+          Per-run estimate cap, cents
           <input
             value={perRunBudgetCents}
             type="number"
@@ -1582,6 +1593,10 @@ function ModelPolicyPanel({ policy }: { policy: ModelPolicy }) {
       </form>
     </Panel>
   );
+}
+
+function modelIdLooksValid(modelId: string): boolean {
+  return /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/i.test(modelId.trim());
 }
 
 export function MemoryPage() {
