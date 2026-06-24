@@ -9,10 +9,11 @@ zero-config demos, or `BEK_STORAGE=postgres` plus
 and worker events across API restarts.
 
 This is restart-safe self-hosting durability, not the final hosted worker fleet.
-Hosted production still needs daemonized workers, transactional claims with
-`FOR UPDATE SKIP LOCKED` or an equivalent queue backend, lease sweepers,
-dead-letter redrive, idempotent side-effect outboxes, metrics, autoscaling, and
-tenant-isolation hardening.
+Postgres snapshot writes are idempotent merge-upserts so duplicate flushes and
+stale snapshot writers do not delete live queue rows, but hosted production
+still needs daemonized workers, transactional claims with `FOR UPDATE SKIP
+LOCKED` or an equivalent queue backend, lease sweepers, idempotent side-effect
+outboxes, metrics, autoscaling, and tenant-isolation hardening.
 
 Bek keeps one visible Slack teammate, `@bek`. The worker is an internal control
 plane component: it chooses runtimes, claims work, retries safely, pauses for
@@ -61,6 +62,14 @@ These tables keep `run_id`, `work_id`, and approval IDs as soft references
 because the Bek snapshot repository currently rewrites run/control-plane rows
 during normal saves. Worker rows only have an `org_id` foreign key, so ordinary
 admin edits cannot cascade-delete active queue state.
+
+`DrizzleWorkerQueueRepository.saveSnapshot` merges queue rows instead of
+deleting and reinserting every row for an org. Work records conflict on their
+record ID and only update when the incoming `updated_at` is at least as fresh
+as the persisted row, preventing an older snapshot from reopening or unclaiming
+newer work. Dead letters and worker events are append-only idempotent inserts;
+database uniqueness covers one dead letter per `(org_id, work_id)` and one
+worker event per `(org_id, sequence)`.
 
 - `enqueue` stores active work idempotently by
   `run_attempt:{orgId}:{runId}:{attempt}`. The same key is copied onto leases

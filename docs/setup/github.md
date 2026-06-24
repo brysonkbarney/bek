@@ -10,12 +10,14 @@ The current foundation provides local helpers only:
 - GitHub webhook `X-Hub-Signature-256` verification.
 - Canonical repo resource parsing with `github:owner/repo`.
 - Installation token request/provider interfaces plus a fake provider for local workers.
+- Installation token lease validation for installation id, repo scope, permissions, and TTL.
 - Pull request proposal objects and PR approval hash inputs that can be evaluated by bundle policy and approval flows before any GitHub write.
 - Local branch, commit, and draft PR workflow plan objects.
+- A draft PR workflow execution contract that leases a token, validates it, passes the secret token only to the execution client, and returns redacted lease metadata.
 - A fake in-memory GitHub client for tests and local product flows.
 - Webhook delivery dedupe key helpers and normalized `installation`, `pull_request`, and `check_run` events.
 
-It does not call GitHub, exchange real installation tokens, clone repositories, push branches, open pull requests, or handle webhook deliveries in the API yet.
+It does not call GitHub, exchange real installation tokens, clone repositories, push branches, open pull requests against GitHub, or handle webhook deliveries in the API yet.
 
 ## GitHub App Settings
 
@@ -75,17 +77,20 @@ Opening a pull request should use a proposal object first. The proposal carries 
 Draft PR workflows should use the local workflow plan helpers before any worker talks to a real provider:
 
 1. Mint a repo-scoped installation token through a `GitHubInstallationTokenProvider`.
-2. Create a branch plan with `capability: "github.branch"`.
-3. Create a commit plan with normalized safe relative file paths.
-4. Create a draft PR proposal and PR approval hash input.
+2. Validate the token lease against the workflow token request, including installation id, canonical repo resource, required permissions, and remaining TTL.
+3. Create a branch plan with `capability: "github.branch"`.
+4. Create a commit plan with normalized safe relative file paths.
+5. Create a draft PR proposal and PR approval hash input.
+6. Execute the plan through the draft PR workflow execution contract after bundle policy and human approval have passed. The execution result should keep only redacted token lease metadata, not the token secret.
 
-The fake provider and fake client are intentionally local-only. They exist so API, worker, and policy flows can exercise branch/commit/PR behavior without network calls or secrets.
+The fake provider, fake client, and execution contract are intentionally local-only until a real GitHub client is wired in. They exist so API, worker, and policy flows can exercise branch/commit/PR behavior without network calls or durable secrets.
 
 ## Launch Blockers
 
 - GitHub App installation persistence and secret broker integration.
-- Webhook API route backed by durable delivery dedupe.
 - Real installation token exchange and repo-scoped token brokering.
+- Real GitHub execution client that uses validated installation tokens to clone, push branches, and open or update pull requests.
+- Webhook API route backed by durable delivery dedupe.
 - Real branch push workflow in an isolated runtime.
 - PR creation/update worker that consumes approved proposal payloads and hash inputs.
 - Audit events for token minting, branch writes, PR writes, and webhook handling.

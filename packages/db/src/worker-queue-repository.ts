@@ -11,7 +11,7 @@ import type {
   WorkerWorkRecord,
   WorkerWorkStatus,
 } from "@bek/worker";
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import type { BekDb } from "./client";
 import {
   workerDeadLetters,
@@ -22,7 +22,7 @@ import {
   type WorkerWorkRecordRow,
 } from "./schema";
 
-type MutationDb = Pick<BekDb, "delete" | "insert">;
+type MutationDb = Pick<BekDb, "insert">;
 
 export interface WorkerQueueRepository {
   readSnapshot(orgId: string): Promise<WorkerSnapshot>;
@@ -73,8 +73,7 @@ export class DrizzleWorkerQueueRepository implements WorkerQueueRepository {
 
     await this.db.transaction(async (tx) => {
       const db = tx as MutationDb;
-      await deleteWorkerQueueRows(db, orgId);
-      await insertWorkerQueueRows(db, rows);
+      await upsertWorkerQueueRows(db, rows);
     });
   }
 }
@@ -106,22 +105,131 @@ export function rowsToWorkerSnapshot(rows: WorkerSnapshotRows): WorkerSnapshot {
   };
 }
 
-async function deleteWorkerQueueRows(db: MutationDb, orgId: string) {
-  await db.delete(workerEvents).where(eq(workerEvents.orgId, orgId));
-  await db.delete(workerDeadLetters).where(eq(workerDeadLetters.orgId, orgId));
-  await db.delete(workerWorkRecords).where(eq(workerWorkRecords.orgId, orgId));
+export function shouldPersistWorkerWorkRecordUpdate(input: {
+  existing: Pick<WorkerWorkRecordRow, "updatedAt">;
+  incoming: Pick<WorkerWorkRecordRow, "updatedAt">;
+}): boolean {
+  return (
+    input.incoming.updatedAt.getTime() >= input.existing.updatedAt.getTime()
+  );
 }
 
-async function insertWorkerQueueRows(db: MutationDb, rows: WorkerSnapshotRows) {
-  if (rows.records.length > 0) {
-    await db.insert(workerWorkRecords).values(rows.records);
+export function mergeWorkerSnapshotRows(
+  existing: WorkerSnapshotRows,
+  incoming: WorkerSnapshotRows,
+): WorkerSnapshotRows {
+  const records = new Map(
+    existing.records.map((record) => [record.id, record]),
+  );
+  for (const record of incoming.records) {
+    const current = records.get(record.id);
+    if (
+      !current ||
+      shouldPersistWorkerWorkRecordUpdate({
+        existing: current,
+        incoming: record,
+      })
+    ) {
+      records.set(record.id, record);
+    }
+  }
+
+  const deadLetters = new Map(
+    existing.deadLetters.map((deadLetter) => [deadLetter.id, deadLetter]),
+  );
+  const deadLetterWorkIds = new Set(
+    existing.deadLetters.map((deadLetter) => deadLetter.workId),
+  );
+  for (const deadLetter of incoming.deadLetters) {
+    if (
+      !deadLetters.has(deadLetter.id) &&
+      !deadLetterWorkIds.has(deadLetter.workId)
+    ) {
+      deadLetters.set(deadLetter.id, deadLetter);
+      deadLetterWorkIds.add(deadLetter.workId);
+    }
+  }
+
+  const events = new Map(existing.events.map((event) => [event.id, event]));
+  const eventSequences = new Set(
+    existing.events.map((event) => `${event.orgId}:${event.sequence}`),
+  );
+  for (const event of incoming.events) {
+    const sequenceKey = `${event.orgId}:${event.sequence}`;
+    if (!events.has(event.id) && !eventSequences.has(sequenceKey)) {
+      events.set(event.id, event);
+      eventSequences.add(sequenceKey);
+    }
+  }
+
+  return {
+    records: [...records.values()].sort(
+      (left, right) => left.sequence - right.sequence,
+    ),
+    deadLetters: [...deadLetters.values()].sort(
+      (left, right) => left.sequence - right.sequence,
+    ),
+    events: [...events.values()].sort(
+      (left, right) => left.sequence - right.sequence,
+    ),
+  };
+}
+
+async function upsertWorkerQueueRows(db: MutationDb, rows: WorkerSnapshotRows) {
+  for (const record of rows.records) {
+    await db
+      .insert(workerWorkRecords)
+      .values(record)
+      .onConflictDoUpdate({
+        target: workerWorkRecords.id,
+        set: workerWorkRecordUpdateSet(record),
+        setWhere: sql`excluded.updated_at >= ${workerWorkRecords.updatedAt}`,
+      });
   }
   if (rows.deadLetters.length > 0) {
-    await db.insert(workerDeadLetters).values(rows.deadLetters);
+    await db
+      .insert(workerDeadLetters)
+      .values(rows.deadLetters)
+      .onConflictDoNothing();
   }
   if (rows.events.length > 0) {
-    await db.insert(workerEvents).values(rows.events);
+    await db.insert(workerEvents).values(rows.events).onConflictDoNothing();
   }
+}
+
+function workerWorkRecordUpdateSet(row: WorkerWorkRecordRow) {
+  return {
+    runId: row.runId,
+    sequence: row.sequence,
+    idempotencyKey: row.idempotencyKey,
+    item: row.item,
+    attempt: row.attempt,
+    reason: row.reason,
+    traceId: row.traceId,
+    status: row.status,
+    attemptState: row.attemptState,
+    availableAt: row.availableAt,
+    enqueuedAt: row.enqueuedAt,
+    leaseId: row.leaseId,
+    leaseWorkerId: row.leaseWorkerId,
+    leaseClaimedAt: row.leaseClaimedAt,
+    leaseHeartbeatAt: row.leaseHeartbeatAt,
+    leaseExpiresAt: row.leaseExpiresAt,
+    approvalId: row.approvalId,
+    approvalPayloadHash: row.approvalPayloadHash,
+    approvalAction: row.approvalAction,
+    approvalRisk: row.approvalRisk,
+    approvalStatus: row.approvalStatus,
+    approvalCreatedAt: row.approvalCreatedAt,
+    approvalExpiresAt: row.approvalExpiresAt,
+    retryOf: row.retryOf,
+    cancelRequestedAt: row.cancelRequestedAt,
+    cancelReason: row.cancelReason,
+    terminalReason: row.terminalReason,
+    result: row.result,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
 }
 
 function workerRecordToRow(

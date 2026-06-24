@@ -11,8 +11,9 @@ The repo includes local MCP gateway productization foundations:
 - Schema drift quarantine until admin review.
 - A risk classifier for read, draft-write, external-write, and privileged tools.
 - Proxy request objects that bind run, grant, server, schema hash, input hash, risk, approval, and resource.
+- An in-memory per-tenant tool allowlist plus mock transport execution path that enforces server/schema coherence, tenant access, approval status, and credential-reference redaction before returning tool output.
 
-Remote MCP discovery, credentialed transport, and live tool execution are not active yet.
+Remote MCP discovery, credentialed MCP transports, durable registry/allowlist storage, and live execution against real MCP servers are not active yet.
 
 The target flow is:
 
@@ -20,8 +21,9 @@ The target flow is:
 2. Bek fetches and caches the tool schema.
 3. Admin classifies each tool by risk and resource.
 4. Admin attaches allowed tools to access bundles.
-5. Bek evaluates policy before every tool call.
-6. Tool input, output, redaction, approval, and audit rules run through the gateway.
+5. Admin or policy automation attaches tenant allowlist entries for callable MCP resources.
+6. Bek evaluates grant policy, tenant allowlist, schema hash, server status, and approval state before every tool call.
+7. Tool input, output, redaction, approval, and audit rules run through the gateway.
 
 ## Access Bundle Pattern
 
@@ -44,6 +46,7 @@ The user still only types:
 - Treat server descriptions, tool descriptions, arguments, and outputs as untrusted.
 - Pin server identity and schema version where possible.
 - Quarantine schema drift until an admin reviews it.
+- Require a tenant allowlist match before proxying any MCP tool invocation.
 - Redact secrets before tool output reaches prompts, logs, or audit payloads.
 - Route write or privileged tools through approvals.
 - Preserve audit events for tool selection, policy decision, call arguments hash, and result summary.
@@ -51,8 +54,9 @@ The user still only types:
 ## Launch Blockers
 
 - Durable MCP server registry storage.
+- Durable per-tenant MCP tool allowlist storage.
 - Live schema discovery and credentialed transport adapters.
-- Tool proxy runtime execution.
+- Real MCP transport execution beyond the in-process mock broker.
 - Risk classification UI.
-- Redaction and audit integration.
+- Shared redaction and audit integration.
 - Per-tool approval flows.

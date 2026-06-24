@@ -31,6 +31,17 @@ export interface RuntimeModelRoute {
   provider: string;
   model: string;
   reason: string;
+  estimatedCostCents?: number | undefined;
+  budget?: RuntimeModelBudgetPreflight | undefined;
+}
+
+export interface RuntimeModelBudgetPreflight {
+  decision: "within_budget" | "over_budget";
+  budgetCents: number;
+  estimatedCostCents: number;
+  remainingBudgetCents: number;
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
 }
 
 export interface RuntimeArtifactRef {

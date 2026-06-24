@@ -758,6 +758,10 @@ export const workerWorkRecords = pgTable(
   },
   (table) => [
     check("worker_work_records_attempt_positive", sql`${table.attempt} > 0`),
+    uniqueIndex("worker_work_records_org_sequence_unique").on(
+      table.orgId,
+      table.sequence,
+    ),
     uniqueIndex("worker_work_records_active_idempotency_unique")
       .on(table.orgId, table.idempotencyKey)
       .where(
@@ -805,7 +809,10 @@ export const workerDeadLetters = pgTable(
     createdAt: createdAt(),
   },
   (table) => [
-    uniqueIndex("worker_dead_letters_work_unique").on(table.workId),
+    uniqueIndex("worker_dead_letters_org_work_unique").on(
+      table.orgId,
+      table.workId,
+    ),
     index("worker_dead_letters_org_failed_idx").on(table.orgId, table.failedAt),
     index("worker_dead_letters_org_run_idx").on(table.orgId, table.runId),
   ],
@@ -829,6 +836,10 @@ export const workerEvents = pgTable(
     createdAt: createdAt(),
   },
   (table) => [
+    uniqueIndex("worker_events_org_sequence_unique").on(
+      table.orgId,
+      table.sequence,
+    ),
     index("worker_events_org_created_idx").on(table.orgId, table.createdAt),
     index("worker_events_org_run_created_idx").on(
       table.orgId,

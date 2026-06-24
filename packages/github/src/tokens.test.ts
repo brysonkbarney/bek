@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   FakeGitHubInstallationTokenProvider,
+  assertGitHubInstallationTokenLease,
   createGitHubInstallationTokenRequest,
   normalizeGitHubInstallationId,
   normalizeGitHubInstallationTokenPermissions,
+  validateGitHubInstallationTokenLease,
 } from "./tokens";
 
 describe("GitHub installation token primitives", () => {
@@ -65,5 +67,69 @@ describe("GitHub installation token primitives", () => {
 
     token.permissions.contents = "read";
     expect(provider.issuedTokens()[0]?.permissions.contents).toBe("write");
+  });
+
+  it("validates repo-scoped token leases and returns redacted metadata", async () => {
+    const provider = new FakeGitHubInstallationTokenProvider({
+      now: () => new Date("2026-01-02T03:04:05.000Z"),
+      ttlMs: 10 * 60 * 1000,
+    });
+    const request = createGitHubInstallationTokenRequest({
+      installationId: 456,
+      repository: "github:redohq/checkout",
+      permissions: { contents: "read", metadata: "read" },
+    });
+    const token = await provider.getInstallationToken({
+      ...request,
+      permissions: { contents: "write", metadata: "read" },
+    });
+
+    const lease = assertGitHubInstallationTokenLease({
+      token,
+      request,
+      now: () => new Date("2026-01-02T03:04:15.000Z"),
+      minTtlMs: 60_000,
+    });
+
+    expect(lease).toMatchObject({
+      type: "github.installation_token_lease",
+      installationId: "456",
+      expiresAt: "2026-01-02T03:14:05.000Z",
+      repository: { resource: "github:redohq/checkout" },
+      permissions: { contents: "write", metadata: "read" },
+    });
+    expect(JSON.stringify(lease)).not.toContain(token.token);
+  });
+
+  it("rejects token leases with the wrong repo, missing access, or short TTL", () => {
+    const validation = validateGitHubInstallationTokenLease({
+      token: {
+        type: "github.installation_token",
+        installationId: "456",
+        token: "secret-token",
+        expiresAt: "2026-01-02T03:05:00.000Z",
+        repository: createGitHubInstallationTokenRequest({
+          installationId: 456,
+          repository: "github:redohq/docs",
+          permissions: {},
+        }).repository,
+        permissions: { contents: "read" },
+      },
+      request: {
+        installationId: 456,
+        repository: "github:redohq/checkout",
+        permissions: { contents: "write", metadata: "read" },
+      },
+      now: () => new Date("2026-01-02T03:04:30.000Z"),
+      minTtlMs: 60_000,
+    });
+
+    expect(validation.ok).toBe(false);
+    expect(validation.errors).toEqual([
+      "GitHub installation token repository mismatch: expected github:redohq/checkout.",
+      "GitHub installation token has contents=read, but write is required.",
+      "GitHub installation token is missing metadata=read.",
+      "GitHub installation token expires too soon for workflow execution.",
+    ]);
   });
 });

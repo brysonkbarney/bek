@@ -5,6 +5,7 @@ import {
   InMemoryModelCostLedger,
   calculateModelUsageCostCents,
   createModelProviderRegistry,
+  preflightModelBudget,
   runModelWithFailover,
   selectModel,
   type ModelBenchmark,
@@ -56,6 +57,14 @@ describe("model router", () => {
     });
     expect(route.model).toBe("openai/gpt-5.4");
     expect(route.provider).toBe("openai");
+    expect(route.budget).toMatchObject({
+      decision: "within_budget",
+      budgetCents: 50,
+      estimatedCostCents: 4,
+      remainingBudgetCents: 46,
+      estimatedInputTokens: 10_000,
+      estimatedOutputTokens: 2_000,
+    });
   });
 
   it("can prioritize cheap or fast alternatives", () => {
@@ -71,6 +80,50 @@ describe("model router", () => {
     expect(selectModel({ policy, benchmarks, mode: "best" }).model).toBe(
       "openai/gpt-5.4",
     );
+  });
+
+  it("preflights per-model estimates before routing over budget", () => {
+    const preflight = preflightModelBudget({
+      policy: {
+        ...policy,
+        fallbackModels: ["anthropic/claude-sonnet-4.8"],
+        perRunBudgetCents: 2,
+      },
+      benchmarks,
+      mode: "best",
+      estimatedInputTokens: 10_000,
+      estimatedOutputTokens: 2_000,
+    });
+
+    expect(preflight).toMatchObject({
+      policyId: policy.id,
+      mode: "best",
+      decision: "over_budget",
+      budgetCents: 2,
+      selectedProvider: "openai",
+      selectedModel: "openai/gpt-5.4",
+      estimatedCostCents: 4,
+      remainingBudgetCents: -2,
+      affordableModels: [],
+    });
+    expect(
+      preflight.candidates.map((candidate) => ({
+        model: candidate.model,
+        estimatedCostCents: candidate.estimatedCostCents,
+        decision: candidate.decision,
+      })),
+    ).toEqual([
+      {
+        model: "openai/gpt-5.4",
+        estimatedCostCents: 4,
+        decision: "over_budget",
+      },
+      {
+        model: "anthropic/claude-sonnet-4.8",
+        estimatedCostCents: 6,
+        decision: "over_budget",
+      },
+    ]);
   });
 
   it("registers providers and resolves enabled policy candidates", () => {
@@ -197,6 +250,33 @@ describe("model router", () => {
     expect(result.attempts.map((attempt) => attempt.route.model)).toEqual([
       "openai/gpt-5.4",
       "anthropic/claude-sonnet-4.8",
+    ]);
+    expect(
+      result.attempts.map((attempt) => ({
+        attempt: attempt.decision.attempt,
+        kind: attempt.decision.kind,
+        model: attempt.decision.model,
+        estimatedCostCents: attempt.decision.estimatedCostCents,
+        budgetDecision: attempt.decision.budgetDecision,
+        remainingBudgetCents: attempt.decision.remainingBudgetCents,
+      })),
+    ).toEqual([
+      {
+        attempt: 1,
+        kind: "primary",
+        model: "openai/gpt-5.4",
+        estimatedCostCents: 4,
+        budgetDecision: "within_budget",
+        remainingBudgetCents: 46,
+      },
+      {
+        attempt: 2,
+        kind: "fallback",
+        model: "anthropic/claude-sonnet-4.8",
+        estimatedCostCents: 6,
+        budgetDecision: "within_budget",
+        remainingBudgetCents: 44,
+      },
     ]);
     expect(result.ledgerSummary).toMatchObject({
       runId: "run_failover",

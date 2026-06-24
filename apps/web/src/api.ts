@@ -1,11 +1,68 @@
 const API_URL = import.meta.env.VITE_BEK_API_URL ?? "http://localhost:4317";
 const ADMIN_TOKEN = import.meta.env.VITE_BEK_ADMIN_API_TOKEN;
+const ADMIN_TOKEN_STORAGE_KEY = "bek.adminApiToken";
 
-function headers(extra?: HeadersInit): HeadersInit {
+export class BekApiError extends Error {
+  readonly status: number;
+  readonly path: string;
+
+  constructor(path: string, status: number, message: string) {
+    super(message);
+    this.name = "BekApiError";
+    this.path = path;
+    this.status = status;
+  }
+}
+
+export function isBekApiError(error: unknown): error is BekApiError {
+  return error instanceof BekApiError;
+}
+
+export function hasBuildTimeAdminToken(): boolean {
+  return Boolean(ADMIN_TOKEN);
+}
+
+export function hasStoredAdminToken(): boolean {
+  return Boolean(readStoredAdminToken());
+}
+
+export function readAdminApiToken(): string | undefined {
+  const stored = readStoredAdminToken();
+  return stored || ADMIN_TOKEN || undefined;
+}
+
+export function saveAdminApiToken(token: string): void {
+  const trimmed = token.trim();
+  if (!trimmed) {
+    clearAdminApiToken();
+    return;
+  }
+  browserStorage()?.setItem(ADMIN_TOKEN_STORAGE_KEY, trimmed);
+}
+
+export function clearAdminApiToken(): void {
+  browserStorage()?.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+}
+
+export function adminAuthHeaders(extra?: HeadersInit): HeadersInit {
+  const token = readAdminApiToken();
   return {
-    ...(ADMIN_TOKEN ? { authorization: `Bearer ${ADMIN_TOKEN}` } : {}),
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
     ...extra,
   };
+}
+
+function readStoredAdminToken(): string | undefined {
+  const token = browserStorage()?.getItem(ADMIN_TOKEN_STORAGE_KEY)?.trim();
+  return token || undefined;
+}
+
+function browserStorage(): Storage | undefined {
+  try {
+    return typeof window === "undefined" ? undefined : window.localStorage;
+  } catch {
+    return undefined;
+  }
 }
 
 export interface Bootstrap {
@@ -272,29 +329,32 @@ export interface RedriveDeadLetterResponse extends WorkerQueueResponse {
 }
 
 export async function fetchBootstrap(): Promise<Bootstrap> {
-  const res = await fetch(`${API_URL}/api/bootstrap`, { headers: headers() });
-  if (!res.ok) {
-    throw new Error("Failed to load Bek bootstrap data");
-  }
-  return res.json() as Promise<Bootstrap>;
+  return jsonRequest<Bootstrap>("/api/bootstrap");
 }
 
 async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
-    headers: headers(init?.headers),
+    headers: adminAuthHeaders(init?.headers),
   });
   if (!res.ok) {
-    let message = `Bek API request failed: ${path}`;
-    try {
-      const body = (await res.json()) as { error?: string };
-      message = body.error ?? message;
-    } catch {
-      // Keep the generic message when the response is not JSON.
-    }
-    throw new Error(message);
+    throw await apiError(path, res);
   }
   return res.json() as Promise<T>;
+}
+
+async function apiError(path: string, res: Response): Promise<BekApiError> {
+  let message = `Bek API request failed: ${path}`;
+  try {
+    const body = (await res.json()) as { error?: string };
+    message = body.error ?? message;
+  } catch {
+    // Keep the generic message when the response is not JSON.
+  }
+  if (res.status === 401) {
+    message = "Admin API authorization required.";
+  }
+  return new BekApiError(path, res.status, message);
 }
 
 export async function fetchSetupStatus(): Promise<SetupStatus> {
@@ -421,21 +481,21 @@ export async function createRun(input: {
 }) {
   const res = await fetch(`${API_URL}/api/runs`, {
     method: "POST",
-    headers: headers({ "content-type": "application/json" }),
+    headers: adminAuthHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(input),
   });
   if (!res.ok) {
-    throw new Error("Failed to create run");
+    throw await apiError("/api/runs", res);
   }
   return res.json() as Promise<Run>;
 }
 
 export async function fetchRunDetail(runId: string): Promise<RunDetail> {
   const res = await fetch(`${API_URL}/api/runs/${runId}`, {
-    headers: headers(),
+    headers: adminAuthHeaders(),
   });
   if (!res.ok) {
-    throw new Error("Failed to load Bek run detail");
+    throw await apiError(`/api/runs/${runId}`, res);
   }
   return res.json() as Promise<RunDetail>;
 }
@@ -499,7 +559,7 @@ export async function decideApproval(input: {
     `${API_URL}/api/approvals/${input.approvalId}/${input.decision}`,
     {
       method: "POST",
-      headers: headers({ "content-type": "application/json" }),
+      headers: adminAuthHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({
         principalId: input.principalId,
         payloadHash: input.payloadHash,
@@ -507,7 +567,7 @@ export async function decideApproval(input: {
     },
   );
   if (!res.ok) {
-    throw new Error("Failed to decide approval");
+    throw await apiError(`/api/approvals/${input.approvalId}`, res);
   }
   return res.json() as Promise<ApprovalRequest>;
 }

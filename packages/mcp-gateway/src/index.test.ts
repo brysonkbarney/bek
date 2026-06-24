@@ -1,11 +1,14 @@
 import type { CapabilityGrant } from "@bek/core";
 import { describe, expect, it } from "vitest";
 import {
+  McpTenantToolAllowlist,
+  MockMcpTransport,
   McpServerRegistry,
   ToolSchemaCache,
   canExposeTool,
   classifyToolRisk,
   createMcpProxyRequest,
+  executeMcpProxyRequest,
   manifestFromGrants,
   parseMcpResource,
   resourceFromTool,
@@ -219,5 +222,240 @@ describe("MCP gateway", () => {
       schemaHash: schema.hash,
     });
     expect(request.inputHash).toHaveLength(64);
+  });
+
+  it("executes allowlisted mock transports and redacts credential references", async () => {
+    const registry = new McpServerRegistry([
+      {
+        id: "docs",
+        displayName: "Docs",
+        transport: "in_process",
+        origin: "mock:docs",
+      },
+    ]);
+    const server = registry.get("docs")!;
+    const cache = new ToolSchemaCache();
+    const schema = cache.upsert({
+      serverId: "docs",
+      toolName: "search",
+      description: "Search internal docs",
+      resource: "mcp:docs/search",
+      inputSchema: {
+        type: "object",
+        properties: { query: { type: "string" } },
+      },
+      risk: "read_internal",
+      cachedAt: "2026-06-24T00:00:00.000Z",
+    }).active!;
+    const grant: CapabilityGrant = {
+      id: "grant_docs_search",
+      capability: "mcp.tool",
+      resource: "mcp:docs/search",
+      decision: "allow",
+      risk: "read_internal",
+      requiresApproval: false,
+    };
+    const request = createMcpProxyRequest({
+      runId: "run_docs",
+      requestId: "tool_req_docs",
+      grant,
+      server,
+      schema,
+      input: { query: "rollout" },
+      createdAt: "2026-06-24T00:00:00.000Z",
+    });
+    const allowlist = new McpTenantToolAllowlist([
+      {
+        tenantId: "tenant_alpha",
+        resource: "mcp:docs/search",
+      },
+    ]);
+    const transport = new MockMcpTransport({
+      "mcp:docs/search": ({ request: invocationRequest }) => ({
+        text: "Found docs with bek-local-vault://mcp/docs/token and Bearer abcdefghijklmnopqrstuvwxyz123",
+        secretRef: "aws-sm://bek/prod/docs/token",
+        echo: invocationRequest.input,
+      }),
+    });
+
+    const result = await executeMcpProxyRequest({
+      tenantId: "tenant_alpha",
+      request,
+      server,
+      schema,
+      allowlist,
+      transport,
+      executedAt: "2026-06-24T00:01:00.000Z",
+    });
+
+    expect(result.status).toBe("executed");
+    if (result.status !== "executed") {
+      throw new Error(result.message);
+    }
+    expect(result.redacted).toBe(true);
+    expect(result.output).toMatchObject({
+      text: "Found docs with [redacted:mcp-credential-ref] and [redacted:mcp-secret]",
+      secretRef: "[redacted:mcp-credential]",
+      echo: { query: "rollout" },
+    });
+    expect(JSON.stringify(result.output)).not.toContain("aws-sm://");
+    expect(result.outputHash).toHaveLength(64);
+  });
+
+  it("blocks mock transport execution when a tenant is not allowlisted", async () => {
+    const registry = new McpServerRegistry([
+      {
+        id: "docs",
+        displayName: "Docs",
+        transport: "in_process",
+        origin: "mock:docs",
+      },
+    ]);
+    const server = registry.get("docs")!;
+    const schema = new ToolSchemaCache().upsert({
+      serverId: "docs",
+      toolName: "search",
+      description: "Search internal docs",
+      resource: "mcp:docs/search",
+      inputSchema: { type: "object" },
+      cachedAt: "2026-06-24T00:00:00.000Z",
+    }).active!;
+    const grant: CapabilityGrant = {
+      id: "grant_docs_search",
+      capability: "mcp.tool",
+      resource: "mcp:docs/search",
+      decision: "allow",
+      risk: "read_internal",
+      requiresApproval: false,
+    };
+    const request = createMcpProxyRequest({
+      runId: "run_docs",
+      grant,
+      server,
+      schema,
+      input: {},
+    });
+    let transportCalled = false;
+    const transport = new MockMcpTransport({
+      "mcp:docs/search": () => {
+        transportCalled = true;
+        return { ok: true };
+      },
+    });
+    const allowlist = new McpTenantToolAllowlist([
+      {
+        tenantId: "tenant_alpha",
+        resource: "mcp:docs/search",
+        expiresAt: "2026-06-23T00:00:00.000Z",
+      },
+    ]);
+
+    const result = await executeMcpProxyRequest({
+      tenantId: "tenant_alpha",
+      request,
+      server,
+      schema,
+      allowlist,
+      transport,
+      executedAt: "2026-06-24T00:00:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      reason: "tenant_not_allowlisted",
+      resource: "mcp:docs/search",
+    });
+    expect(transportCalled).toBe(false);
+  });
+
+  it("requires approved approval records before executing risky tools", async () => {
+    const registry = new McpServerRegistry([
+      {
+        id: "deploy",
+        displayName: "Deploy",
+        transport: "in_process",
+        origin: "mock:deploy",
+      },
+    ]);
+    const server = registry.get("deploy")!;
+    const schema = new ToolSchemaCache().upsert({
+      serverId: "deploy",
+      toolName: "restart",
+      description: "Restart a production deployment",
+      resource: "mcp:deploy/restart",
+      inputSchema: { type: "object" },
+      cachedAt: "2026-06-24T00:00:00.000Z",
+    }).active!;
+    const grant: CapabilityGrant = {
+      id: "grant_restart",
+      capability: "mcp.tool",
+      resource: "mcp:deploy/restart",
+      decision: "allow",
+      risk: "read_internal",
+      requiresApproval: false,
+    };
+    const request = createMcpProxyRequest({
+      runId: "run_deploy",
+      requestId: "tool_req_restart",
+      grant,
+      server,
+      schema,
+      input: { service: "web" },
+    });
+    expect(request).toMatchObject({
+      decision: "allow",
+      risk: "write_external",
+      requiresApproval: true,
+    });
+    const allowlist = new McpTenantToolAllowlist([
+      {
+        tenantId: "tenant_alpha",
+        resource: "mcp:deploy/restart",
+      },
+    ]);
+    let transportCalls = 0;
+    const transport = new MockMcpTransport({
+      "mcp:deploy/restart": () => {
+        transportCalls += 1;
+        return { restarted: true };
+      },
+    });
+
+    const blocked = await executeMcpProxyRequest({
+      tenantId: "tenant_alpha",
+      request,
+      server,
+      schema,
+      allowlist,
+      transport,
+    });
+    expect(blocked).toMatchObject({
+      status: "blocked",
+      reason: "approval_required",
+    });
+
+    const executed = await executeMcpProxyRequest({
+      tenantId: "tenant_alpha",
+      request,
+      server,
+      schema,
+      allowlist,
+      transport,
+      approval: {
+        id: "approval_restart",
+        requestId: "tool_req_restart",
+        status: "approved",
+        decidedByPrincipalId: "principal_admin",
+        decidedAt: "2026-06-24T00:02:00.000Z",
+      },
+      executedAt: "2026-06-24T00:03:00.000Z",
+    });
+
+    expect(executed).toMatchObject({
+      status: "executed",
+      approvalId: "approval_restart",
+      output: { restarted: true },
+    });
+    expect(transportCalls).toBe(1);
   });
 });

@@ -25,6 +25,7 @@ import {
   createSlackOAuthState,
   exchangeSlackOAuthCode,
   normalizeSlackEvent,
+  parseSlackRetryHeaders,
   parseSlackCommand,
   parseSlackInteraction,
   redactSlackInstallRecord,
@@ -33,7 +34,7 @@ import {
   verifySlackOAuthState,
   verifySlackSignature,
 } from "@bek/slack";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
 import {
@@ -853,6 +854,7 @@ export function createApp(
 
   app.post("/api/slack/interactivity", async (c) => {
     const rawBody = await c.req.text();
+    const retry = slackRetryForRequest(c);
     if (
       !isVerifiedSlackRequest({
         rawBody,
@@ -860,7 +862,11 @@ export function createApp(
         signature: c.req.header("x-slack-signature"),
       })
     ) {
-      return c.json({ error: "Invalid Slack signature" }, 401);
+      markSlackNoRetry(c);
+      return c.json(
+        withSlackRetryMetadata({ error: "Invalid Slack signature" }, retry),
+        401,
+      );
     }
 
     const interaction = parseSlackInteraction(rawBody);
@@ -877,35 +883,49 @@ export function createApp(
 
     const interactionKey = buildSlackInteractionDurableKey(interaction);
     if (interactionKey && store.findIngressDelivery(interactionKey)) {
+      acknowledgeSlackRetry(c, retry);
       return c.json({
-        ...buildSlackEphemeralResponse({
-          ok: true,
-          text: "Bek already handled this approval action.",
-        }),
-        ok: true,
-        deduped: true,
+        ...withSlackRetryMetadata(
+          {
+            ...buildSlackEphemeralResponse({
+              ok: true,
+              text: "Bek already handled this approval action.",
+            }),
+            ok: true,
+            deduped: true,
+          },
+          retry,
+        ),
       });
     }
 
     if (!interaction.slackUserId) {
+      markSlackNoRetry(c);
       return c.json(
-        buildSlackEphemeralResponse({
-          ok: false,
-          error: "Slack approval payload is missing user.id.",
-          text: "Bek could not identify the Slack user who clicked this approval.",
-        }),
+        withSlackRetryMetadata(
+          buildSlackEphemeralResponse({
+            ok: false,
+            error: "Slack approval payload is missing user.id.",
+            text: "Bek could not identify the Slack user who clicked this approval.",
+          }),
+          retry,
+        ),
         400,
       );
     }
 
     const principalId = slackPrincipalIdForUser(interaction.slackUserId);
     if (!principalId) {
+      markSlackNoRetry(c);
       return c.json(
-        buildSlackEphemeralResponse({
-          ok: false,
-          error: `Slack user ${interaction.slackUserId} is not mapped to a Bek principal. Set BEK_SLACK_USER_PRINCIPAL_MAP or approve in the admin API.`,
-          text: "Bek parsed this approval button, but this Slack user is not mapped to an approver yet.",
-        }),
+        withSlackRetryMetadata(
+          buildSlackEphemeralResponse({
+            ok: false,
+            error: `Slack user ${interaction.slackUserId} is not mapped to a Bek principal. Set BEK_SLACK_USER_PRINCIPAL_MAP or approve in the admin API.`,
+            text: "Bek parsed this approval button, but this Slack user is not mapped to an approver yet.",
+          }),
+          retry,
+        ),
         400,
       );
     }
@@ -953,6 +973,7 @@ export function createApp(
 
   app.post("/api/slack/commands", async (c) => {
     const rawBody = await c.req.text();
+    const retry = slackRetryForRequest(c);
     if (
       !isVerifiedSlackRequest({
         rawBody,
@@ -960,7 +981,11 @@ export function createApp(
         signature: c.req.header("x-slack-signature"),
       })
     ) {
-      return c.json({ error: "Invalid Slack signature" }, 401);
+      markSlackNoRetry(c);
+      return c.json(
+        withSlackRetryMetadata({ error: "Invalid Slack signature" }, retry),
+        401,
+      );
     }
 
     const command = parseSlackCommand(rawBody);
@@ -977,18 +1002,28 @@ export function createApp(
               reason: "Bek already handled this Slack command.",
               text: "Bek already handled this Slack command.",
             }));
+      acknowledgeSlackRetry(c, retry);
       return c.json({
-        ...response,
-        deduped: true,
+        ...withSlackRetryMetadata(
+          {
+            ...response,
+            deduped: true,
+          },
+          retry,
+        ),
       });
     }
 
     if (!command.channelId) {
+      markSlackNoRetry(c);
       return c.json(
-        buildSlackCommandErrorResponse({
-          error: "Slack command payload is missing channel_id.",
-          text: "Bek could not identify the Slack channel for this command.",
-        }),
+        withSlackRetryMetadata(
+          buildSlackCommandErrorResponse({
+            error: "Slack command payload is missing channel_id.",
+            text: "Bek could not identify the Slack channel for this command.",
+          }),
+          retry,
+        ),
         400,
       );
     }
@@ -1046,26 +1081,52 @@ export function createApp(
 
   app.post("/api/slack/events", async (c) => {
     const rawBody = await c.req.text();
+    const retry = slackRetryForRequest(c);
     const verified = isVerifiedSlackRequest({
       rawBody,
       timestamp: c.req.header("x-slack-request-timestamp"),
       signature: c.req.header("x-slack-signature"),
     });
     if (!verified) {
-      return c.json({ error: "Invalid Slack signature" }, 401);
+      markSlackNoRetry(c);
+      return c.json(
+        withSlackRetryMetadata({ error: "Invalid Slack signature" }, retry),
+        401,
+      );
     }
 
-    const payload = JSON.parse(rawBody) as Record<string, unknown>;
+    let payload: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(rawBody) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Slack event payload must be a JSON object.");
+      }
+      payload = parsed as Record<string, unknown>;
+    } catch {
+      markSlackNoRetry(c);
+      return c.json(
+        withSlackRetryMetadata(
+          {
+            ok: false,
+            error: "Slack event payload must be valid JSON.",
+          },
+          retry,
+        ),
+        400,
+      );
+    }
     const eventKey = buildSlackEventDurableKey(payload);
     const existingEvent = eventKey
       ? store.findIngressDelivery(eventKey)
       : undefined;
     if (existingEvent) {
-      return c.json({
-        ok: true,
-        deduped: true,
-        ...(existingEvent.runId ? { runId: existingEvent.runId } : {}),
-      });
+      acknowledgeSlackRetry(c, retry);
+      return c.json(
+        withSlackRetryMetadata(
+          duplicateSlackEventResponse(existingEvent),
+          retry,
+        ),
+      );
     }
     const event = normalizeSlackEvent(payload);
     if (event.type === "url_verification") {
@@ -1074,41 +1135,40 @@ export function createApp(
     if (event.type === "mention" || event.type === "reaction") {
       const snapshot = store.read();
       if (!event.channelId) {
-        if (eventKey) {
-          store.recordIngressDelivery({
-            key: eventKey,
-            kind: "slack.event",
-            status: "ignored",
-            response: {
-              reason: "Slack event payload is missing channel.",
-            },
-          });
-          await flushChangesWithDeliveryRollback(eventKey);
-        }
-        return c.json({
+        const response = {
           ok: false,
           ignored: true,
           reason: "Slack event payload is missing channel.",
-        });
-      }
-      const place = resolveSlackPlace(snapshot, event.channelId, event.teamId);
-      if (!place) {
+        };
         if (eventKey) {
           store.recordIngressDelivery({
             key: eventKey,
             kind: "slack.event",
             status: "ignored",
-            response: {
-              reason: "Bek is not configured for this Slack channel.",
-            },
+            response: { ...response },
           });
           await flushChangesWithDeliveryRollback(eventKey);
         }
-        return c.json({
+        markSlackNoRetry(c);
+        return c.json(withSlackRetryMetadata(response, retry));
+      }
+      const place = resolveSlackPlace(snapshot, event.channelId, event.teamId);
+      if (!place) {
+        const response = {
           ok: false,
           ignored: true,
           reason: "Bek is not configured for this Slack channel.",
-        });
+        };
+        if (eventKey) {
+          store.recordIngressDelivery({
+            key: eventKey,
+            kind: "slack.event",
+            status: "ignored",
+            response: { ...response },
+          });
+          await flushChangesWithDeliveryRollback(eventKey);
+        }
+        return c.json(response);
       }
       const run = await createRunAndAdvance({
         placeScopeId: place.id,
@@ -1118,12 +1178,14 @@ export function createApp(
         capability: "slack.read",
         resource: `slack:${place.externalId}`,
       });
+      const response = { ok: true, runId: run.id };
       if (eventKey) {
         store.recordIngressDelivery({
           key: eventKey,
           kind: "slack.event",
           status: "processed",
           runId: run.id,
+          response: { ...response },
         });
       }
       await flushChangesWithDeliveryRollback(eventKey);
@@ -1133,18 +1195,23 @@ export function createApp(
         teamId: event.teamId,
       });
       await flushSlackOutboundChanges();
-      return c.json({ ok: true, runId: run.id });
+      return c.json(response);
     }
+    const response = {
+      ok: true,
+      ignored: true,
+      reason: "Unsupported Slack event type.",
+    };
     if (eventKey) {
       store.recordIngressDelivery({
         key: eventKey,
         kind: "slack.event",
         status: "ignored",
-        response: { reason: "Unsupported Slack event type." },
+        response: { ...response },
       });
       await flushChangesWithDeliveryRollback(eventKey);
     }
-    return c.json({ ok: true, ignored: true });
+    return c.json(response);
   });
 
   return app;
@@ -1631,6 +1698,49 @@ function isVerifiedSlackRequest(input: {
       (process.env.NODE_ENV === "test" ||
         process.env.BEK_DEV_UNSIGNED_SLACK === "true"),
   });
+}
+
+type SlackRetryInfo = NonNullable<ReturnType<typeof parseSlackRetryHeaders>>;
+
+function slackRetryForRequest(c: Context): SlackRetryInfo | undefined {
+  return parseSlackRetryHeaders({
+    retryNum: c.req.header("x-slack-retry-num"),
+    retryReason: c.req.header("x-slack-retry-reason"),
+  });
+}
+
+function markSlackNoRetry(c: Context) {
+  c.header("x-slack-no-retry", "1");
+}
+
+function acknowledgeSlackRetry(c: Context, retry: SlackRetryInfo | undefined) {
+  if (retry) {
+    markSlackNoRetry(c);
+  }
+}
+
+function withSlackRetryMetadata<T extends object>(
+  response: T,
+  retry: SlackRetryInfo | undefined,
+): T | (T & { slackRetry: SlackRetryInfo }) {
+  if (!retry) {
+    return response;
+  }
+  return { ...response, slackRetry: retry };
+}
+
+function duplicateSlackEventResponse(existingEvent: {
+  status: "processed" | "ignored";
+  runId?: string | undefined;
+  response?: Record<string, unknown> | undefined;
+}): Record<string, unknown> {
+  return {
+    ok: existingEvent.status === "processed",
+    ...(existingEvent.status === "ignored" ? { ignored: true } : {}),
+    ...(existingEvent.response ?? {}),
+    ...(existingEvent.runId ? { runId: existingEvent.runId } : {}),
+    deduped: true,
+  };
 }
 
 function missingEnv(names: string[]): string[] {

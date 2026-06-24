@@ -1,5 +1,6 @@
 export * from "./approvals";
 export * from "./config";
+export * from "./execution";
 export * from "./fake-client";
 export * from "./proposals";
 export * from "./resources";

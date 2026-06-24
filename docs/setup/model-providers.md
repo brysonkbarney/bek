@@ -18,7 +18,9 @@ The model-router package now includes local productization foundations:
 - An in-memory provider registry for configured providers and model metadata.
 - A deterministic fake model gateway for tests and demos.
 - Cost ledger helpers for preflight estimates and completed calls.
+- A budget preflight result shape with per-model estimates and remaining-budget status.
 - Failover routing that can try configured fallbacks when a provider call fails.
+- Failover attempt metadata that records whether each tried route was primary or fallback, its estimate, and its budget decision.
 
 The current local demo still does not call external model APIs. Provider adapters must plug into these contracts without changing the one visible `@bek` user experience.
 
@@ -57,14 +59,16 @@ The current repo has the product primitives for cost control:
 - model policies with `perRunBudgetCents`,
 - fallback model lists,
 - deterministic route estimates in `@bek/model-router`,
+- explicit budget preflight metadata for selected and fallback routes,
 - model usage ledger helpers,
 - run-level estimated and actual cost fields,
 - `/api/model-usage` summary for seeded/local runs.
 
 These are not yet production billing controls. Before a shared workspace or
 hosted beta, Bek still needs persistent usage records, daily/workspace ceilings,
-provider response accounting, alerts, and approval checkpoints for budget
-step-ups.
+live provider response accounting, alerts, and approval checkpoints for budget
+step-ups. Current preflight data is deterministic local metadata; it is not a
+substitute for reconciling actual token usage from provider responses.
 
 Recommended local/pilot defaults:
 

@@ -1,7 +1,38 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet } from "@tanstack/react-router";
+import { LockKeyhole, LogOut } from "lucide-react";
+import { useState } from "react";
+import {
+  clearAdminApiToken,
+  fetchBootstrap,
+  hasStoredAdminToken,
+  isBekApiError,
+  saveAdminApiToken,
+} from "../api";
+import { Panel, WarningCallout } from "./components";
 import { navigationItems } from "./product-model";
 
 export function AppShell() {
+  const queryClient = useQueryClient();
+  const [tokenInput, setTokenInput] = useState("");
+  const [tokenVersion, setTokenVersion] = useState(0);
+  const bootstrapQuery = useQuery({
+    queryKey: ["bootstrap"],
+    queryFn: fetchBootstrap,
+    retry: false,
+  });
+  const error = bootstrapQuery.error;
+  const authRequired = isBekApiError(error) && error.status === 401;
+  const missingServerToken =
+    isBekApiError(error) &&
+    error.status === 500 &&
+    error.message.includes("BEK_ADMIN_API_TOKEN");
+
+  function refreshAuthState() {
+    setTokenVersion((value) => value + 1);
+    void queryClient.invalidateQueries();
+  }
+
   return (
     <div className="app-shell">
       <a className="skip-link" href="#main-content">
@@ -33,10 +64,94 @@ export function AppShell() {
             );
           })}
         </nav>
+        {hasStoredAdminToken() ? (
+          <button
+            className="sidebar-action"
+            type="button"
+            onClick={() => {
+              clearAdminApiToken();
+              refreshAuthState();
+            }}
+          >
+            <LogOut size={16} aria-hidden="true" />
+            Clear token
+          </button>
+        ) : null}
       </aside>
       <main className="content" id="main-content" tabIndex={-1}>
-        <Outlet />
+        {authRequired ? (
+          <AdminUnlock
+            tokenInput={tokenInput}
+            onTokenInput={setTokenInput}
+            onUnlock={() => {
+              saveAdminApiToken(tokenInput);
+              setTokenInput("");
+              refreshAuthState();
+            }}
+          />
+        ) : missingServerToken ? (
+          <AdminServerTokenMissing />
+        ) : bootstrapQuery.isLoading ? (
+          <div className="state">Loading Bek admin...</div>
+        ) : bootstrapQuery.isError ? (
+          <div className="state error">{bootstrapQuery.error.message}</div>
+        ) : (
+          <Outlet key={tokenVersion} />
+        )}
       </main>
+    </div>
+  );
+}
+
+function AdminUnlock({
+  tokenInput,
+  onTokenInput,
+  onUnlock,
+}: {
+  tokenInput: string;
+  onTokenInput: (value: string) => void;
+  onUnlock: () => void;
+}) {
+  const canUnlock = tokenInput.trim().length > 0;
+  return (
+    <div className="auth-panel">
+      <Panel title="Admin API Locked">
+        <form
+          className="auth-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (canUnlock) {
+              onUnlock();
+            }
+          }}
+        >
+          <LockKeyhole size={26} aria-hidden="true" />
+          <label>
+            Admin token
+            <input
+              autoFocus
+              type="password"
+              value={tokenInput}
+              onChange={(event) => onTokenInput(event.target.value)}
+              autoComplete="current-password"
+            />
+          </label>
+          <button className="primary" disabled={!canUnlock}>
+            Unlock Admin API
+          </button>
+        </form>
+      </Panel>
+    </div>
+  );
+}
+
+function AdminServerTokenMissing() {
+  return (
+    <div className="auth-panel">
+      <WarningCallout>
+        The API requires admin auth, but `BEK_ADMIN_API_TOKEN` is not configured
+        on the server.
+      </WarningCallout>
     </div>
   );
 }

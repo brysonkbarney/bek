@@ -220,7 +220,6 @@ environments must require one:
 ```bash
 export BEK_ADMIN_API_TOKEN="$(openssl rand -hex 32)"
 export BEK_REQUIRE_ADMIN_AUTH=true
-export VITE_BEK_ADMIN_API_TOKEN="$BEK_ADMIN_API_TOKEN"
 pnpm dev
 ```
 
@@ -229,6 +228,11 @@ When auth is enabled, API requests to `/api/*` need:
 ```txt
 authorization: Bearer YOUR_TOKEN
 ```
+
+The admin console prompts for this token at runtime when the API returns 401.
+For a trusted local-only console, you may also set
+`VITE_BEK_ADMIN_API_TOKEN="$BEK_ADMIN_API_TOKEN"` before `pnpm dev`; Vite embeds
+that value into the browser bundle, so do not use it for public static hosting.
 
 Slack callback routes remain public so Slack can reach them, but they still
 verify Slack signatures outside unsigned local demo mode.

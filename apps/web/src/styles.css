@@ -128,6 +128,26 @@ a {
   color: white;
 }
 
+.sidebar-action {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 38px;
+  width: 100%;
+  margin-top: 20px;
+  padding: 8px 10px;
+  border: 1px solid #34534c;
+  border-radius: 8px;
+  color: #d8e7e0;
+  background: transparent;
+  font-weight: 700;
+}
+
+.sidebar-action:hover {
+  background: #203a35;
+  color: white;
+}
+
 .content {
   min-width: 0;
   padding: 28px;
@@ -209,6 +229,40 @@ h2 {
 .secondary:hover {
   border-color: #8ec6a4;
   background: #f3faf5;
+}
+
+.auth-panel {
+  display: grid;
+  min-height: calc(100vh - 56px);
+  max-width: 520px;
+  align-content: center;
+  margin: 0 auto;
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+}
+
+.auth-form svg {
+  color: #1d7d54;
+}
+
+.auth-form label {
+  display: grid;
+  gap: 7px;
+  color: #354a44;
+  font-weight: 700;
+}
+
+.auth-form input {
+  min-height: 42px;
+  width: 100%;
+  border: 1px solid #cfe0d6;
+  border-radius: 8px;
+  padding: 0 12px;
+  color: #13221e;
+  background: white;
 }
 
 .metrics,

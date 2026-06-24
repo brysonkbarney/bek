@@ -10,6 +10,7 @@ export type ModelProviderKind =
   | "custom";
 export type ModelProviderStatus = "active" | "degraded" | "disabled";
 export type ModelLedgerPhase = "estimate" | "actual";
+export type ModelBudgetPreflightDecision = "within_budget" | "over_budget";
 
 export interface ModelBenchmark {
   model: string;
@@ -56,7 +57,40 @@ export interface ModelRoute {
   model: string;
   reason: string;
   estimatedCostCents: number;
+  budget: ModelRouteBudgetPreflight;
   benchmark?: ModelBenchmark | undefined;
+}
+
+export interface ModelRouteBudgetPreflight {
+  decision: ModelBudgetPreflightDecision;
+  budgetCents: number;
+  estimatedCostCents: number;
+  remainingBudgetCents: number;
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
+}
+
+export interface ModelBudgetPreflightCandidate extends ModelRouteBudgetPreflight {
+  provider: string;
+  model: string;
+  score: number;
+  benchmark?: ModelBenchmark | undefined;
+}
+
+export interface ModelBudgetPreflightResult {
+  policyId: string;
+  mode: ModelRouteMode;
+  decision: ModelBudgetPreflightDecision;
+  budgetCents: number;
+  selectedProvider: string;
+  selectedModel: string;
+  estimatedCostCents: number;
+  remainingBudgetCents: number;
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
+  affordableModels: string[];
+  candidates: ModelBudgetPreflightCandidate[];
+  reason: string;
 }
 
 export interface SelectModelInput {
@@ -74,24 +108,7 @@ export function selectModel(input: SelectModelInput): ModelRoute {
     input,
     policyCandidateModels(input.policy),
   );
-  const affordable = scored.filter(
-    (candidate) =>
-      candidate.estimatedCostCents <= input.policy.perRunBudgetCents,
-  );
-  const pool = affordable.length > 0 ? affordable : scored;
-  const selected =
-    mode === "auto" &&
-    affordable.some(
-      (candidate) => candidate.model === input.policy.defaultModel,
-    )
-      ? affordable.find(
-          (candidate) => candidate.model === input.policy.defaultModel,
-        )!
-      : pool.sort(
-          (left, right) =>
-            right.score - left.score ||
-            left.estimatedCostCents - right.estimatedCostCents,
-        )[0]!;
+  const { selected, affordable } = selectRankedModelCandidate(input, scored);
 
   return {
     provider: parseProvider(selected.model),
@@ -103,7 +120,39 @@ export function selectModel(input: SelectModelInput): ModelRoute {
       affordable.length > 0,
     ),
     estimatedCostCents: selected.estimatedCostCents,
+    budget: routeBudgetPreflight(selected, input),
     benchmark: selected.benchmark,
+  };
+}
+
+export function preflightModelBudget(
+  input: SelectModelInput,
+): ModelBudgetPreflightResult {
+  const mode = input.mode ?? "auto";
+  const scored = rankModelCandidates(
+    input,
+    policyCandidateModels(input.policy),
+  );
+  const { selected, affordable } = selectRankedModelCandidate(input, scored);
+  const selectedBudget = routeBudgetPreflight(selected, input);
+  const candidates = scored.map((candidate) =>
+    budgetPreflightCandidate(candidate, input),
+  );
+
+  return {
+    policyId: input.policy.id,
+    mode,
+    decision: selectedBudget.decision,
+    budgetCents: input.policy.perRunBudgetCents,
+    selectedProvider: parseProvider(selected.model),
+    selectedModel: selected.model,
+    estimatedCostCents: selected.estimatedCostCents,
+    remainingBudgetCents: selectedBudget.remainingBudgetCents,
+    estimatedInputTokens: selectedBudget.estimatedInputTokens,
+    estimatedOutputTokens: selectedBudget.estimatedOutputTokens,
+    affordableModels: affordable.map((candidate) => candidate.model),
+    candidates,
+    reason: budgetPreflightReason(selected, affordable.length > 0),
   };
 }
 
@@ -450,9 +499,21 @@ export class FakeModelGateway implements ModelGateway {
 export interface ModelFailoverAttempt {
   route: ModelRoute;
   status: "succeeded" | "failed";
+  decision: ModelFailoverDecisionMetadata;
   error?: string | undefined;
   retryable?: boolean | undefined;
   actualCostCents?: number | undefined;
+}
+
+export interface ModelFailoverDecisionMetadata {
+  attempt: number;
+  kind: "primary" | "fallback";
+  provider: string;
+  model: string;
+  estimatedCostCents: number;
+  budgetDecision: ModelBudgetPreflightDecision;
+  remainingBudgetCents: number;
+  reason: string;
 }
 
 export interface ModelFailoverInput {
@@ -485,7 +546,9 @@ export async function runModelWithFailover(
   const ledger = input.ledger ?? new InMemoryModelCostLedger();
   const attempts: ModelFailoverAttempt[] = [];
 
-  for (const route of routes) {
+  for (const [index, route] of routes.entries()) {
+    const decision = failoverDecisionMetadata(route, index);
+
     ledger.recordEstimate({
       runId: input.runId,
       route,
@@ -525,6 +588,7 @@ export async function runModelWithFailover(
       attempts.push({
         route,
         status: "succeeded",
+        decision,
         actualCostCents: response.costCents,
       });
       return {
@@ -546,6 +610,7 @@ export async function runModelWithFailover(
       attempts.push({
         route,
         status: "failed",
+        decision,
         error: gatewayError.message,
         retryable: gatewayError.retryable,
       });
@@ -614,6 +679,42 @@ function scoreModel(
   );
 }
 
+function selectRankedModelCandidate(
+  input: SelectModelInput,
+  scored: RankedModelCandidate[],
+): {
+  selected: RankedModelCandidate;
+  affordable: RankedModelCandidate[];
+} {
+  if (scored.length === 0) {
+    throw new Error("No model candidates were available for routing.");
+  }
+
+  const mode = input.mode ?? "auto";
+  const affordable = scored.filter(
+    (candidate) =>
+      candidate.estimatedCostCents <= input.policy.perRunBudgetCents,
+  );
+  const pool = affordable.length > 0 ? affordable : scored;
+  const selected =
+    mode === "auto"
+      ? affordable.find(
+          (candidate) => candidate.model === input.policy.defaultModel,
+        )
+      : undefined;
+
+  return {
+    selected:
+      selected ??
+      [...pool].sort(
+        (left, right) =>
+          right.score - left.score ||
+          left.estimatedCostCents - right.estimatedCostCents,
+      )[0]!,
+    affordable,
+  };
+}
+
 function reasonForSelection(
   mode: ModelRouteMode,
   model: string,
@@ -677,7 +778,66 @@ function routeFromCandidate(
     model: candidate.model,
     reason,
     estimatedCostCents: candidate.estimatedCostCents,
+    budget: routeBudgetPreflight(candidate, input),
     ...(candidate.benchmark ? { benchmark: candidate.benchmark } : {}),
+  };
+}
+
+function budgetPreflightCandidate(
+  candidate: RankedModelCandidate,
+  input: SelectModelInput,
+): ModelBudgetPreflightCandidate {
+  return {
+    provider: parseProvider(candidate.model),
+    model: candidate.model,
+    score: candidate.score,
+    ...routeBudgetPreflight(candidate, input),
+    ...(candidate.benchmark ? { benchmark: candidate.benchmark } : {}),
+  };
+}
+
+function routeBudgetPreflight(
+  candidate: RankedModelCandidate,
+  input: SelectModelInput,
+): ModelRouteBudgetPreflight {
+  const estimatedInputTokens = input.estimatedInputTokens ?? 0;
+  const estimatedOutputTokens = input.estimatedOutputTokens ?? 0;
+  const remainingBudgetCents =
+    input.policy.perRunBudgetCents - candidate.estimatedCostCents;
+
+  return {
+    decision: remainingBudgetCents >= 0 ? "within_budget" : "over_budget",
+    budgetCents: input.policy.perRunBudgetCents,
+    estimatedCostCents: candidate.estimatedCostCents,
+    remainingBudgetCents,
+    estimatedInputTokens,
+    estimatedOutputTokens,
+  };
+}
+
+function budgetPreflightReason(
+  selected: RankedModelCandidate,
+  hasAffordableCandidate: boolean,
+): string {
+  if (hasAffordableCandidate) {
+    return `${selected.model} is within the configured per-run budget.`;
+  }
+  return `${selected.model} exceeds the configured per-run budget, and no configured model fits the estimate.`;
+}
+
+function failoverDecisionMetadata(
+  route: ModelRoute,
+  index: number,
+): ModelFailoverDecisionMetadata {
+  return {
+    attempt: index + 1,
+    kind: index === 0 ? "primary" : "fallback",
+    provider: route.provider,
+    model: route.model,
+    estimatedCostCents: route.estimatedCostCents,
+    budgetDecision: route.budget.decision,
+    remainingBudgetCents: route.budget.remainingBudgetCents,
+    reason: route.reason,
   };
 }
 

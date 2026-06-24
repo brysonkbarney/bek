@@ -30,9 +30,10 @@ cp .env.docker.example .env.docker
 openssl rand -hex 32
 ```
 
-Set both `BEK_ADMIN_API_TOKEN` and `VITE_BEK_ADMIN_API_TOKEN` to the generated
-value for a trusted self-hosted admin console. Do not expose the web app as a
-public static site when it embeds an admin token.
+Set `BEK_ADMIN_API_TOKEN` to the generated value for a trusted self-hosted admin
+console. The web console prompts for that token at runtime. Only set
+`VITE_BEK_ADMIN_API_TOKEN` for a trusted local bundle because Vite embeds it at
+build time.
 
 The Docker template uses Compose service hostnames:
 
@@ -81,8 +82,8 @@ worker events persist in Postgres. This is useful for restart-safe self-hosted
 evaluation; production still needs daemonized workers, lease sweepers,
 dead-letter redrive, side-effect outbox semantics, and operational metrics.
 
-When you change `VITE_BEK_API_URL` or `VITE_BEK_ADMIN_API_TOKEN`, rebuild the
-web image because Vite embeds those values at build time.
+When you change `VITE_BEK_API_URL` or choose to set `VITE_BEK_ADMIN_API_TOKEN`,
+rebuild the web image because Vite embeds those values at build time.
 
 ## Run The Worker Smoke Runner
 

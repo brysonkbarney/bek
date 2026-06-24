@@ -63,6 +63,13 @@ function signedSlackHeaders(
   };
 }
 
+function slackRetryHeaders(retryNum = "1", retryReason = "http_timeout") {
+  return {
+    "x-slack-retry-num": retryNum,
+    "x-slack-retry-reason": retryReason,
+  };
+}
+
 function slackForm(input: Record<string, string>) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(input)) {
@@ -1642,9 +1649,21 @@ describe("Bek API", () => {
     const malformed = await app.request("/api/slack/events", {
       method: "POST",
       body: rawBody,
-      headers: signedSlackHeaders(rawBody),
+      headers: {
+        ...signedSlackHeaders(rawBody),
+        ...slackRetryHeaders("2", "http_error"),
+      },
     });
     expect(malformed.status).toBe(400);
+    expect(malformed.headers.get("x-slack-no-retry")).toBe("1");
+    await expect(malformed.json()).resolves.toMatchObject({
+      ok: false,
+      error: "Slack event payload must be valid JSON.",
+      slackRetry: {
+        retryNum: 2,
+        reason: "http_error",
+      },
+    });
   });
 
   it("does not silently admit unknown Slack channels", async () => {
@@ -2155,6 +2174,54 @@ describe("Bek API", () => {
     await expect(second.json()).resolves.toMatchObject({ deduped: true });
   });
 
+  it("returns the original ignored Slack event response on retries", async () => {
+    const app = createApp();
+    const payload = {
+      event_id: "EvIgnoredRetry",
+      event: {
+        type: "app_mention",
+        channel: "C_UNKNOWN",
+        user: "U123",
+        text: "@bek hello",
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+
+    const first = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+    expect(first.status).toBe(200);
+    await expect(first.json()).resolves.toMatchObject({
+      ok: false,
+      ignored: true,
+      reason: "Bek is not configured for this Slack channel.",
+    });
+
+    const retry = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: {
+        ...signedSlackHeaders(rawBody),
+        ...slackRetryHeaders("1", "http_timeout"),
+      },
+    });
+
+    expect(retry.status).toBe(200);
+    expect(retry.headers.get("x-slack-no-retry")).toBe("1");
+    await expect(retry.json()).resolves.toMatchObject({
+      ok: false,
+      ignored: true,
+      deduped: true,
+      reason: "Bek is not configured for this Slack channel.",
+      slackRetry: {
+        retryNum: 1,
+        reason: "http_timeout",
+      },
+    });
+  });
+
   it("dedupes Slack event IDs across API app instances sharing persisted state", async () => {
     const store = new BekStore();
     const payload = {
@@ -2624,13 +2691,25 @@ describe("Bek API", () => {
     const missingChannel = await app.request("/api/slack/commands", {
       method: "POST",
       body: missingChannelBody,
-      headers: signedSlackHeaders(
-        missingChannelBody,
-        Math.floor(Date.now() / 1000).toString(),
-        "application/x-www-form-urlencoded",
-      ),
+      headers: {
+        ...signedSlackHeaders(
+          missingChannelBody,
+          Math.floor(Date.now() / 1000).toString(),
+          "application/x-www-form-urlencoded",
+        ),
+        ...slackRetryHeaders("1", "http_error"),
+      },
     });
     expect(missingChannel.status).toBe(400);
+    expect(missingChannel.headers.get("x-slack-no-retry")).toBe("1");
+    await expect(missingChannel.json()).resolves.toMatchObject({
+      ok: false,
+      error: "Slack command payload is missing channel_id.",
+      slackRetry: {
+        retryNum: 1,
+        reason: "http_error",
+      },
+    });
 
     const unknownChannelBody = slackForm({
       command: "/bek",

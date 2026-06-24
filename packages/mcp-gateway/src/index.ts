@@ -107,6 +107,95 @@ export interface CreateMcpProxyRequestInput {
   createdAt?: string | undefined;
 }
 
+export interface McpTenantToolAllowlistRecord {
+  tenantId: string;
+  resource: string;
+  expiresAt?: string | undefined;
+  reason?: string | undefined;
+}
+
+export type McpApprovalStatus = "approved" | "denied" | "expired" | "pending";
+
+export interface McpToolApproval {
+  id: string;
+  requestId: string;
+  status: McpApprovalStatus;
+  decidedByPrincipalId?: string | undefined;
+  decidedAt?: string | undefined;
+}
+
+export interface McpTransportInvocation {
+  request: McpProxyRequest;
+  server: RegisteredMcpServer;
+  schema: CachedToolSchema;
+}
+
+export interface McpTransport {
+  execute(invocation: McpTransportInvocation): Promise<unknown> | unknown;
+}
+
+export type MockMcpTransportHandler = (
+  invocation: McpTransportInvocation,
+) => Promise<unknown> | unknown;
+
+export type McpProxyExecutionBlockReason =
+  | "approval_not_approved"
+  | "approval_required"
+  | "schema_mismatch"
+  | "schema_unavailable"
+  | "server_unavailable"
+  | "tenant_not_allowlisted"
+  | "transport_error";
+
+export interface ExecuteMcpProxyRequestInput {
+  tenantId: string;
+  request: McpProxyRequest;
+  server: RegisteredMcpServer;
+  schema: CachedToolSchema;
+  allowlist: McpTenantToolAllowlist;
+  transport: McpTransport;
+  approval?: McpToolApproval | undefined;
+  executedAt?: string | undefined;
+}
+
+export interface McpProxyExecutionBlocked {
+  status: "blocked";
+  reason: McpProxyExecutionBlockReason;
+  message: string;
+  tenantId: string;
+  requestId: string;
+  runId: string;
+  resource: string;
+  risk: RiskLevel;
+  requiresApproval: boolean;
+}
+
+export interface McpProxyExecutionSuccess {
+  status: "executed";
+  tenantId: string;
+  requestId: string;
+  runId: string;
+  serverId: string;
+  toolName: string;
+  resource: string;
+  risk: RiskLevel;
+  requiresApproval: boolean;
+  output: unknown;
+  outputHash: string;
+  redacted: boolean;
+  executedAt: string;
+  approvalId?: string | undefined;
+}
+
+export type McpProxyExecutionResult =
+  | McpProxyExecutionBlocked
+  | McpProxyExecutionSuccess;
+
+export interface McpRedactionResult {
+  value: unknown;
+  redacted: boolean;
+}
+
 export interface ManifestOptions {
   serverRegistry?: McpServerRegistry | undefined;
   schemaCache?: ToolSchemaCache | undefined;
@@ -215,6 +304,91 @@ export class ToolSchemaCache {
       candidates.filter((schema) => schema.hash !== hash),
     );
     return cloneSchema(active);
+  }
+}
+
+export class McpTenantToolAllowlist {
+  private entries = new Map<
+    string,
+    Map<string, McpTenantToolAllowlistRecord>
+  >();
+
+  constructor(entries: McpTenantToolAllowlistRecord[] = []) {
+    for (const entry of entries) {
+      this.allow(entry);
+    }
+  }
+
+  allow(entry: McpTenantToolAllowlistRecord): McpTenantToolAllowlistRecord {
+    const normalized = normalizeAllowlistRecord(entry);
+    const tenantEntries =
+      this.entries.get(normalized.tenantId) ??
+      new Map<string, McpTenantToolAllowlistRecord>();
+    tenantEntries.set(normalized.resource, normalized);
+    this.entries.set(normalized.tenantId, tenantEntries);
+    return cloneAllowlistRecord(normalized);
+  }
+
+  revoke(tenantId: string, resource: string): boolean {
+    return this.entries.get(tenantId)?.delete(resource) ?? false;
+  }
+
+  canInvoke(
+    tenantId: string,
+    resource: string,
+    at: string | Date = new Date(),
+  ): boolean {
+    const entry = this.entries.get(tenantId)?.get(resource);
+    if (!entry) {
+      return false;
+    }
+    if (!entry.expiresAt) {
+      return true;
+    }
+    return Date.parse(entry.expiresAt) > timestampMs(at);
+  }
+
+  list(tenantId?: string | undefined): McpTenantToolAllowlistRecord[] {
+    const entries = tenantId
+      ? [...(this.entries.get(tenantId)?.values() ?? [])]
+      : [...this.entries.values()].flatMap((tenantEntries) => [
+          ...tenantEntries.values(),
+        ]);
+    return entries.map((entry) => cloneAllowlistRecord(entry));
+  }
+}
+
+export class MockMcpTransport implements McpTransport {
+  private handlers = new Map<string, MockMcpTransportHandler>();
+
+  constructor(handlers: Record<string, MockMcpTransportHandler> = {}) {
+    for (const [resource, handler] of Object.entries(handlers)) {
+      this.register(resource, handler);
+    }
+  }
+
+  register(resource: string, handler: MockMcpTransportHandler): this {
+    if (!resource.startsWith("mcp:")) {
+      throw new Error(
+        `Mock MCP resource must start with mcp:, got ${resource}.`,
+      );
+    }
+    this.handlers.set(resource, handler);
+    return this;
+  }
+
+  execute(invocation: McpTransportInvocation): Promise<unknown> | unknown {
+    const handler = this.handlers.get(invocation.request.resource);
+    if (!handler) {
+      throw new Error(
+        `No mock MCP handler registered for ${invocation.request.resource}.`,
+      );
+    }
+    return handler({
+      request: cloneProxyRequest(invocation.request),
+      server: cloneServer(invocation.server),
+      schema: cloneSchema(invocation.schema),
+    });
   }
 }
 
@@ -369,6 +543,79 @@ export function createMcpProxyRequest(
   return Object.freeze(request);
 }
 
+export async function executeMcpProxyRequest(
+  input: ExecuteMcpProxyRequestInput,
+): Promise<McpProxyExecutionResult> {
+  const coherenceBlock = validateExecutableRequest(input);
+  if (coherenceBlock) {
+    return coherenceBlock;
+  }
+
+  const executedAt = input.executedAt ?? new Date().toISOString();
+  if (
+    !input.allowlist.canInvoke(
+      input.tenantId,
+      input.request.resource,
+      executedAt,
+    )
+  ) {
+    return blockExecution(
+      input,
+      "tenant_not_allowlisted",
+      `Tenant ${input.tenantId} is not allowlisted for ${input.request.resource}.`,
+    );
+  }
+
+  const approvalBlock = validateMcpApproval(input);
+  if (approvalBlock) {
+    return approvalBlock;
+  }
+
+  let rawOutput: unknown;
+  try {
+    rawOutput = await input.transport.execute({
+      request: cloneProxyRequest(input.request),
+      server: cloneServer(input.server),
+      schema: cloneSchema(input.schema),
+    });
+  } catch (error) {
+    return blockExecution(
+      input,
+      "transport_error",
+      error instanceof Error
+        ? error.message
+        : "MCP transport failed before returning output.",
+    );
+  }
+
+  const redacted = redactMcpCredentialReferences(rawOutput);
+  const result: McpProxyExecutionSuccess = {
+    status: "executed",
+    tenantId: input.tenantId,
+    requestId: input.request.id,
+    runId: input.request.runId,
+    serverId: input.request.serverId,
+    toolName: input.request.toolName,
+    resource: input.request.resource,
+    risk: input.request.risk,
+    requiresApproval: requiresApprovalForRequest(input.request),
+    output: redacted.value,
+    outputHash: hashUnknown(redacted.value),
+    redacted: redacted.redacted,
+    executedAt,
+  };
+  if (input.approval?.status === "approved") {
+    result.approvalId = input.approval.id;
+  }
+  return Object.freeze(result);
+}
+
+export function redactMcpCredentialReferences(
+  value: unknown,
+): McpRedactionResult {
+  return redactUnknownMcpOutput(value);
+}
+
 export function parseMcpResource(resource: string): {
   serverId: string;
   toolName: string;
@@ -393,6 +640,104 @@ export function parseMcpResource(resource: string): {
 
 export function resourceFromTool(serverId: string, toolName: string): string {
   return `mcp:${serverId}/${toolName}`;
+}
+
+function validateExecutableRequest(
+  input: ExecuteMcpProxyRequestInput,
+): McpProxyExecutionBlocked | undefined {
+  if (input.server.status !== "active") {
+    return blockExecution(
+      input,
+      "server_unavailable",
+      `MCP server ${input.server.id} is ${input.server.status}.`,
+    );
+  }
+
+  if (input.schema.status !== "active") {
+    return blockExecution(
+      input,
+      "schema_unavailable",
+      `MCP tool ${input.schema.resource} is ${input.schema.status}.`,
+    );
+  }
+
+  if (
+    input.schema.serverId !== input.server.id ||
+    input.request.serverId !== input.server.id ||
+    input.request.toolName !== input.schema.toolName ||
+    input.request.resource !== input.schema.resource ||
+    input.request.schemaHash !== input.schema.hash
+  ) {
+    return blockExecution(
+      input,
+      "schema_mismatch",
+      `MCP request ${input.request.id} does not match the active server/schema contract.`,
+    );
+  }
+
+  return undefined;
+}
+
+function validateMcpApproval(
+  input: ExecuteMcpProxyRequestInput,
+): McpProxyExecutionBlocked | undefined {
+  if (!requiresApprovalForRequest(input.request)) {
+    return undefined;
+  }
+
+  if (!input.approval) {
+    return blockExecution(
+      input,
+      "approval_required",
+      `MCP request ${input.request.id} requires approval before execution.`,
+    );
+  }
+
+  if (input.approval.requestId !== input.request.id) {
+    return blockExecution(
+      input,
+      "approval_not_approved",
+      `Approval ${input.approval.id} was issued for a different MCP request.`,
+    );
+  }
+
+  if (input.approval.status === "approved") {
+    return undefined;
+  }
+
+  return blockExecution(
+    input,
+    input.approval.status === "pending"
+      ? "approval_required"
+      : "approval_not_approved",
+    `Approval ${input.approval.id} is ${input.approval.status}.`,
+  );
+}
+
+function blockExecution(
+  input: ExecuteMcpProxyRequestInput,
+  reason: McpProxyExecutionBlockReason,
+  message: string,
+): McpProxyExecutionBlocked {
+  return Object.freeze({
+    status: "blocked",
+    reason,
+    message,
+    tenantId: input.tenantId,
+    requestId: input.request.id,
+    runId: input.request.runId,
+    resource: input.request.resource,
+    risk: input.request.risk,
+    requiresApproval: requiresApprovalForRequest(input.request),
+  });
+}
+
+function requiresApprovalForRequest(request: McpProxyRequest): boolean {
+  return (
+    request.requiresApproval ||
+    request.decision === "ask" ||
+    requiresApprovalForRisk(request.risk)
+  );
 }
 
 function descriptorFromGrant(
@@ -507,6 +852,61 @@ function cloneSchema(schema: CachedToolSchema): CachedToolSchema {
   return clone;
 }
 
+function cloneProxyRequest(request: McpProxyRequest): McpProxyRequest {
+  return Object.freeze({
+    id: request.id,
+    runId: request.runId,
+    serverId: request.serverId,
+    toolName: request.toolName,
+    resource: request.resource,
+    decision: request.decision,
+    risk: request.risk,
+    requiresApproval: request.requiresApproval,
+    input: cloneRecord(request.input),
+    inputHash: request.inputHash,
+    schemaHash: request.schemaHash,
+    createdAt: request.createdAt,
+  });
+}
+
+function normalizeAllowlistRecord(
+  entry: McpTenantToolAllowlistRecord,
+): McpTenantToolAllowlistRecord {
+  const tenantId = normalizeRequiredString(entry.tenantId, "tenantId");
+  const resource = normalizeRequiredString(entry.resource, "resource");
+  if (!resource.startsWith("mcp:")) {
+    throw new Error(
+      `Allowlisted MCP resource must start with mcp:, got ${resource}.`,
+    );
+  }
+
+  const normalized: McpTenantToolAllowlistRecord = { tenantId, resource };
+  if (entry.expiresAt) {
+    timestampMs(entry.expiresAt);
+    normalized.expiresAt = entry.expiresAt;
+  }
+  if (entry.reason?.trim()) {
+    normalized.reason = entry.reason.trim();
+  }
+  return normalized;
+}
+
+function cloneAllowlistRecord(
+  entry: McpTenantToolAllowlistRecord,
+): McpTenantToolAllowlistRecord {
+  const clone: McpTenantToolAllowlistRecord = {
+    tenantId: entry.tenantId,
+    resource: entry.resource,
+  };
+  if (entry.expiresAt) {
+    clone.expiresAt = entry.expiresAt;
+  }
+  if (entry.reason) {
+    clone.reason = entry.reason;
+  }
+  return clone;
+}
+
 function toolNameFromResource(resource: string): string {
   return resource
     .replace(/^mcp:/, "")
@@ -530,6 +930,82 @@ function hashUnknown(value: unknown): string {
     .digest("hex");
 }
 
+function redactUnknownMcpOutput(value: unknown): McpRedactionResult {
+  if (typeof value === "string") {
+    const redacted = redactMcpCredentialText(value);
+    return { value: redacted, redacted: redacted !== value };
+  }
+
+  if (Array.isArray(value)) {
+    let redacted = false;
+    const entries = value.map((entry) => {
+      const next = redactUnknownMcpOutput(entry);
+      redacted ||= next.redacted;
+      return next.value;
+    });
+    return { value: entries, redacted };
+  }
+
+  if (value && typeof value === "object") {
+    let redacted = false;
+    const entries = Object.entries(value as Record<string, unknown>).map(
+      ([key, entry]) => {
+        if (isSensitiveMcpOutputFieldName(key)) {
+          redacted = true;
+          return [key, "[redacted:mcp-credential]"];
+        }
+
+        const next = redactUnknownMcpOutput(entry);
+        redacted ||= next.redacted;
+        return [key, next.value];
+      },
+    );
+    return { value: Object.fromEntries(entries), redacted };
+  }
+
+  return { value, redacted: false };
+}
+
+function redactMcpCredentialText(value: string): string {
+  return MCP_CREDENTIAL_REDACTION_PATTERNS.reduce(
+    (redacted, { pattern, replacement }) =>
+      redacted.replace(ensureGlobal(pattern), replacement),
+    value,
+  );
+}
+
+function isSensitiveMcpOutputFieldName(fieldName: string): boolean {
+  return /token|secret|password|passphrase|api[_-]?key|private[_-]?key|authorization|credential[_-]?(secret|value|ref)|refresh[_-]?token|access[_-]?token|bot[_-]?token|signing[_-]?secret/i.test(
+    fieldName
+      .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+      .replace(/\s+/g, "_")
+      .toLowerCase(),
+  );
+}
+
+function ensureGlobal(pattern: RegExp): RegExp {
+  if (pattern.global) {
+    return pattern;
+  }
+  return new RegExp(pattern.source, `${pattern.flags}g`);
+}
+
+function normalizeRequiredString(value: string, fieldName: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new Error(`${fieldName} is required.`);
+  }
+  return normalized;
+}
+
+function timestampMs(value: string | Date): number {
+  const timestamp = value instanceof Date ? value.getTime() : Date.parse(value);
+  if (Number.isNaN(timestamp)) {
+    throw new Error(`Invalid timestamp ${String(value)}.`);
+  }
+  return timestamp;
+}
+
 function stableJson(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map((item) => stableJson(item));
@@ -548,3 +1024,43 @@ function stableJson(value: unknown): unknown {
 function cloneRecord(record: Record<string, unknown>): Record<string, unknown> {
   return stableJson(record) as Record<string, unknown>;
 }
+
+const MCP_CREDENTIAL_REDACTION_PATTERNS: Array<{
+  pattern: RegExp;
+  replacement: string;
+}> = [
+  {
+    pattern:
+      /\b(?:bek-local-vault|vault|aws-sm|aws-secretsmanager|gcp-secret-manager|azure-keyvault|secret):\/\/[^\s"'`),]+/gi,
+    replacement: "[redacted:mcp-credential-ref]",
+  },
+  {
+    pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,
+    replacement: "[redacted:mcp-secret]",
+  },
+  {
+    pattern: /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g,
+    replacement: "[redacted:mcp-secret]",
+  },
+  {
+    pattern: /\bgithub_pat_[A-Za-z0-9_]{22,}\b/g,
+    replacement: "[redacted:mcp-secret]",
+  },
+  {
+    pattern: /\bsk-[A-Za-z0-9_-]{20,}\b/g,
+    replacement: "[redacted:mcp-secret]",
+  },
+  {
+    pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
+    replacement: "[redacted:mcp-secret]",
+  },
+  {
+    pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b/gi,
+    replacement: "[redacted:mcp-secret]",
+  },
+  {
+    pattern:
+      /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+    replacement: "[redacted:mcp-secret]",
+  },
+];
