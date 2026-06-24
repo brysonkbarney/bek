@@ -209,6 +209,39 @@ describe("Bek worker advancement state", () => {
   });
 });
 
+describe("Bek ingress delivery state", () => {
+  it("records, redacts, finds, and removes durable Slack delivery keys", () => {
+    const store = new BekStore();
+
+    const delivery = store.recordIngressDelivery({
+      key: "slack:event:T123:Ev123",
+      kind: "slack.event",
+      status: "processed",
+      runId: "run_demo",
+      response: {
+        ok: true,
+        token: "xoxb-this-secret-token-should-redact",
+      },
+    });
+
+    expect(delivery).toMatchObject({
+      provider: "slack",
+      kind: "slack.event",
+      key: "slack:event:T123:Ev123",
+      runId: "run_demo",
+      response: {
+        ok: true,
+        token: "[redacted:field]",
+      },
+    });
+    expect(store.findIngressDelivery(delivery.key)).toMatchObject({
+      id: delivery.id,
+    });
+    expect(store.removeIngressDelivery(delivery.key)).toBe(true);
+    expect(store.findIngressDelivery(delivery.key)).toBeUndefined();
+  });
+});
+
 describe("Bek admin control plane store", () => {
   it("updates the single visible agent without changing the @bek handle", () => {
     const store = new BekStore();
@@ -336,5 +369,25 @@ describe("Bek store persistence hook", () => {
 
     store.updateAgent({ name: "Bek Persisted" });
     await expect(store.flushChanges()).rejects.toThrow(/database unavailable/i);
+  });
+
+  it("stops queued persistence writes after the first failure", async () => {
+    let writes = 0;
+    const store = new BekStore(undefined, {
+      onSnapshotChanged: async () => {
+        writes += 1;
+        throw new Error("database unavailable");
+      },
+    });
+
+    store.updateAgent({ name: "Bek One" });
+    store.recordIngressDelivery({
+      key: "slack:event:T123:EvPersistence",
+      kind: "slack.event",
+      status: "processed",
+    });
+
+    await expect(store.flushChanges()).rejects.toThrow(/database unavailable/i);
+    expect(writes).toBe(1);
   });
 });

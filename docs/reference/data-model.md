@@ -34,6 +34,8 @@ Migration-safe UUID plan:
 
 - `runs`: durable unit of work with trigger, requester, place, model policy, runtime profile, status, and cost totals.
 - `run_events`: timeline events shown to admins and users.
+- `ingress_deliveries`: idempotency records for Slack events, slash commands,
+  and interactivity callbacks, keyed uniquely per org.
 - `connector_installs`: Slack, GitHub, model provider, MCP, sandbox, and custom connector installs.
 - `credential_metadata`: secret broker references and rotation metadata only; raw secrets do not belong in Postgres.
 - `audit_events`: append-only side-effect and governance log entries.

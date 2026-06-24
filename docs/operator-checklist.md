@@ -38,11 +38,12 @@ the current OSS spine.
 - [ ] Set OAuth variables before testing `/api/slack/install`.
 - [ ] Set `BEK_SLACK_OAUTH_EXCHANGE=true` outside production when testing real
       OAuth code exchange.
+- [ ] Use `BEK_STORAGE=postgres` before real Slack retries matter; Slack
+      delivery dedupe is persisted in the Bek snapshot.
 - [ ] Blocked: store exchanged bot tokens in the credential broker before broad
       real installs.
 - [ ] Blocked: persist Slack workspace, channel, team, and user/principal
       mappings.
-- [ ] Blocked: persist durable Slack delivery dedupe instead of in-memory keys.
 
 ## GitHub And Repo Work
 

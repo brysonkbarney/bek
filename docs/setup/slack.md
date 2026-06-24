@@ -32,14 +32,15 @@ It can:
 - parse Bek approval button actions and apply them when the Slack user is mapped to a Bek principal,
 - build Slack Web API message payloads for queued runs, approval requests, approval decisions, and final answers,
 - provide a typed Slack Web API client interface plus a fake in-memory client for tests,
-- build durable Slack ingress keys for events, slash commands, and approval interactions.
+- build durable Slack ingress keys for events, slash commands, and approval interactions,
+- persist handled delivery keys in the Bek snapshot so retries dedupe across API app instances and Postgres-backed restarts.
 
 When exchange is enabled, the callback returns redacted install metadata for
 verification. Bek does not persist the bot token yet, and `SLACK_BOT_TOKEN` is
 reserved until live Slack Web API posting is wired.
 
-It does not yet include bot token vault storage, real Slack Web API posting,
-persistent durable-event storage, or persistent Slack user/principal mapping.
+It does not yet include bot token vault storage, real Slack Web API posting, or
+persistent Slack user/principal mapping.
 
 ## Create A Slack App
 
@@ -142,6 +143,5 @@ Before inviting Bek broadly, decide:
 
 - Bot token storage through a credential broker.
 - Thread replies and real Slack Web API message posting.
-- Persistent durable Slack event dedupe storage.
 - Persistent Slack user/principal mapping.
 - Admin UI for channel discovery and bundle attachment.

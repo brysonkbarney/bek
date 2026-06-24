@@ -8,6 +8,13 @@
       "when": 1782327889998,
       "tag": "0000_nosy_sentinel",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1782330771191,
+      "tag": "0001_keen_tarantula",
+      "breakpoints": true
     }
   ]
 }

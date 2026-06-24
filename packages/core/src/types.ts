@@ -203,6 +203,25 @@ export interface ApprovalRequest {
   decidedAt?: ISODate;
 }
 
+export type IngressDeliveryKind =
+  | "slack.event"
+  | "slack.command"
+  | "slack.interaction";
+
+export interface IngressDelivery {
+  id: string;
+  orgId: string;
+  provider: "slack";
+  kind: IngressDeliveryKind;
+  key: string;
+  status: "processed" | "ignored";
+  runId?: string;
+  approvalId?: string;
+  response?: Record<string, unknown>;
+  createdAt: ISODate;
+  updatedAt: ISODate;
+}
+
 export interface BekSnapshot {
   org: Organization;
   principals: Principal[];
@@ -216,4 +235,5 @@ export interface BekSnapshot {
   runs: Run[];
   events: RunEvent[];
   approvals: ApprovalRequest[];
+  ingressDeliveries: IngressDelivery[];
 }

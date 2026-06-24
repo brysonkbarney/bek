@@ -1500,6 +1500,36 @@ describe("Bek API", () => {
     await expect(second.json()).resolves.toMatchObject({ deduped: true });
   });
 
+  it("dedupes Slack event IDs across API app instances sharing persisted state", async () => {
+    const store = new BekStore();
+    const payload = {
+      event_id: "EvRestart",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek hello after restart",
+      },
+    };
+
+    const first = await createApp(store).request("/api/slack/events", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    expect(first.status).toBe(200);
+    const firstJson = (await first.json()) as { runId: string };
+
+    const second = await createApp(store).request("/api/slack/events", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    expect(second.status).toBe(200);
+    await expect(second.json()).resolves.toMatchObject({
+      deduped: true,
+      runId: firstJson.runId,
+    });
+  });
+
   it("does not dedupe Slack event retries before persistence succeeds", async () => {
     let flushes = 0;
     const store = new BekStore(undefined, {
@@ -1540,7 +1570,7 @@ describe("Bek API", () => {
       ok: true,
       runId: expect.any(String),
     });
-    expect(flushes).toBe(2);
+    expect(flushes).toBeGreaterThanOrEqual(2);
   });
 
   it("rejects Slack approval interactions without an approver mapping", async () => {
@@ -1724,6 +1754,45 @@ describe("Bek API", () => {
       method: "POST",
       body: retryBody,
       headers: retryHeaders,
+    });
+    expect(second.status).toBe(200);
+    await expect(second.json()).resolves.toMatchObject({
+      runId: firstJson.runId,
+      deduped: true,
+    });
+  });
+
+  it("dedupes Slack slash commands across API app instances", async () => {
+    const store = new BekStore();
+    const retryBody = slackForm({
+      command: "/bek",
+      channel_id: "C_CHECKOUT",
+      user_id: "U123",
+      text: "summarize the restart",
+      team_id: "T_DEMO",
+      trigger_id: "restart.42",
+    });
+
+    const first = await createApp(store).request("/api/slack/commands", {
+      method: "POST",
+      body: retryBody,
+      headers: signedSlackHeaders(
+        retryBody,
+        Math.floor(Date.now() / 1000).toString(),
+        "application/x-www-form-urlencoded",
+      ),
+    });
+    expect(first.status).toBe(200);
+    const firstJson = (await first.json()) as { runId: string };
+
+    const second = await createApp(store).request("/api/slack/commands", {
+      method: "POST",
+      body: retryBody,
+      headers: signedSlackHeaders(
+        retryBody,
+        Math.floor(Date.now() / 1000).toString(),
+        "application/x-www-form-urlencoded",
+      ),
     });
     expect(second.status).toBe(200);
     await expect(second.json()).resolves.toMatchObject({

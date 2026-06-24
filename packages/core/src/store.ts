@@ -2,6 +2,7 @@ import { createSeedSnapshot } from "./seed";
 import { bundlesForPlace, evaluatePolicy } from "./policy";
 import { createApprovalRequest, createRun, createRunEvent } from "./runs";
 import { createId } from "./ids";
+import { redactUnknown } from "./security";
 import type {
   AccessBundle,
   AgentIdentity,
@@ -9,6 +10,8 @@ import type {
   BekSnapshot,
   CapabilityGrant,
   CapabilityKind,
+  IngressDelivery,
+  IngressDeliveryKind,
   ModelPolicy,
   PlaceScope,
   Run,
@@ -44,6 +47,20 @@ export interface SetRunStatusInput {
   now?: string | undefined;
 }
 
+export interface RecordIngressDeliveryInput {
+  key: string;
+  kind: IngressDeliveryKind;
+  status: IngressDelivery["status"];
+  runId?: string | undefined;
+  approvalId?: string | undefined;
+  response?: Record<string, unknown> | undefined;
+  now?: string | undefined;
+}
+
+export interface RemoveIngressDeliveryOptions {
+  recordChange?: boolean | undefined;
+}
+
 export interface BekStoreOptions {
   onSnapshotChanged?:
     | ((snapshot: BekSnapshot) => Promise<void> | void)
@@ -77,6 +94,13 @@ export class BekStore {
       this.persistenceError = undefined;
       throw error;
     }
+  }
+
+  findIngressDelivery(key: string): IngressDelivery | undefined {
+    const delivery = this.snapshot.ingressDeliveries.find(
+      (candidate) => candidate.key === key,
+    );
+    return delivery ? structuredClone(delivery) : undefined;
   }
 
   updateAgent(input: {
@@ -606,6 +630,72 @@ export class BekStore {
     return structuredClone(approval);
   }
 
+  recordIngressDelivery(input: RecordIngressDeliveryInput): IngressDelivery {
+    const now = input.now ?? new Date().toISOString();
+    const existing = this.snapshot.ingressDeliveries.find(
+      (candidate) => candidate.key === input.key,
+    );
+    if (existing) {
+      existing.status = input.status;
+      existing.updatedAt = now;
+      if (input.runId !== undefined) {
+        existing.runId = input.runId;
+      }
+      if (input.approvalId !== undefined) {
+        existing.approvalId = input.approvalId;
+      }
+      if (input.response !== undefined) {
+        existing.response = redactUnknown(input.response) as Record<
+          string,
+          unknown
+        >;
+      }
+      this.recordChange();
+      return structuredClone(existing);
+    }
+
+    const delivery: IngressDelivery = {
+      id: createId("delivery"),
+      orgId: this.snapshot.org.id,
+      provider: "slack",
+      kind: input.kind,
+      key: input.key,
+      status: input.status,
+      createdAt: now,
+      updatedAt: now,
+    };
+    if (input.runId !== undefined) {
+      delivery.runId = input.runId;
+    }
+    if (input.approvalId !== undefined) {
+      delivery.approvalId = input.approvalId;
+    }
+    if (input.response !== undefined) {
+      delivery.response = redactUnknown(input.response) as Record<
+        string,
+        unknown
+      >;
+    }
+    this.snapshot.ingressDeliveries.unshift(delivery);
+    this.recordChange();
+    return structuredClone(delivery);
+  }
+
+  removeIngressDelivery(
+    key: string,
+    options: RemoveIngressDeliveryOptions = {},
+  ): boolean {
+    const before = this.snapshot.ingressDeliveries.length;
+    this.snapshot.ingressDeliveries = this.snapshot.ingressDeliveries.filter(
+      (candidate) => candidate.key !== key,
+    );
+    const removed = this.snapshot.ingressDeliveries.length !== before;
+    if (removed && options.recordChange !== false) {
+      this.recordChange();
+    }
+    return removed;
+  }
+
   appendRunEvent(input: AppendRunEventInput): RunEvent {
     const run = this.findRun(input.runId);
     const event = createRunEvent(
@@ -668,7 +758,12 @@ export class BekStore {
 
     const snapshot = this.read();
     this.persistenceQueue = this.persistenceQueue
-      .then(() => this.onSnapshotChanged?.(snapshot))
+      .then(() => {
+        if (this.persistenceError) {
+          return;
+        }
+        return this.onSnapshotChanged?.(snapshot);
+      })
       .catch((error: unknown) => {
         this.persistenceError =
           error instanceof Error ? error : new Error(String(error));

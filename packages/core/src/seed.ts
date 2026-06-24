@@ -238,5 +238,6 @@ export function createSeedSnapshot(
       },
     ],
     approvals: [],
+    ingressDeliveries: [],
   };
 }

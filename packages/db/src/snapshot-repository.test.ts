@@ -66,6 +66,30 @@ describe("Bek snapshot persistence mapping", () => {
     );
   });
 
+  it("round-trips durable ingress delivery records", () => {
+    const snapshot: BekSnapshot = {
+      ...createSeedSnapshot("2026-01-02T03:04:05.000Z"),
+      ingressDeliveries: [
+        {
+          id: "delivery_slack_event",
+          orgId: "org_demo",
+          provider: "slack",
+          kind: "slack.event",
+          key: "slack:event:T_DEMO:Ev123",
+          status: "processed",
+          runId: "run_demo",
+          response: { ok: true, runId: "run_demo" },
+          createdAt: "2026-01-02T03:04:05.000Z",
+          updatedAt: "2026-01-02T03:04:06.000Z",
+        },
+      ],
+    };
+
+    expect(rowsToSnapshot(snapshotToRows(snapshot)).ingressDeliveries).toEqual(
+      snapshot.ingressDeliveries,
+    );
+  });
+
   it("rejects snapshots with multiple visible agents", () => {
     const rows = snapshotToRows(createSeedSnapshot());
     rows.agents.push({

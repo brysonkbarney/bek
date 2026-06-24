@@ -8,6 +8,7 @@ Bek should launch in stages. The current repo is good enough to show the product
 - Admin console covers setup, channels, access bundles, runs, run detail, approvals, connectors, models, memory stance, audit, and settings.
 - API supports seeded runs, approvals, audit events, policy evaluation, Slack event ingress, Slack OAuth state/exchange, admin auth when configured, signed Slack request verification, and Postgres-backed snapshot persistence when configured.
 - API can run in `BEK_RUN_ADVANCEMENT=worker_local` mode, where API/Slack-created runs are enqueued, drained through the local worker runtime service, paused for approvals, resumed after approval, and reflected back into run status/events.
+- Slack events, slash commands, and interactivity callbacks persist delivery keys in the Bek snapshot so retries dedupe across API app instances and Postgres-backed restarts.
 - Tests cover policy deny precedence, wildcard scoping, Slack signature tamper/replay, approval tamper/self-approval/double approval/expiry, API behavior, model routing, MCP manifest generation, and redaction.
 - DB, runtime, sandbox, model-router, MCP, Slack, core, API, and web package contracts exist.
 - Release candidates should pass `pnpm format:check` and `pnpm check` before
@@ -52,7 +53,7 @@ These product items block broad design-partner rollout, not a code-only release 
 - Postgres-backed store is available for persisted mode.
 - Worker-local mode owns API/Slack run advancement in-process for the local product loop.
 - Durable queue-backed worker owns claim, heartbeat, retry, cancellation, approval resume, and run settlement across API/worker restarts.
-- Slack event dedupe is durable instead of in-memory.
+- Slack delivery dedupe is snapshot-persisted for events, slash commands, and interactivity.
 - API has typed errors and request IDs.
 - Docker Compose starts all local dependencies.
 - GitHub App package can validate config, verify webhooks, parse repo resources, and generate PR proposals without network calls.

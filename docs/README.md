@@ -31,8 +31,8 @@ The repository currently ships a working local product spine:
 - React admin console for setup, channels, access bundles, runs, approvals,
   connectors, model policy, memory stance, audit, and settings.
 - Slack event, command, interactivity, signature, OAuth-state, and OAuth code
-  exchange foundations; exchanged install tokens are redacted and not stored
-  yet.
+  exchange foundations; Slack delivery dedupe is snapshot-persisted, while
+  exchanged install tokens are redacted and not stored yet.
 - GitHub App, model-router, MCP gateway, worker, runtime, sandbox, and
   Drizzle/Postgres contracts.
 - Docker Compose for local Postgres, Valkey, and MinIO dependencies.

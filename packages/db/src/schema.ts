@@ -626,6 +626,35 @@ export const auditEvents = pgTable(
   ],
 );
 
+export const ingressDeliveries = pgTable(
+  "ingress_deliveries",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull(),
+    kind: text("kind").notNull(),
+    key: text("key").notNull(),
+    status: text("status").notNull(),
+    runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
+    approvalId: text("approval_id").references(() => approvals.id, {
+      onDelete: "set null",
+    }),
+    response: jsonObject("response"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("ingress_deliveries_org_key_unique").on(table.orgId, table.key),
+    index("ingress_deliveries_org_created_idx").on(
+      table.orgId,
+      table.createdAt,
+    ),
+    index("ingress_deliveries_run_idx").on(table.runId),
+  ],
+);
+
 export const modelUsage = pgTable(
   "model_usage",
   {
@@ -720,6 +749,7 @@ export const orgsRelations = relations(orgs, ({ one, many }) => ({
   connectorInstalls: many(connectorInstalls),
   credentialMetadata: many(credentialMetadata),
   auditEvents: many(auditEvents),
+  ingressDeliveries: many(ingressDeliveries),
 }));
 
 export const principalsRelations = relations(principals, ({ one, many }) => ({
@@ -878,6 +908,7 @@ export const runsRelations = relations(runs, ({ one, many }) => ({
   auditEvents: many(auditEvents),
   modelUsage: many(modelUsage),
   toolUsage: many(toolUsage),
+  ingressDeliveries: many(ingressDeliveries),
 }));
 
 export const runEventsRelations = relations(runEvents, ({ one, many }) => ({
@@ -901,6 +932,24 @@ export const approvalsRelations = relations(approvals, ({ one }) => ({
     relationName: "approval_decided_by",
   }),
 }));
+
+export const ingressDeliveriesRelations = relations(
+  ingressDeliveries,
+  ({ one }) => ({
+    org: one(orgs, {
+      fields: [ingressDeliveries.orgId],
+      references: [orgs.id],
+    }),
+    run: one(runs, {
+      fields: [ingressDeliveries.runId],
+      references: [runs.id],
+    }),
+    approval: one(approvals, {
+      fields: [ingressDeliveries.approvalId],
+      references: [approvals.id],
+    }),
+  }),
+);
 
 export const connectorInstallsRelations = relations(
   connectorInstalls,
@@ -1018,6 +1067,8 @@ export type NewCredentialMetadataRow = InferInsertModel<
 >;
 export type AuditEventRow = InferSelectModel<typeof auditEvents>;
 export type NewAuditEventRow = InferInsertModel<typeof auditEvents>;
+export type IngressDeliveryRow = InferSelectModel<typeof ingressDeliveries>;
+export type NewIngressDeliveryRow = InferInsertModel<typeof ingressDeliveries>;
 export type ModelUsageRow = InferSelectModel<typeof modelUsage>;
 export type NewModelUsageRow = InferInsertModel<typeof modelUsage>;
 export type ToolUsageRow = InferSelectModel<typeof toolUsage>;

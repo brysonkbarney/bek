@@ -6,6 +6,7 @@ import {
   agents,
   approvals,
   grants,
+  ingressDeliveries,
   orgs,
   principals,
   runEvents,
@@ -39,6 +40,7 @@ describe("Bek schema", () => {
       runs,
       runEvents,
       approvals,
+      ingressDeliveries,
     ].map((table) => getTableConfig(table).name);
 
     expect(tableNames).toEqual([
@@ -51,6 +53,7 @@ describe("Bek schema", () => {
       "runs",
       "run_events",
       "approvals",
+      "ingress_deliveries",
     ]);
   });
 
@@ -64,6 +67,9 @@ describe("Bek schema", () => {
     );
     expect(indexNames(runEvents)).toContain("run_events_run_created_idx");
     expect(indexNames(approvals)).toContain("approvals_org_status_idx");
+    expect(indexNames(ingressDeliveries)).toContain(
+      "ingress_deliveries_org_key_unique",
+    );
   });
 });
 

@@ -38,9 +38,6 @@ export function createApp(
   options: CreateAppOptions = {},
 ) {
   const app = new Hono();
-  const seenSlackEventKeys = new Set<string>();
-  const seenSlackCommandRuns = new Map<string, string>();
-  const seenSlackInteractionKeys = new Set<string>();
   const workerController = new LocalWorkerController(
     store,
     options.runAdvancement ?? runAdvancementModeFromEnv(),
@@ -123,6 +120,17 @@ export function createApp(
       await workerController.advanceApproval(approval);
     }
     return latestApproval(store, approval.id);
+  }
+
+  async function flushChangesWithDeliveryRollback(deliveryKey?: string) {
+    try {
+      await store.flushChanges();
+    } catch (error) {
+      if (deliveryKey) {
+        store.removeIngressDelivery(deliveryKey, { recordChange: false });
+      }
+      throw error;
+    }
   }
 
   app.get("/health", (c) =>
@@ -516,7 +524,7 @@ export function createApp(
     }
 
     const interactionKey = buildSlackInteractionDurableKey(interaction);
-    if (interactionKey && seenSlackInteractionKeys.has(interactionKey)) {
+    if (interactionKey && store.findIngressDelivery(interactionKey)) {
       return c.json({
         ...buildSlackEphemeralResponse({
           ok: true,
@@ -558,10 +566,19 @@ export function createApp(
         payloadHash: interaction.payloadHash,
       },
     );
-    await store.flushChanges();
     if (interactionKey) {
-      seenSlackInteractionKeys.add(interactionKey);
+      store.recordIngressDelivery({
+        key: interactionKey,
+        kind: "slack.interaction",
+        status: "processed",
+        approvalId: approval.id,
+        response: {
+          approvalId: approval.id,
+          decision: interaction.decision,
+        },
+      });
     }
+    await flushChangesWithDeliveryRollback(interactionKey);
 
     return c.json({
       ...buildSlackEphemeralResponse({
@@ -590,12 +607,20 @@ export function createApp(
 
     const command = parseSlackCommand(rawBody);
     const commandKey = buildSlackCommandDurableKey(command);
-    const existingRunId = commandKey
-      ? seenSlackCommandRuns.get(commandKey)
+    const existingCommand = commandKey
+      ? store.findIngressDelivery(commandKey)
       : undefined;
-    if (existingRunId) {
+    if (existingCommand) {
+      const response =
+        existingCommand.response ??
+        (existingCommand.runId
+          ? buildSlackCommandQueuedResponse({ runId: existingCommand.runId })
+          : buildSlackCommandIgnoredResponse({
+              reason: "Bek already handled this Slack command.",
+              text: "Bek already handled this Slack command.",
+            }));
       return c.json({
-        ...buildSlackCommandQueuedResponse({ runId: existingRunId }),
+        ...response,
         deduped: true,
       });
     }
@@ -615,12 +640,20 @@ export function createApp(
       (candidate) => candidate.externalId === command.channelId,
     );
     if (!place) {
-      return c.json(
-        buildSlackCommandIgnoredResponse({
-          reason: "Bek is not configured for this Slack channel.",
-          text: "Bek is not configured for this Slack channel yet.",
-        }),
-      );
+      const response = buildSlackCommandIgnoredResponse({
+        reason: "Bek is not configured for this Slack channel.",
+        text: "Bek is not configured for this Slack channel yet.",
+      });
+      if (commandKey) {
+        store.recordIngressDelivery({
+          key: commandKey,
+          kind: "slack.command",
+          status: "ignored",
+          response: { ...response },
+        });
+        await flushChangesWithDeliveryRollback(commandKey);
+      }
+      return c.json(response);
     }
 
     const run = await createRunAndAdvance({
@@ -631,12 +664,19 @@ export function createApp(
       capability: "slack.read",
       resource: `slack:${place.externalId}`,
     });
-    await store.flushChanges();
+    const response = buildSlackCommandQueuedResponse({ runId: run.id });
     if (commandKey) {
-      seenSlackCommandRuns.set(commandKey, run.id);
+      store.recordIngressDelivery({
+        key: commandKey,
+        kind: "slack.command",
+        status: "processed",
+        runId: run.id,
+        response: { ...response },
+      });
     }
+    await flushChangesWithDeliveryRollback(commandKey);
 
-    return c.json(buildSlackCommandQueuedResponse({ runId: run.id }));
+    return c.json(response);
   });
 
   app.post("/api/slack/events", async (c) => {
@@ -652,8 +692,15 @@ export function createApp(
 
     const payload = JSON.parse(rawBody) as Record<string, unknown>;
     const eventKey = buildSlackEventDurableKey(payload);
-    if (eventKey && seenSlackEventKeys.has(eventKey)) {
-      return c.json({ ok: true, deduped: true });
+    const existingEvent = eventKey
+      ? store.findIngressDelivery(eventKey)
+      : undefined;
+    if (existingEvent) {
+      return c.json({
+        ok: true,
+        deduped: true,
+        ...(existingEvent.runId ? { runId: existingEvent.runId } : {}),
+      });
     }
     const event = normalizeSlackEvent(payload);
     if (event.type === "url_verification") {
@@ -666,7 +713,15 @@ export function createApp(
       );
       if (!place) {
         if (eventKey) {
-          seenSlackEventKeys.add(eventKey);
+          store.recordIngressDelivery({
+            key: eventKey,
+            kind: "slack.event",
+            status: "ignored",
+            response: {
+              reason: "Bek is not configured for this Slack channel.",
+            },
+          });
+          await flushChangesWithDeliveryRollback(eventKey);
         }
         return c.json({
           ok: false,
@@ -682,14 +737,25 @@ export function createApp(
         capability: "slack.read",
         resource: `slack:${place.externalId}`,
       });
-      await store.flushChanges();
       if (eventKey) {
-        seenSlackEventKeys.add(eventKey);
+        store.recordIngressDelivery({
+          key: eventKey,
+          kind: "slack.event",
+          status: "processed",
+          runId: run.id,
+        });
       }
+      await flushChangesWithDeliveryRollback(eventKey);
       return c.json({ ok: true, runId: run.id });
     }
     if (eventKey) {
-      seenSlackEventKeys.add(eventKey);
+      store.recordIngressDelivery({
+        key: eventKey,
+        kind: "slack.event",
+        status: "ignored",
+        response: { reason: "Unsupported Slack event type." },
+      });
+      await flushChangesWithDeliveryRollback(eventKey);
     }
     return c.json({ ok: true, ignored: true });
   });

@@ -3,6 +3,7 @@ import type {
   ApprovalRequest,
   BekSnapshot,
   CapabilityGrant,
+  IngressDelivery,
   Principal,
   RunEvent,
 } from "@bek/core";
@@ -16,6 +17,7 @@ import {
   budgetPolicies,
   capabilityProfiles,
   grants,
+  ingressDeliveries,
   modelPolicies,
   orgs,
   places,
@@ -30,6 +32,7 @@ import {
   type BudgetPolicyRow,
   type CapabilityProfileRow,
   type GrantRow,
+  type IngressDeliveryRow,
   type ModelPolicyRow,
   type OrganizationRow,
   type PlaceRow,
@@ -182,6 +185,20 @@ type ApprovalSnapshotRow = Pick<
   | "expiresAt"
   | "decidedAt"
 >;
+type IngressDeliverySnapshotRow = Pick<
+  IngressDeliveryRow,
+  | "id"
+  | "orgId"
+  | "provider"
+  | "kind"
+  | "key"
+  | "status"
+  | "runId"
+  | "approvalId"
+  | "response"
+  | "createdAt"
+  | "updatedAt"
+>;
 
 export interface BekSnapshotRows {
   org: OrgSnapshotRow;
@@ -198,6 +215,7 @@ export interface BekSnapshotRows {
   runs: RunSnapshotRow[];
   events: RunEventSnapshotRow[];
   approvals: ApprovalSnapshotRow[];
+  ingressDeliveries: IngressDeliverySnapshotRow[];
 }
 
 export interface BekSnapshotRepository {
@@ -233,6 +251,7 @@ export class DrizzleBekSnapshotRepository implements BekSnapshotRepository {
       runRows,
       eventRows,
       approvalRows,
+      ingressDeliveryRows,
     ] = await Promise.all([
       this.db
         .select()
@@ -302,6 +321,11 @@ export class DrizzleBekSnapshotRepository implements BekSnapshotRepository {
         .from(approvals)
         .where(eq(approvals.orgId, orgId))
         .orderBy(desc(approvals.createdAt), asc(approvals.id)),
+      this.db
+        .select()
+        .from(ingressDeliveries)
+        .where(eq(ingressDeliveries.orgId, orgId))
+        .orderBy(desc(ingressDeliveries.createdAt), asc(ingressDeliveries.id)),
     ]);
 
     return rowsToSnapshot({
@@ -319,6 +343,7 @@ export class DrizzleBekSnapshotRepository implements BekSnapshotRepository {
       runs: runRows,
       events: eventRows,
       approvals: approvalRows,
+      ingressDeliveries: ingressDeliveryRows,
     });
   }
 
@@ -448,6 +473,19 @@ export function snapshotToRows(
       expiresAt: toDate(approval.expiresAt),
       decidedAt: approval.decidedAt ? toDate(approval.decidedAt) : null,
     })),
+    ingressDeliveries: snapshot.ingressDeliveries.map((delivery) => ({
+      id: delivery.id,
+      orgId: delivery.orgId,
+      provider: delivery.provider,
+      kind: delivery.kind,
+      key: delivery.key,
+      status: delivery.status,
+      runId: delivery.runId ?? null,
+      approvalId: delivery.approvalId ?? null,
+      response: delivery.response ?? {},
+      createdAt: toDate(delivery.createdAt),
+      updatedAt: toDate(delivery.updatedAt),
+    })),
   };
 }
 
@@ -547,6 +585,7 @@ export function rowsToSnapshot(rows: BekSnapshotRows): BekSnapshot {
     })),
     events: rows.events.map(eventFromRow),
     approvals: rows.approvals.map(approvalFromRow),
+    ingressDeliveries: rows.ingressDeliveries.map(ingressDeliveryFromRow),
   };
 }
 
@@ -562,6 +601,7 @@ function assertWritableSnapshot(snapshot: BekSnapshot) {
 }
 
 async function deleteCurrentSnapshotRows(db: MutationDb, orgId: string) {
+  await db.delete(ingressDeliveries).where(eq(ingressDeliveries.orgId, orgId));
   await db.delete(approvals).where(eq(approvals.orgId, orgId));
   await db.delete(runEvents).where(eq(runEvents.orgId, orgId));
   await db.delete(runs).where(eq(runs.orgId, orgId));
@@ -636,6 +676,9 @@ async function insertSnapshotRows(db: MutationDb, rows: BekSnapshotRows) {
   }
   if (rows.approvals.length > 0) {
     await db.insert(approvals).values(rows.approvals);
+  }
+  if (rows.ingressDeliveries.length > 0) {
+    await db.insert(ingressDeliveries).values(rows.ingressDeliveries);
   }
 }
 
@@ -724,6 +767,32 @@ function approvalFromRow(row: ApprovalSnapshotRow): ApprovalRequest {
   }
 
   return approval;
+}
+
+function ingressDeliveryFromRow(
+  row: IngressDeliverySnapshotRow,
+): IngressDelivery {
+  const delivery: IngressDelivery = {
+    id: row.id,
+    orgId: row.orgId,
+    provider: "slack",
+    kind: row.kind as IngressDelivery["kind"],
+    key: row.key,
+    status: row.status as IngressDelivery["status"],
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
+  };
+  if (row.runId) {
+    delivery.runId = row.runId;
+  }
+  if (row.approvalId) {
+    delivery.approvalId = row.approvalId;
+  }
+  const response = nonEmptyRecord(row.response);
+  if (response) {
+    delivery.response = response;
+  }
+  return delivery;
 }
 
 function nonEmptyRecord(
