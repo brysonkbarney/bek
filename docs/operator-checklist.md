@@ -142,6 +142,8 @@ the current OSS spine.
 - [ ] Set `BEK_ADMIN_API_TOKEN` and `BEK_REQUIRE_ADMIN_AUTH=true` outside local
       demo mode.
 - [ ] Set `BEK_ADMIN_ORIGINS` to explicit admin-console origins.
+- [ ] Set `BEK_MAX_REQUEST_BODY_BYTES` to the smallest value that still covers
+      expected Slack callbacks, admin actions, and provider webhooks.
 - [ ] Review [Security Policy](../SECURITY.md) and
       [security entry points](./security/threat-model-entry-points.md).
 - [ ] Confirm request IDs, audit events, and run timelines are sufficient for

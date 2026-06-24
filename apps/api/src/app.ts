@@ -116,6 +116,28 @@ export function createApp(
     }),
   );
   app.use("/api/*", async (c, next) => {
+    const maxBytes = maxRequestBodyBytes();
+    const contentLength = parseContentLength(c.req.header("content-length"));
+    if (contentLength !== undefined && contentLength > maxBytes) {
+      return requestBodyTooLarge(c, maxBytes);
+    }
+
+    const rawBody = await readRequestBodyWithinLimit(c.req.raw, maxBytes);
+    if (rawBody?.ok === false) {
+      return requestBodyTooLarge(c, maxBytes);
+    }
+    if (rawBody?.ok === true) {
+      c.req.raw = new Request(c.req.raw.url, {
+        method: c.req.raw.method,
+        headers: c.req.raw.headers,
+        body: rawBody.text,
+        signal: c.req.raw.signal,
+      });
+    }
+
+    await next();
+  });
+  app.use("/api/*", async (c, next) => {
     if (isSlackPublicCallback(c.req.path)) {
       await next();
       return;
@@ -2292,6 +2314,86 @@ function isAllowedAdminOrigin(origin: string): boolean {
   } catch {
     return false;
   }
+}
+
+const defaultMaxRequestBodyBytes = 256 * 1024;
+
+function maxRequestBodyBytes(
+  value = process.env.BEK_MAX_REQUEST_BODY_BYTES,
+): number {
+  if (!value) {
+    return defaultMaxRequestBodyBytes;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isSafeInteger(parsed) && parsed > 0
+    ? parsed
+    : defaultMaxRequestBodyBytes;
+}
+
+function parseContentLength(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function requestBodyTooLarge(c: Context, maxBytes: number) {
+  if (isSlackPublicCallback(c.req.path)) {
+    markSlackNoRetry(c);
+  }
+  return c.json(
+    {
+      error: "Request body too large.",
+      maxBytes,
+    },
+    413,
+  );
+}
+
+async function readRequestBodyWithinLimit(
+  request: Request,
+  maxBytes: number,
+): Promise<{ ok: true; text: string } | { ok: false } | undefined> {
+  if (!request.body) {
+    return undefined;
+  }
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return { ok: false };
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = concatUint8Arrays(chunks, totalBytes);
+  return { ok: true, text: new TextDecoder().decode(bytes) };
+}
+
+function concatUint8Arrays(
+  chunks: readonly Uint8Array[],
+  totalBytes: number,
+): Uint8Array {
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 function isExpectedBearerToken(

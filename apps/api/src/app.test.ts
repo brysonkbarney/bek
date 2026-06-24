@@ -18,6 +18,7 @@ const managedEnvKeys = [
   "BEK_ADMIN_API_TOKEN",
   "BEK_CREDENTIAL_KEY_ID",
   "BEK_CREDENTIAL_MASTER_KEY",
+  "BEK_MAX_REQUEST_BODY_BYTES",
   "BEK_RUN_ADVANCEMENT",
   "BEK_SANDBOX_PROVIDER",
   "BEK_SLACK_BACKGROUND_DRAIN",
@@ -217,6 +218,61 @@ describe("Bek API", () => {
       ok: true,
       runId: expect.any(String),
     });
+  });
+
+  it("rejects admin API request bodies over the configured limit", async () => {
+    process.env.BEK_MAX_REQUEST_BODY_BYTES = "64";
+    const store = new BekStore();
+    const beforeRuns = store.read().runs.length;
+    const body = JSON.stringify({
+      prompt: `open a PR ${"x".repeat(128)}`,
+      placeScopeId: "place_checkout",
+      capability: "github.pr",
+      resource: "github:redohq/checkout",
+    });
+
+    const res = await createApp(store).request("/api/runs", {
+      method: "POST",
+      body,
+      headers: { "content-type": "application/json" },
+    });
+
+    expect(res.status).toBe(413);
+    await expect(res.json()).resolves.toMatchObject({
+      error: "Request body too large.",
+      maxBytes: 64,
+    });
+    expect(store.read().runs).toHaveLength(beforeRuns);
+  });
+
+  it("rejects oversized Slack callbacks before creating work", async () => {
+    process.env.BEK_MAX_REQUEST_BODY_BYTES = "64";
+    mapSlackTestUser();
+    const store = new BekStore();
+    const beforeRuns = store.read().runs.length;
+    const rawBody = JSON.stringify({
+      event_id: "EvOversizedSlackBody",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: `@bek ${"x".repeat(128)}`,
+      },
+    });
+
+    const res = await createApp(store).request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(res.status).toBe(413);
+    expect(res.headers.get("x-slack-no-retry")).toBe("1");
+    await expect(res.json()).resolves.toMatchObject({
+      error: "Request body too large.",
+      maxBytes: 64,
+    });
+    expect(store.read().runs).toHaveLength(beforeRuns);
   });
 
   it("allows local dev admin origins when Vite falls back to another port", async () => {
