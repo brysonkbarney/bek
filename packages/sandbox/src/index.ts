@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { Buffer } from "node:buffer";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
-import type { RiskLevel } from "@bek/core";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { redactSecrets, type RiskLevel } from "@bek/core";
 
 export type SandboxProviderKind =
   | "docker-local"
@@ -397,6 +402,315 @@ export function createSandboxArtifact(input: {
     artifact.mediaType = input.mediaType;
   }
   return artifact;
+}
+
+export interface DockerProcessCommand {
+  executable: "docker";
+  args: string[];
+  stdin?: Uint8Array | undefined;
+  timeoutMs: number;
+  stdoutLimitBytes: number;
+  stderrLimitBytes: number;
+}
+
+export interface DockerProcessResult extends SandboxResult {}
+
+export type DockerCommandRunner = (
+  command: DockerProcessCommand,
+) => Promise<DockerProcessResult>;
+
+export interface DockerSandboxProviderOptions {
+  id?: string | undefined;
+  now?: (() => string) | undefined;
+  idFactory?: ((prefix: string) => string) | undefined;
+  runner?: DockerCommandRunner | undefined;
+  stdoutLimitBytes?: number | undefined;
+  stderrLimitBytes?: number | undefined;
+  egressNetworkName?: string | undefined;
+}
+
+interface DockerSandboxLeaseState {
+  lease: SandboxLease;
+  containerName: string;
+  policy: SandboxPolicy;
+  destroyed: boolean;
+}
+
+export class DockerSandboxProvider implements SandboxProvider {
+  readonly id: string;
+  readonly kind: SandboxProviderKind = "docker-local";
+
+  private readonly now: () => string;
+  private readonly idFactory: (prefix: string) => string;
+  private readonly runner: DockerCommandRunner;
+  private readonly stdoutLimitBytes: number;
+  private readonly stderrLimitBytes: number;
+  private readonly egressNetworkName?: string | undefined;
+  private readonly leases = new Map<string, DockerSandboxLeaseState>();
+
+  constructor(options: DockerSandboxProviderOptions = {}) {
+    this.id = options.id ?? "docker-local";
+    this.now = options.now ?? (() => new Date().toISOString());
+    this.idFactory =
+      options.idFactory ?? ((prefix) => `${prefix}_${randomUUID()}`);
+    this.runner = options.runner ?? runDockerProcess;
+    this.stdoutLimitBytes = options.stdoutLimitBytes ?? 1024 * 1024;
+    this.stderrLimitBytes = options.stderrLimitBytes ?? 1024 * 1024;
+    this.egressNetworkName = options.egressNetworkName;
+  }
+
+  async create(input: SandboxCreateInput): Promise<SandboxLease> {
+    const dockerRun = buildDockerRunCommand({
+      create: input,
+      egressNetworkName: this.egressNetworkName,
+    });
+    const result = await this.runDocker({
+      args: dockerRun.args,
+      timeoutMs: input.policy.resourceLimits.timeoutMs,
+    });
+    assertDockerSuccess(result, "create Docker sandbox");
+
+    const createdAt = this.now();
+    const lease: SandboxLease = {
+      id: this.idFactory("sandbox"),
+      providerKind: this.kind,
+      runId: input.runId,
+      createdAt,
+      expiresAt: new Date(
+        Date.parse(createdAt) + input.policy.resourceLimits.timeoutMs,
+      ).toISOString(),
+    };
+    this.leases.set(lease.id, {
+      lease,
+      containerName: dockerRun.containerName,
+      policy: input.policy,
+      destroyed: false,
+    });
+    return { ...lease };
+  }
+
+  async exec(
+    lease: SandboxLease,
+    command: SandboxCommand,
+  ): Promise<SandboxResult> {
+    const state = this.requireActiveLease(lease);
+    assertSandboxCommand(command, state.policy);
+
+    const args = ["exec"];
+    if (command.cwd) {
+      args.push("--workdir", command.cwd);
+    }
+    for (const [key, value] of Object.entries(command.env ?? {}).sort(
+      ([left], [right]) => left.localeCompare(right),
+    )) {
+      args.push("--env", `${key}=${value}`);
+    }
+    args.push(state.containerName, ...command.command);
+
+    const result = await this.runDocker({
+      args,
+      timeoutMs: command.timeoutMs ?? state.policy.resourceLimits.timeoutMs,
+    });
+    if (result.timedOut) {
+      await this.killContainer(state);
+    }
+    return result;
+  }
+
+  async upload(lease: SandboxLease, upload: SandboxUpload): Promise<void> {
+    const state = this.requireActiveLease(lease);
+    assertArtifactPath(upload.path);
+    const tempDir = await mkdtemp(path.join(tmpdir(), "bek-sandbox-upload-"));
+    const tempPath = path.join(tempDir, "upload.bin");
+    try {
+      await writeFile(tempPath, upload.bytes);
+      const mkdir = await this.runDocker({
+        args: [
+          "exec",
+          state.containerName,
+          "mkdir",
+          "-p",
+          path.posix.dirname(upload.path),
+        ],
+        timeoutMs: state.policy.resourceLimits.timeoutMs,
+      });
+      assertDockerSuccess(mkdir, "prepare sandbox upload directory");
+      const copy = await this.runDocker({
+        args: ["cp", tempPath, `${state.containerName}:${upload.path}`],
+        timeoutMs: state.policy.resourceLimits.timeoutMs,
+      });
+      assertDockerSuccess(copy, "upload sandbox artifact");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  }
+
+  async download(
+    lease: SandboxLease,
+    artifactPath: string,
+  ): Promise<SandboxArtifact> {
+    const state = this.requireActiveLease(lease);
+    assertArtifactPath(artifactPath);
+    const tempDir = await mkdtemp(path.join(tmpdir(), "bek-sandbox-download-"));
+    const tempPath = path.join(tempDir, "download.bin");
+    try {
+      const copy = await this.runDocker({
+        args: ["cp", `${state.containerName}:${artifactPath}`, tempPath],
+        timeoutMs: state.policy.resourceLimits.timeoutMs,
+      });
+      assertDockerSuccess(copy, "download sandbox artifact");
+      const bytes = await readFile(tempPath);
+      return createSandboxArtifact({ path: artifactPath, bytes });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  }
+
+  async destroy(lease: SandboxLease): Promise<void> {
+    const state = this.leases.get(lease.id);
+    if (!state || state.destroyed) {
+      return;
+    }
+    const result = await this.runDocker({
+      args: ["rm", "--force", state.containerName],
+      timeoutMs: state.policy.resourceLimits.timeoutMs,
+    });
+    state.destroyed = true;
+    if (
+      result.exitCode !== 0 &&
+      !result.stderr.toLowerCase().includes("no such container")
+    ) {
+      throw new Error(dockerFailureMessage("destroy Docker sandbox", result));
+    }
+  }
+
+  private async killContainer(state: DockerSandboxLeaseState): Promise<void> {
+    await this.runDocker({
+      args: ["kill", state.containerName],
+      timeoutMs: state.policy.resourceLimits.timeoutMs,
+    }).catch(() => undefined);
+    state.destroyed = true;
+  }
+
+  private async runDocker(input: {
+    args: string[];
+    timeoutMs: number;
+    stdin?: Uint8Array | undefined;
+  }): Promise<DockerProcessResult> {
+    return this.runner({
+      executable: "docker",
+      args: input.args,
+      stdin: input.stdin,
+      timeoutMs: input.timeoutMs,
+      stdoutLimitBytes: this.stdoutLimitBytes,
+      stderrLimitBytes: this.stderrLimitBytes,
+    });
+  }
+
+  private requireActiveLease(lease: SandboxLease): DockerSandboxLeaseState {
+    const state = this.leases.get(lease.id);
+    if (!state) {
+      throw new Error(`Sandbox lease ${lease.id} was not found.`);
+    }
+    if (state.destroyed) {
+      throw new Error(`Sandbox lease ${lease.id} has been destroyed.`);
+    }
+    return state;
+  }
+}
+
+export async function runDockerProcess(
+  command: DockerProcessCommand,
+): Promise<DockerProcessResult> {
+  const startedAt = Date.now();
+  return new Promise((resolve, reject) => {
+    const child = spawn(command.executable, command.args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: false,
+    });
+    const stdout = createOutputCollector(command.stdoutLimitBytes);
+    const stderr = createOutputCollector(command.stderrLimitBytes);
+    let settled = false;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, command.timeoutMs);
+
+    child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.on("error", (error: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code: number | null) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        exitCode: timedOut ? 124 : (code ?? 1),
+        stdout: stdout.text(),
+        stderr: stderr.text(),
+        durationMs: Date.now() - startedAt,
+        timedOut,
+      });
+    });
+
+    child.stdin?.end(command.stdin);
+  });
+}
+
+function createOutputCollector(limitBytes: number): {
+  push(chunk: Buffer): void;
+  text(): string;
+} {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  return {
+    push(chunk) {
+      const remaining = limitBytes - bytes;
+      if (remaining <= 0) {
+        return;
+      }
+      const slice =
+        chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
+      chunks.push(slice);
+      bytes += slice.byteLength;
+    },
+    text() {
+      return Buffer.concat(chunks).toString("utf8");
+    },
+  };
+}
+
+function assertDockerSuccess(
+  result: DockerProcessResult,
+  action: string,
+): void {
+  if (result.exitCode !== 0 || result.timedOut) {
+    throw new Error(dockerFailureMessage(action, result));
+  }
+}
+
+function dockerFailureMessage(
+  action: string,
+  result: DockerProcessResult,
+): string {
+  const output = redactSecrets(
+    result.stderr.trim() ||
+      result.stdout.trim() ||
+      "Docker returned no output.",
+  );
+  const reason = result.timedOut
+    ? `timed out after ${result.durationMs}ms`
+    : `exited with code ${result.exitCode}`;
+  return `Failed to ${action}: docker ${reason}. ${output}`;
 }
 
 export interface FakeSandboxProviderOptions {

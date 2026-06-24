@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { writeFile } from "node:fs/promises";
 import {
+  DockerSandboxProvider,
   FakeSandboxProvider,
   assertSandboxPolicy,
   buildDockerRunCommand,
@@ -7,6 +9,8 @@ import {
   createSandboxArtifact,
   hashSandboxBytes,
   validateNetworkAllowlist,
+  type DockerProcessCommand,
+  type DockerProcessResult,
   type SandboxPolicy,
   type SandboxResult,
 } from "./index";
@@ -149,6 +153,172 @@ describe("docker run command builder", () => {
   });
 });
 
+describe("docker sandbox provider", () => {
+  it("creates, executes, uploads, downloads, and destroys containers through docker argv", async () => {
+    const commands: DockerProcessCommand[] = [];
+    const provider = new DockerSandboxProvider({
+      now: () => baseNow,
+      idFactory: (prefix) => `${prefix}_test`,
+      runner: async (command) => {
+        commands.push(command);
+        if (
+          command.args[0] === "cp" &&
+          typeof command.args[1] === "string" &&
+          command.args[1].includes(":/workspace/artifacts/out.txt")
+        ) {
+          await writeFile(command.args[2]!, "artifact");
+        }
+        return dockerOk();
+      },
+    });
+    const lease = await provider.create({
+      orgId: "org_demo",
+      runId: "run_docker",
+      attempt: 1,
+      policy: dockerPolicy(),
+      traceId: "trace_docker",
+    });
+
+    expect(lease).toMatchObject({
+      id: "sandbox_test",
+      providerKind: "docker-local",
+      runId: "run_docker",
+    });
+    expect(commands[0]?.args.slice(0, 8)).toEqual([
+      "run",
+      "--detach",
+      "--rm",
+      "--name",
+      "bek-run_docker-1",
+      "--label",
+      "dev.bek.org=org_demo",
+      "--label",
+    ]);
+
+    const execResult = await provider.exec(lease, {
+      idempotencyKey: "cmd_1",
+      command: ["node", "--version"],
+      cwd: "/workspace/worktree",
+      env: { A: "B" },
+      timeoutMs: 2_000,
+      risk: "read_internal",
+    });
+    expect(execResult.exitCode).toBe(0);
+    expect(commands[1]?.args).toEqual([
+      "exec",
+      "--workdir",
+      "/workspace/worktree",
+      "--env",
+      "A=B",
+      "bek-run_docker-1",
+      "node",
+      "--version",
+    ]);
+
+    await provider.upload(lease, {
+      path: "/workspace/artifacts/in.txt",
+      bytes: new TextEncoder().encode("upload"),
+      mode: "read_write",
+    });
+    expect(commands[2]?.args).toEqual([
+      "exec",
+      "bek-run_docker-1",
+      "mkdir",
+      "-p",
+      "/workspace/artifacts",
+    ]);
+    expect(commands[3]?.args.slice(0, 2)).toEqual(["cp", expect.any(String)]);
+    expect(commands[3]?.args[2]).toBe(
+      "bek-run_docker-1:/workspace/artifacts/in.txt",
+    );
+
+    const artifact = await provider.download(
+      lease,
+      "/workspace/artifacts/out.txt",
+    );
+    expect(commands[4]?.args.slice(0, 2)).toEqual([
+      "cp",
+      "bek-run_docker-1:/workspace/artifacts/out.txt",
+    ]);
+    expect(artifact).toMatchObject({
+      path: "/workspace/artifacts/out.txt",
+      sizeBytes: 8,
+      contentHash:
+        "sha256:c7c5c1d70c5dec4416ab6158afd0b223ef40c29b1dc1f97ed9428b94d4cadb1c",
+    });
+
+    await provider.destroy(lease);
+    expect(commands[5]?.args).toEqual(["rm", "--force", "bek-run_docker-1"]);
+  });
+
+  it("kills timed-out docker execs and marks the lease destroyed", async () => {
+    const commands: DockerProcessCommand[] = [];
+    const provider = new DockerSandboxProvider({
+      now: () => baseNow,
+      idFactory: (prefix) => `${prefix}_timeout`,
+      runner: async (command) => {
+        commands.push(command);
+        if (command.args[0] === "exec") {
+          return {
+            exitCode: 124,
+            stdout: "",
+            stderr: "",
+            durationMs: 2_000,
+            timedOut: true,
+          };
+        }
+        return dockerOk();
+      },
+    });
+    const lease = await provider.create({
+      orgId: "org_demo",
+      runId: "run_timeout",
+      attempt: 1,
+      policy: dockerPolicy(),
+      traceId: "trace_timeout",
+    });
+
+    const result = await provider.exec(lease, {
+      idempotencyKey: "cmd_timeout",
+      command: ["sleep", "10"],
+      timeoutMs: 1_000,
+      risk: "read_internal",
+    });
+
+    expect(result.timedOut).toBe(true);
+    expect(commands.at(-1)?.args).toEqual(["kill", "bek-run_timeout-1"]);
+    await expect(
+      provider.exec(lease, {
+        idempotencyKey: "cmd_after_timeout",
+        command: ["true"],
+        risk: "read_internal",
+      }),
+    ).rejects.toThrow(/destroyed/);
+  });
+
+  it("surfaces docker failures with redacted output", async () => {
+    const provider = new DockerSandboxProvider({
+      runner: async () => ({
+        exitCode: 1,
+        stdout: "",
+        stderr: "failed with xoxb-secret-token",
+        durationMs: 5,
+        timedOut: false,
+      }),
+    });
+
+    await expect(
+      provider.create({
+        orgId: "org_demo",
+        runId: "run_fail",
+        attempt: 1,
+        policy: dockerPolicy(),
+        traceId: "trace_fail",
+      }),
+    ).rejects.toThrow("[redacted:slack-token]");
+  });
+});
+
 describe("sandbox policy validation", () => {
   it("rejects privileged policies, metadata services, and private network targets", () => {
     expect(() =>
@@ -236,6 +406,16 @@ describe("sandbox policy validation", () => {
     ).toThrow(/source mounts must be read-only/);
   });
 });
+
+function dockerOk(): DockerProcessResult {
+  return {
+    exitCode: 0,
+    stdout: "ok",
+    stderr: "",
+    durationMs: 5,
+    timedOut: false,
+  };
+}
 
 describe("artifact hashing helpers", () => {
   it("hashes sandbox artifact bytes with a stable sha256 prefix", () => {

@@ -1,6 +1,8 @@
 # Runtime And Sandbox Architecture
 
-Status: planning contract for the first worker/runtime implementation.
+Status: implementation in progress. Bek has runtime/sandbox contracts and a
+local Docker sandbox provider; worker runtime execution still defaults to
+deterministic local adapters until the sandbox runtime adapter is wired.
 
 Bek has one visible Slack teammate, `@bek`. Runtime profiles, model providers,
 coding agents, sandboxes, and tool bundles are internal control-plane choices
@@ -194,6 +196,9 @@ construction and provider behavior:
 - `buildDockerRunCommand` validates a `docker-local` policy and returns a
   shell-free `docker run` argv array. Tests assert the argv instead of starting
   Docker.
+- `DockerSandboxProvider` is the executable local provider. It uses Docker CLI
+  argv arrays, command timeouts, stdout/stderr caps, `docker cp` upload/download
+  helpers, and best-effort container cleanup on timeout.
 - The default network mode produces `--network none`. Allowlisted egress uses
   an explicit `bek-egress-allowlist` Docker network plus a
   `BEK_SANDBOX_EGRESS_ALLOWLIST` environment hint for the egress proxy layer.
@@ -208,6 +213,9 @@ construction and provider behavior:
 - `FakeSandboxProvider` implements the provider interface for unit tests. It
   validates policies and commands, records executed argv, hashes uploaded
   artifacts, and enforces destroyed leases without spawning containers.
+- The Docker provider is not a hosted multitenant isolation claim. Use it for
+  local OSS development, trusted single-tenant self-hosting, and CI-style
+  validation; use a microVM provider for hosted untrusted code.
 
 ## Filesystem Policy
 
