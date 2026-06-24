@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BekStore } from "./store";
+import { createSeedSnapshot } from "./seed";
 
 function createPendingApproval(store: BekStore, prompt = "@bek open a PR") {
   const run = store.createRun({
@@ -149,6 +150,158 @@ describe("Bek approvals", () => {
 });
 
 describe("Bek worker advancement state", () => {
+  it("uses the answer capability profile instead of the first model policy", () => {
+    const snapshot = createSeedSnapshot();
+    snapshot.modelPolicies.unshift({
+      id: "model_wrong_first",
+      orgId: snapshot.org.id,
+      name: "Wrong first",
+      defaultModel: "anthropic/too-expensive-demo",
+      fallbackModels: [],
+      perRunBudgetCents: 99_999,
+    });
+    const store = new BekStore(snapshot);
+
+    const run = store.createRun({
+      prompt: "@bek summarize checkout",
+      placeScopeId: "place_checkout",
+      capability: "slack.read",
+      resource: "slack:C_CHECKOUT",
+      advanceMode: "worker",
+    });
+
+    expect(run).toMatchObject({
+      modelPolicyId: "model_auto",
+      runtimeProfileId: "runtime_answer",
+    });
+  });
+
+  it("uses the coding capability profile for repo and sandbox work", () => {
+    const snapshot = createSeedSnapshot();
+    snapshot.modelPolicies.unshift({
+      id: "model_wrong_first",
+      orgId: snapshot.org.id,
+      name: "Wrong first",
+      defaultModel: "anthropic/too-expensive-demo",
+      fallbackModels: [],
+      perRunBudgetCents: 99_999,
+    });
+    snapshot.modelPolicies.push({
+      id: "model_code",
+      orgId: snapshot.org.id,
+      name: "Code model",
+      defaultModel: "openai/gpt-5.5-code-demo",
+      fallbackModels: [],
+      perRunBudgetCents: 5000,
+    });
+    const codeProfile = snapshot.capabilityProfiles.find(
+      (profile) => profile.id === "cap_code",
+    );
+    if (!codeProfile) {
+      throw new Error("Expected code capability profile.");
+    }
+    codeProfile.modelPolicyId = "model_code";
+    const store = new BekStore(snapshot);
+
+    const run = store.createRun({
+      prompt: "@bek open a PR",
+      placeScopeId: "place_checkout",
+      capability: "github.pr",
+      resource: "github:redohq/checkout",
+      advanceMode: "worker",
+    });
+
+    expect(run).toMatchObject({
+      modelPolicyId: "model_code",
+      runtimeProfileId: "runtime_code",
+      status: "awaiting_approval",
+    });
+  });
+
+  it("uses the answer capability profile when no capability is supplied", () => {
+    const snapshot = createSeedSnapshot();
+    const answerProfile = snapshot.capabilityProfiles.find(
+      (profile) => profile.id === "cap_answer",
+    );
+    if (!answerProfile) {
+      throw new Error("Expected answer capability profile.");
+    }
+    snapshot.modelPolicies.push({
+      id: "model_answer",
+      orgId: snapshot.org.id,
+      name: "Answer model",
+      defaultModel: "openai/answer-demo",
+      fallbackModels: [],
+      perRunBudgetCents: 1200,
+    });
+    answerProfile.modelPolicyId = "model_answer";
+    const store = new BekStore(snapshot);
+
+    const run = store.createRun({
+      prompt: "@bek think through this",
+      placeScopeId: "place_checkout",
+      advanceMode: "worker",
+    });
+
+    expect(run).toMatchObject({
+      modelPolicyId: "model_answer",
+      runtimeProfileId: "runtime_answer",
+    });
+  });
+
+  it("ignores disabled matching capability profiles and falls back to agent defaults", () => {
+    const snapshot = createSeedSnapshot();
+    const codeProfile = snapshot.capabilityProfiles.find(
+      (profile) => profile.id === "cap_code",
+    );
+    if (!codeProfile) {
+      throw new Error("Expected code capability profile.");
+    }
+    codeProfile.enabled = false;
+    const store = new BekStore(snapshot);
+
+    const run = store.createRun({
+      prompt: "@bek open a PR",
+      placeScopeId: "place_checkout",
+      capability: "github.pr",
+      resource: "github:redohq/checkout",
+      advanceMode: "worker",
+    });
+
+    expect(run).toMatchObject({
+      modelPolicyId: "model_auto",
+      runtimeProfileId: "runtime_answer",
+      status: "awaiting_approval",
+    });
+  });
+
+  it("falls back to agent defaults when no matching capability profile exists", () => {
+    const snapshot = createSeedSnapshot();
+    snapshot.modelPolicies.push({
+      id: "model_agent_default",
+      orgId: snapshot.org.id,
+      name: "Agent default",
+      defaultModel: "openai/default-demo",
+      fallbackModels: [],
+      perRunBudgetCents: 1500,
+    });
+    snapshot.agent.defaultModelPolicyId = "model_agent_default";
+    const store = new BekStore(snapshot);
+
+    const run = store.createRun({
+      prompt: "@bek update a Linear issue",
+      placeScopeId: "place_checkout",
+      capability: "linear.write",
+      resource: "linear:ISSUE-123",
+      advanceMode: "worker",
+    });
+
+    expect(run).toMatchObject({
+      modelPolicyId: "model_agent_default",
+      runtimeProfileId: "runtime_answer",
+    });
+  });
+
   it("redacts secret-shaped prompt text before storing runs", () => {
     const store = new BekStore();
     const secret = "xoxb-this-secret-token-should-redact";

@@ -10,6 +10,7 @@ import type {
   BekSnapshot,
   CapabilityGrant,
   CapabilityKind,
+  CapabilityProfile,
   ConnectorInstall,
   ConnectorInstallStatus,
   CredentialRecord,
@@ -570,17 +571,9 @@ export class BekStore {
     advanceMode?: RunAdvanceMode | undefined;
   }): Run {
     const advanceMode = input.advanceMode ?? "inline_stub";
-    const modelPolicy = this.snapshot.modelPolicies[0];
-    const runtimeProfile =
-      input.capability === "github.pr" || input.capability === "sandbox.exec"
-        ? this.snapshot.runtimeProfiles.find(
-            (profile) => profile.runtimeKind === "opencode",
-          )
-        : this.snapshot.runtimeProfiles[0];
-
-    if (!modelPolicy || !runtimeProfile) {
-      throw new Error("Bek seed is missing model or runtime policies.");
-    }
+    const { modelPolicy, runtimeProfile } = this.resolveRunProfiles(
+      input.capability,
+    );
 
     const place = this.snapshot.places.find(
       (candidate) => candidate.id === input.placeScopeId,
@@ -983,6 +976,58 @@ export class BekStore {
     }
     return profile;
   }
+
+  private resolveRunProfiles(capability: CapabilityKind | undefined): {
+    modelPolicy: ModelPolicy;
+    runtimeProfile: RuntimeProfile;
+  } {
+    const capabilityProfile = this.findCapabilityProfile(
+      capabilityKindForCapability(capability),
+    );
+    return {
+      modelPolicy: this.findModelPolicy(
+        capabilityProfile?.modelPolicyId ??
+          this.snapshot.agent.defaultModelPolicyId,
+      ),
+      runtimeProfile: this.findRuntimeProfile(
+        capabilityProfile?.runtimeProfileId ??
+          this.snapshot.agent.defaultRuntimeProfileId,
+      ),
+    };
+  }
+
+  private findCapabilityProfile(
+    capabilityKind: CapabilityProfile["capabilityKind"],
+  ): CapabilityProfile | undefined {
+    return this.snapshot.capabilityProfiles.find(
+      (profile) =>
+        profile.orgId === this.snapshot.org.id &&
+        profile.agentId === this.snapshot.agent.id &&
+        profile.enabled &&
+        profile.capabilityKind === capabilityKind,
+    );
+  }
+}
+
+function capabilityKindForCapability(
+  capability: CapabilityKind | undefined,
+): CapabilityProfile["capabilityKind"] {
+  if (
+    capability === "github.read" ||
+    capability === "github.branch" ||
+    capability === "github.pr" ||
+    capability === "sandbox.exec"
+  ) {
+    return "coding";
+  }
+  if (
+    capability === "linear.read" ||
+    capability === "linear.write" ||
+    capability === "mcp.tool"
+  ) {
+    return "workflow";
+  }
+  return "answer";
 }
 
 function eventTypeForStatus(status: RunStatus): RunEvent["type"] {
