@@ -5,19 +5,42 @@ import { createId } from "./ids";
 import type {
   AccessBundle,
   AgentIdentity,
+  ApprovalRequest,
   BekSnapshot,
   CapabilityGrant,
   CapabilityKind,
   ModelPolicy,
   PlaceScope,
   Run,
+  RunEvent,
+  RunStatus,
   RuntimeProfile,
   TriggerKind,
 } from "./types";
 
+export type RunAdvanceMode = "inline_stub" | "worker";
+
 export interface ApprovalDecisionInput {
   principalId: string;
   payloadHash: string;
+  now?: string | undefined;
+  advanceMode?: RunAdvanceMode | undefined;
+}
+
+export interface AppendRunEventInput {
+  runId: string;
+  type: RunEvent["type"];
+  message: string;
+  data?: Record<string, unknown> | undefined;
+  now?: string | undefined;
+}
+
+export interface SetRunStatusInput {
+  runId: string;
+  status: RunStatus;
+  message: string;
+  actualCostCents?: number | undefined;
+  data?: Record<string, unknown> | undefined;
   now?: string | undefined;
 }
 
@@ -364,7 +387,9 @@ export class BekStore {
     trigger?: TriggerKind | undefined;
     capability?: CapabilityKind | undefined;
     resource?: string | undefined;
+    advanceMode?: RunAdvanceMode | undefined;
   }): Run {
+    const advanceMode = input.advanceMode ?? "inline_stub";
     const modelPolicy = this.snapshot.modelPolicies[0];
     const runtimeProfile =
       input.capability === "github.pr" || input.capability === "sandbox.exec"
@@ -469,16 +494,28 @@ export class BekStore {
           ),
         );
       } else {
-        run.status = "completed";
-        run.actualCostCents = Math.max(1, run.estimatedCostCents - 1);
-        this.snapshot.events.unshift(
-          createRunEvent(
-            this.snapshot.org.id,
-            run.id,
-            "run.completed",
-            "Bek completed the local stub run.",
-          ),
-        );
+        if (advanceMode === "inline_stub") {
+          run.status = "completed";
+          run.actualCostCents = Math.max(1, run.estimatedCostCents - 1);
+          this.snapshot.events.unshift(
+            createRunEvent(
+              this.snapshot.org.id,
+              run.id,
+              "run.completed",
+              "Bek completed the local stub run.",
+            ),
+          );
+        } else {
+          this.snapshot.events.unshift(
+            createRunEvent(
+              this.snapshot.org.id,
+              run.id,
+              "run.status_changed",
+              "Policy allowed the run; worker advancement is pending.",
+              { advanceMode },
+            ),
+          );
+        }
       }
     }
 
@@ -542,9 +579,13 @@ export class BekStore {
       (candidate) => candidate.id === approval.runId,
     );
     if (run) {
-      run.status = decision === "approved" ? "completed" : "cancelled";
-      run.actualCostCents =
-        decision === "approved" ? Math.max(1, run.estimatedCostCents) : 0;
+      if (decision === "approved" && input.advanceMode === "worker") {
+        run.status = "queued";
+      } else {
+        run.status = decision === "approved" ? "completed" : "cancelled";
+        run.actualCostCents =
+          decision === "approved" ? Math.max(1, run.estimatedCostCents) : 0;
+      }
       run.updatedAt = now;
     }
 
@@ -565,6 +606,61 @@ export class BekStore {
     return structuredClone(approval);
   }
 
+  appendRunEvent(input: AppendRunEventInput): RunEvent {
+    const run = this.findRun(input.runId);
+    const event = createRunEvent(
+      run.orgId,
+      run.id,
+      input.type,
+      input.message,
+      input.data,
+      input.now,
+    );
+    this.snapshot.events.unshift(event);
+    this.recordChange();
+    return structuredClone(event);
+  }
+
+  setRunStatus(input: SetRunStatusInput): Run {
+    const run = this.findRun(input.runId);
+    const now = input.now ?? new Date().toISOString();
+    run.status = input.status;
+    if (input.actualCostCents !== undefined) {
+      run.actualCostCents = input.actualCostCents;
+    }
+    run.updatedAt = now;
+    this.snapshot.events.unshift(
+      createRunEvent(
+        run.orgId,
+        run.id,
+        eventTypeForStatus(input.status),
+        input.message,
+        input.data,
+        now,
+      ),
+    );
+    this.recordChange();
+    return structuredClone(run);
+  }
+
+  upsertApprovalRequest(approval: ApprovalRequest): ApprovalRequest {
+    const run = this.findRun(approval.runId);
+    if (run.orgId !== approval.orgId) {
+      throw new Error("Approval does not belong to the run organization.");
+    }
+
+    const existing = this.snapshot.approvals.find(
+      (candidate) => candidate.id === approval.id,
+    );
+    if (existing) {
+      Object.assign(existing, structuredClone(approval));
+    } else {
+      this.snapshot.approvals.unshift(structuredClone(approval));
+    }
+    this.recordChange();
+    return structuredClone(approval);
+  }
+
   private recordChange(): void {
     if (!this.onSnapshotChanged) {
       return;
@@ -577,6 +673,14 @@ export class BekStore {
         this.persistenceError =
           error instanceof Error ? error : new Error(String(error));
       });
+  }
+
+  private findRun(runId: string): Run {
+    const run = this.snapshot.runs.find((candidate) => candidate.id === runId);
+    if (!run) {
+      throw new Error("Run not found.");
+    }
+    return run;
   }
 
   private findPlace(placeId: string): PlaceScope {
@@ -628,4 +732,14 @@ export class BekStore {
     }
     return profile;
   }
+}
+
+function eventTypeForStatus(status: RunStatus): RunEvent["type"] {
+  if (status === "completed") {
+    return "run.completed";
+  }
+  if (status === "failed") {
+    return "run.failed";
+  }
+  return "run.status_changed";
 }

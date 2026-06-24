@@ -7,6 +7,7 @@ Bek should launch in stages. The current repo is good enough to show the product
 - One visible `@bek` product model is enforced in docs, seed data, UI, and schema.
 - Admin console covers setup, channels, access bundles, runs, run detail, approvals, connectors, models, memory stance, audit, and settings.
 - API supports seeded runs, approvals, audit events, policy evaluation, Slack event ingress, Slack OAuth state/exchange, admin auth when configured, signed Slack request verification, and Postgres-backed snapshot persistence when configured.
+- API can run in `BEK_RUN_ADVANCEMENT=worker_local` mode, where API/Slack-created runs are enqueued, drained through the local worker runtime service, paused for approvals, resumed after approval, and reflected back into run status/events.
 - Tests cover policy deny precedence, wildcard scoping, Slack signature tamper/replay, approval tamper/self-approval/double approval/expiry, API behavior, model routing, MCP manifest generation, and redaction.
 - DB, runtime, sandbox, model-router, MCP, Slack, core, API, and web package contracts exist.
 - Release candidates should pass `pnpm format:check` and `pnpm check` before
@@ -33,14 +34,14 @@ Bek can be public as an OSS release candidate when the repo has:
 - Local quickstart that reliably starts API and web.
 - Browser-verified admin console.
 - Smoke script that creates a run, creates an approval, approves it, and confirms the run state.
-- Docs that state current limits plainly: bot-token vault storage is pending, no real GitHub writes, no production sandbox execution yet.
+- Docs that state current limits plainly: bot-token vault storage is pending, no real GitHub writes, no production sandbox execution yet, and the local worker queue is not a durable multi-instance queue.
 
 ## Product
 
 - One visible `@bek` handle works in a real Slack workspace.
 - Admin can connect Slack, GitHub, one model provider, and one channel.
 - `@bek what can you access here?` returns channel-scoped grants.
-- A fake write action creates an approval and resumes after approval.
+- A fake write action creates an approval and resumes after approval through the local worker bridge.
 - Run timeline shows context, tools, approvals, model/cost, and final output.
 
 These product items block broad design-partner rollout, not a code-only release candidate.
@@ -49,7 +50,8 @@ These product items block broad design-partner rollout, not a code-only release 
 
 - `pnpm check` passes in CI.
 - Postgres-backed store is available for persisted mode.
-- Worker owns run advancement beyond the deterministic local runner.
+- Worker-local mode owns API/Slack run advancement in-process for the local product loop.
+- Durable queue-backed worker owns claim, heartbeat, retry, cancellation, approval resume, and run settlement across API/worker restarts.
 - Slack event dedupe is durable instead of in-memory.
 - API has typed errors and request IDs.
 - Docker Compose starts all local dependencies.
@@ -92,7 +94,7 @@ These product items block broad design-partner rollout, not a code-only release 
 
 - Postgres persistence has row-level command writes, locks, backups, and
   tenant-isolation coverage beyond the current snapshot mode.
-- Durable queue/worker handles claim, heartbeat, retry, cancellation, and approval resume.
+- Durable queue/worker replaces the in-process queue and handles claim, heartbeat, retry, cancellation, approval resume, and run settlement across multiple API/worker instances.
 - Slack OAuth install stores bot/workspace metadata securely.
 - Slack message posting and approval buttons work end to end.
 - GitHub App install, repo permissions, branch creation, and draft PR flow work through approval gates.

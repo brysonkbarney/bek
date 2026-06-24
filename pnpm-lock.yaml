@@ -31,9 +31,15 @@ importers:
       "@bek/db":
         specifier: workspace:*
         version: link:../../packages/db
+      "@bek/runtime":
+        specifier: workspace:*
+        version: link:../../packages/runtime
       "@bek/slack":
         specifier: workspace:*
         version: link:../../packages/slack
+      "@bek/worker":
+        specifier: workspace:*
+        version: link:../../packages/worker
       "@hono/node-server":
         specifier: ^1.19.6
         version: 1.19.14(hono@4.12.27)

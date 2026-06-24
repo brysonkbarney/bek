@@ -1,0 +1,310 @@
+import {
+  BekStore,
+  createId,
+  type ApprovalRequest,
+  type Run,
+  type RunEvent,
+} from "@bek/core";
+import { createRunWorkItem, type RuntimeWorkReason } from "@bek/runtime";
+import {
+  InMemoryWorkerQueue,
+  WorkerRuntimeService,
+  createDeterministicLocalRuntimeAdapters,
+  type DrainRunWorkInput,
+  type DrainRunWorkResult,
+  type EnqueueRunWorkDecision,
+  type ProcessNextRunWorkDecision,
+  type ResumeAfterApprovalDecision,
+  type WorkerEvent,
+  type WorkerSnapshot,
+  type WorkerWorkRecord,
+} from "@bek/worker";
+
+export type RunAdvancementMode = "inline_stub" | "worker_local";
+
+export interface ApprovalAdvanceResult {
+  resumeDecision?: ResumeAfterApprovalDecision | undefined;
+  drain?: DrainRunWorkResult | undefined;
+}
+
+export class LocalWorkerController {
+  readonly mode: RunAdvancementMode;
+  readonly enabled: boolean;
+  private readonly store: BekStore;
+  private readonly queue: InMemoryWorkerQueue;
+  private readonly service: WorkerRuntimeService;
+
+  constructor(store: BekStore, mode: RunAdvancementMode) {
+    this.store = store;
+    this.mode = mode;
+    this.enabled = mode === "worker_local";
+    this.queue = new InMemoryWorkerQueue({
+      eventSink: {
+        emit: (event) => this.recordWorkerEvent(event),
+      },
+    });
+    this.service = new WorkerRuntimeService({
+      queue: this.queue,
+      state: () => this.store.read(),
+      adapters: createDeterministicLocalRuntimeAdapters(),
+      workerId: "worker_api_local",
+      approvalProvider: ({ record }) => this.findApprovalForRecord(record),
+    });
+  }
+
+  enqueueRun(
+    run: Run,
+    reason: RuntimeWorkReason = "new_run",
+  ): EnqueueRunWorkDecision {
+    this.assertEnabled();
+    const now = new Date().toISOString();
+    return this.queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason,
+        traceId: createId("trace"),
+        now,
+      }),
+      now,
+    });
+  }
+
+  async drain(input: DrainRunWorkInput = {}): Promise<DrainRunWorkResult> {
+    this.assertEnabled();
+    const result = await this.service.drain(input);
+    for (const decision of result.decisions) {
+      this.applyProcessedDecision(decision);
+    }
+    return result;
+  }
+
+  async advanceApproval(
+    approval: ApprovalRequest,
+  ): Promise<ApprovalAdvanceResult> {
+    this.assertEnabled();
+    const resumeDecision = this.queue.resumeAfterApproval({
+      approval,
+      traceId: createId("trace"),
+    });
+
+    if (
+      resumeDecision.decision === "not_found" &&
+      approval.status === "approved"
+    ) {
+      const run = this.findRun(approval.runId);
+      this.enqueueRun(run, "approval_granted");
+    }
+
+    if (approval.status !== "approved") {
+      return { resumeDecision };
+    }
+
+    return {
+      resumeDecision,
+      drain: await this.drain({ maxItems: 10 }),
+    };
+  }
+
+  read(): WorkerSnapshot {
+    return this.queue.read();
+  }
+
+  private applyProcessedDecision(decision: ProcessNextRunWorkDecision): void {
+    if (decision.decision !== "processed") {
+      return;
+    }
+
+    const settlement = decision.settlement;
+    if (settlement.decision === "lost_lease") {
+      return;
+    }
+
+    const runId = settlement.record.item.runId;
+    const workerData = {
+      adapterId: decision.adapterId,
+      workerRecordId: settlement.record.id,
+      workerDecision: settlement.decision,
+      artifacts: decision.result.artifactRefs,
+    };
+
+    if (settlement.decision === "completed") {
+      this.store.setRunStatus({
+        runId,
+        status: "completed",
+        actualCostCents: decision.result.actualCostCents,
+        message: decision.result.finalText ?? "Bek worker completed the run.",
+        data: workerData,
+      });
+      return;
+    }
+
+    if (settlement.decision === "paused_for_approval") {
+      const approval = this.approvalFromWorkerRecord(settlement.record);
+      if (approval) {
+        this.store.upsertApprovalRequest(approval);
+      }
+      this.store.setRunStatus({
+        runId,
+        status: "awaiting_approval",
+        actualCostCents: decision.result.actualCostCents,
+        message: "Bek paused the run for approval.",
+        data: compactRecord({
+          ...workerData,
+          approvalId: approval?.id,
+        }),
+      });
+      return;
+    }
+
+    if (settlement.decision === "cancelled") {
+      this.store.setRunStatus({
+        runId,
+        status: "cancelled",
+        actualCostCents: decision.result.actualCostCents,
+        message: decision.result.error ?? "Bek worker cancelled the run.",
+        data: workerData,
+      });
+      return;
+    }
+
+    if (settlement.decision === "retry") {
+      this.store.setRunStatus({
+        runId,
+        status: "queued",
+        actualCostCents: decision.result.actualCostCents,
+        message: "Bek worker scheduled a retry.",
+        data: {
+          ...workerData,
+          retryAt: settlement.retryAt,
+          nextWorkerRecordId: settlement.nextRecord.id,
+        },
+      });
+      return;
+    }
+
+    this.store.setRunStatus({
+      runId,
+      status: "failed",
+      actualCostCents: decision.result.actualCostCents,
+      message:
+        decision.result.error ??
+        settlement.deadLetter.reason ??
+        "Bek worker failed the run.",
+      data: {
+        ...workerData,
+        deadLetterId: settlement.deadLetter.id,
+      },
+    });
+  }
+
+  private recordWorkerEvent(event: WorkerEvent): void {
+    this.store.appendRunEvent({
+      runId: event.runId,
+      type: runEventTypeForWorkerEvent(event),
+      message: event.message,
+      data: compactRecord({
+        workerEventId: event.id,
+        workerEventType: event.type,
+        attempt: event.attempt,
+        traceId: event.traceId,
+        ...event.data,
+      }),
+      now: event.createdAt,
+    });
+  }
+
+  private approvalFromWorkerRecord(
+    record: WorkerWorkRecord,
+  ): ApprovalRequest | undefined {
+    const gate = record.approval;
+    if (!gate) {
+      return undefined;
+    }
+    const run = this.findRun(record.item.runId);
+    return {
+      id: gate.approvalId,
+      orgId: record.item.orgId,
+      runId: record.item.runId,
+      action: gate.action,
+      risk: gate.risk,
+      status: gate.status,
+      payloadHash: gate.payloadHash,
+      requestedByPrincipalId: run.requesterPrincipalId,
+      createdAt: gate.createdAt,
+      expiresAt: gate.expiresAt,
+    };
+  }
+
+  private findApprovalForRecord(
+    record: WorkerWorkRecord,
+  ): ApprovalRequest | undefined {
+    const snapshot = this.store.read();
+    const approvalId = record.approval?.approvalId;
+    if (approvalId) {
+      return snapshot.approvals.find(
+        (candidate) => candidate.id === approvalId,
+      );
+    }
+    return snapshot.approvals.find(
+      (candidate) =>
+        candidate.runId === record.item.runId &&
+        candidate.status === "approved",
+    );
+  }
+
+  private findRun(runId: string): Run {
+    const run = this.store
+      .read()
+      .runs.find((candidate) => candidate.id === runId);
+    if (!run) {
+      throw new Error("Run not found.");
+    }
+    return run;
+  }
+
+  private assertEnabled(): void {
+    if (!this.enabled) {
+      throw new Error("Local worker advancement is disabled.");
+    }
+  }
+}
+
+export function runAdvancementModeFromEnv(
+  value = process.env.BEK_RUN_ADVANCEMENT,
+): RunAdvancementMode {
+  const normalized = value?.trim().toLowerCase();
+  if (
+    normalized === "worker_local" ||
+    normalized === "worker-local" ||
+    normalized === "worker" ||
+    normalized === "local"
+  ) {
+    return "worker_local";
+  }
+  return "inline_stub";
+}
+
+function runEventTypeForWorkerEvent(event: WorkerEvent): RunEvent["type"] {
+  if (event.type === "tool.requested") {
+    return "tool.requested";
+  }
+  if (event.type === "worker.approval_waiting") {
+    return "approval.requested";
+  }
+  if (event.type === "model.requested" || event.type === "runtime.selected") {
+    return "model.selected";
+  }
+  if (event.type === "worker.failed" || event.type === "worker.dead_lettered") {
+    return "run.failed";
+  }
+  return "run.status_changed";
+}
+
+function compactRecord(
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(input).filter(([, value]) => value !== undefined),
+  );
+}

@@ -72,6 +72,11 @@ The `migrate` service runs `pnpm db:migrate` before the API starts. With
 `BEK_STORAGE=postgres`, the API auto-seeds the demo organization on first boot
 unless `BEK_DB_AUTO_SEED=false`.
 
+The API container defaults to `BEK_RUN_ADVANCEMENT=worker_local`, so local
+API/Slack-created runs advance through the in-process worker bridge. This is
+useful for self-hosted evaluation; a durable production worker still needs
+queue-backed claim/lease/settlement storage.
+
 When you change `VITE_BEK_API_URL` or `VITE_BEK_ADMIN_API_TOKEN`, rebuild the
 web image because Vite embeds those values at build time.
 

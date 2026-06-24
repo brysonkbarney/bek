@@ -142,7 +142,35 @@ curl -s http://localhost:4317/api/audit-events
 The scripted smoke test performs the approval-gated version end to end and
 approves it as the seeded `principal_admin` principal.
 
-## Try The Local Worker Runner
+## Try Worker-Local Run Advancement
+
+The product-like local path is `BEK_RUN_ADVANCEMENT=worker_local`. In this mode,
+API and Slack-created runs are persisted, enqueued into the local worker,
+processed through `WorkerRuntimeService`, and settled back into the run timeline.
+
+```bash
+BEK_RUN_ADVANCEMENT=worker_local pnpm dev:api
+```
+
+Create a safe run and inspect its worker events:
+
+```bash
+curl -s http://localhost:4317/api/runs \
+  -H 'content-type: application/json' \
+  -d '{
+    "prompt": "@bek summarize checkout",
+    "placeScopeId": "place_checkout",
+    "capability": "slack.read",
+    "resource": "slack:C_CHECKOUT"
+  }'
+
+curl -s http://localhost:4317/api/worker/queue
+```
+
+`worker_local` is in-process and meant for local evaluation. Production/hosted
+installs still need a durable queue-backed worker before broad rollout.
+
+## Try The Standalone Worker Runner
 
 `@bek/worker` includes a deterministic local runner that seeds a run, enqueues
 it, processes it through the runtime service, and prints the queue/event trace:
@@ -152,8 +180,7 @@ pnpm worker:local
 ```
 
 This does not call external models, GitHub, Slack, MCP servers, or sandboxes. It
-is the local proof of Bek's worker boundary before durable queue dispatch is
-wired into the API.
+is the standalone proof of Bek's worker boundary.
 
 ## Optional Admin Auth
 
@@ -219,6 +246,9 @@ pnpm check
 - Persistent storage exists as a schema/repository package and the API can use
   it with `BEK_STORAGE=postgres` plus `DATABASE_URL`. The default local mode is
   still in-memory for zero-credential demos.
+- `BEK_RUN_ADVANCEMENT=worker_local` exercises the local worker path in-process;
+  durable queue-backed workers are still required for hosted or multi-instance
+  production.
 - Model calls, GitHub writes, sandbox execution, and MCP tool proxying are
   foundations, deterministic local providers, or contracts.
 - Do not use this repo for production workspaces until the launch blockers in `docs/launch-readiness.md` are closed.

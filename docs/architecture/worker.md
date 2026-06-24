@@ -1,8 +1,10 @@
 # Worker Orchestrator Foundation
 
-Status: deterministic queue/runtime service plus local runner. API run
-creation is still synchronous in the local demo; durable API-to-worker dispatch
-is the next integration step.
+Status: deterministic queue/runtime service, local runner, and API
+`worker_local` bridge. API and Slack-created runs can be advanced through the
+worker path in-process by setting `BEK_RUN_ADVANCEMENT=worker_local`. The next
+production step is replacing the in-memory queue with a durable queue/worker
+process while preserving this contract.
 
 Bek keeps one visible Slack teammate, `@bek`. The worker is an internal control
 plane component: it chooses runtimes, claims work, retries safely, pauses for
@@ -52,6 +54,30 @@ to Postgres, a queue, or a workflow engine later.
 
 The in-memory contract has injectable clocks and ID factories so tests can
 assert exact claim, heartbeat, retry, and resume decisions.
+
+## API Bridge
+
+`apps/api` owns a `LocalWorkerController` when run advancement mode is
+`worker_local`.
+
+- `POST /api/runs` creates the run in core with `advanceMode: "worker"`, then
+  enqueues and drains queued work through `WorkerRuntimeService`.
+- Slack mentions and slash commands use the same helper, so Slack ingress,
+  direct API calls, and future UI-triggered runs share one execution path.
+- Allowed reads complete through the deterministic local runtime adapter.
+- Policy-gated work, such as `github.pr`, stays `awaiting_approval` until a
+  human approves it; approval then enqueues `approval_granted` work and resumes
+  the runtime.
+- Runtime-requested approvals are upserted into core approvals from the worker
+  pause record, so mid-run checkpoints show up in the same admin approval UI.
+- `GET /api/worker/queue` exposes the local worker queue snapshot.
+- `POST /api/worker/drain` manually drains pending local work when the mode is
+  enabled.
+
+This bridge is deliberately in-process for the local product loop. Hosted or
+multi-instance deployments must move the same queue contract to Postgres,
+Valkey, a workflow engine, or another durable backend so claims, leases, event
+publication, and run settlement are transactional and crash-safe.
 
 ## Attempt State Machine
 
@@ -113,15 +139,15 @@ the stored approval expiry cancels the paused attempt as expired.
 
 ## Event Model
 
-Worker events are local to `@bek/worker` for now because persisted
-`@bek/core` run events still have a narrower union. The emitted event type can
-be either a runtime observability event such as `worker.claimed`,
-`runtime.started`, or `tool.requested`, or a worker lifecycle event such as
-`worker.retry_scheduled`, `worker.cancel_requested`,
-`worker.dead_lettered`, and `worker.approval_resumed`.
+Worker events are emitted by `@bek/worker` and mapped by the API bridge into
+persisted core run events. The original worker event type, trace ID, attempt,
+and event ID are stored in event data while the persisted event type stays in
+the stable core union, such as `run.status_changed`, `model.selected`,
+`tool.requested`, `approval.requested`, `run.completed`, and `run.failed`.
 
 Messages and data pass through core redaction helpers before storage. The event
-model is ready to map into durable run events once the DB/API schema is expanded.
+model is ready to map into a richer durable run-event enum once the DB/API
+schema is expanded.
 
 `WorkerEventSink` is the storage/streaming boundary for durable event
 publication. `InMemoryWorkerQueue` still keeps a local event log for tests, and

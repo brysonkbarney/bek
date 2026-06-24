@@ -20,12 +20,31 @@ import {
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
+import {
+  LocalWorkerController,
+  runAdvancementModeFromEnv,
+  type RunAdvancementMode,
+} from "./worker-runtime";
 
-export function createApp(store = new BekStore()) {
+export interface CreateAppOptions {
+  runAdvancement?: RunAdvancementMode | undefined;
+}
+
+type CreateStoreRunInput = Parameters<BekStore["createRun"]>[0];
+type ApprovalDecisionBody = Parameters<BekStore["decideApproval"]>[2];
+
+export function createApp(
+  store = new BekStore(),
+  options: CreateAppOptions = {},
+) {
   const app = new Hono();
   const seenSlackEventKeys = new Set<string>();
   const seenSlackCommandRuns = new Map<string, string>();
   const seenSlackInteractionKeys = new Set<string>();
+  const workerController = new LocalWorkerController(
+    store,
+    options.runAdvancement ?? runAdvancementModeFromEnv(),
+  );
   app.use(
     "*",
     cors({
@@ -78,6 +97,33 @@ export function createApp(store = new BekStore()) {
     const status = message.toLowerCase().includes("not found") ? 404 : 400;
     return c.json({ error: message }, status);
   });
+
+  async function createRunAndAdvance(input: CreateStoreRunInput) {
+    const run = store.createRun({
+      ...input,
+      advanceMode: workerController.enabled ? "worker" : "inline_stub",
+    });
+    if (workerController.enabled && run.status === "queued") {
+      workerController.enqueueRun(run);
+      await workerController.drain({ maxItems: 10 });
+    }
+    return latestRun(store, run.id);
+  }
+
+  async function decideApprovalAndAdvance(
+    approvalId: string,
+    decision: "approved" | "denied",
+    input: ApprovalDecisionBody,
+  ) {
+    const approval = store.decideApproval(approvalId, decision, {
+      ...input,
+      advanceMode: workerController.enabled ? "worker" : "inline_stub",
+    });
+    if (workerController.enabled) {
+      await workerController.advanceApproval(approval);
+    }
+    return latestApproval(store, approval.id);
+  }
 
   app.get("/health", (c) =>
     c.json({
@@ -273,17 +319,43 @@ export function createApp(store = new BekStore()) {
       .events.filter((event) => event.runId === c.req.param("runId"));
     return c.json(events);
   });
+  app.get("/api/worker/queue", (c) =>
+    c.json({
+      mode: workerController.mode,
+      enabled: workerController.enabled,
+      queue: workerController.read(),
+    }),
+  );
+  app.post("/api/worker/drain", async (c) => {
+    if (!workerController.enabled) {
+      return c.json(
+        {
+          error:
+            "Local worker advancement is disabled. Set BEK_RUN_ADVANCEMENT=worker_local to use this endpoint.",
+        },
+        409,
+      );
+    }
+    const body = drainWorkerSchema.parse(await c.req.json().catch(() => ({})));
+    const result = await workerController.drain(body);
+    await store.flushChanges();
+    return c.json({
+      mode: workerController.mode,
+      result,
+      queue: workerController.read(),
+    });
+  });
 
   app.post("/api/runs", async (c) => {
     const body = createRunSchema.parse(await c.req.json());
-    const run = store.createRun(body);
+    const run = await createRunAndAdvance(body);
     await store.flushChanges();
     return c.json(run, 201);
   });
 
   app.post("/api/approvals/:approvalId/approve", async (c) => {
     const body = approvalDecisionSchema.parse(await c.req.json());
-    const approval = store.decideApproval(
+    const approval = await decideApprovalAndAdvance(
       c.req.param("approvalId"),
       "approved",
       body,
@@ -294,7 +366,7 @@ export function createApp(store = new BekStore()) {
 
   app.post("/api/approvals/:approvalId/deny", async (c) => {
     const body = approvalDecisionSchema.parse(await c.req.json());
-    const approval = store.decideApproval(
+    const approval = await decideApprovalAndAdvance(
       c.req.param("approvalId"),
       "denied",
       body,
@@ -478,7 +550,7 @@ export function createApp(store = new BekStore()) {
       );
     }
 
-    const approval = store.decideApproval(
+    const approval = await decideApprovalAndAdvance(
       interaction.approvalId,
       interaction.decision,
       {
@@ -551,7 +623,7 @@ export function createApp(store = new BekStore()) {
       );
     }
 
-    const run = store.createRun({
+    const run = await createRunAndAdvance({
       placeScopeId: place.id,
       prompt: command.text.trim() || `${command.command || "/bek"} help`,
       requesterPrincipalId: slackPrincipalIdForUser(command.userId),
@@ -602,7 +674,7 @@ export function createApp(store = new BekStore()) {
           reason: "Bek is not configured for this Slack channel.",
         });
       }
-      const run = store.createRun({
+      const run = await createRunAndAdvance({
         placeScopeId: place.id,
         prompt:
           event.text ?? `Reaction ${event.reaction ?? "agent"} triggered Bek`,
@@ -648,6 +720,12 @@ const createRunSchema = z
       ])
       .optional(),
     resource: z.string().optional(),
+  })
+  .strict();
+
+const drainWorkerSchema = z
+  .object({
+    maxItems: z.number().int().min(1).max(100).optional(),
   })
   .strict();
 
@@ -775,6 +853,24 @@ const approvalDecisionSchema = z
 
 function hasAtLeastOneField(input: object): boolean {
   return Object.keys(input).length > 0;
+}
+
+function latestRun(store: BekStore, runId: string) {
+  const run = store.read().runs.find((candidate) => candidate.id === runId);
+  if (!run) {
+    throw new Error("Run not found.");
+  }
+  return run;
+}
+
+function latestApproval(store: BekStore, approvalId: string) {
+  const approval = store
+    .read()
+    .approvals.find((candidate) => candidate.id === approvalId);
+  if (!approval) {
+    throw new Error("Approval not found.");
+  }
+  return approval;
 }
 
 const defaultSlackBotScopes = [

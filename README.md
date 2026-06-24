@@ -27,6 +27,7 @@ This repository is a working OSS product spine for Bek. It runs locally without 
 - React + TanStack admin app with setup, channels, access bundles, runs, approvals, connectors, model policy, memory stance, audit, and settings.
 - Core TypeScript domain package with policy, approval, redaction, run, and security tests.
 - Slack helpers with fail-closed signature verification, OAuth state, OAuth code exchange, slash-command parsing, approval interactions, and message rendering.
+- In-process `worker_local` run advancement for local/API/Slack flows, including runtime events, policy approvals, runtime-requested approvals, resume after approval, and final run cost/status.
 - Model-router and MCP-gateway packages with provider-neutral routing/tool-manifest tests.
 - Runtime and sandbox contract packages for AI SDK, OpenCode, Docker, Vercel Sandbox, and E2B style adapters.
 - Drizzle/Postgres schema and snapshot repository for the launch data model.
@@ -74,10 +75,12 @@ docker compose up -d
 ```
 
 The default Compose command starts Postgres, Valkey, and MinIO. Use the `app`
-profile for the API/web containers, and the `worker` profile or
-`pnpm worker:local` for the deterministic local worker runner. Set
-`BEK_STORAGE=postgres` with `DATABASE_URL` to run the API against the
-Postgres-backed snapshot repository.
+profile for the API/web containers. Set `BEK_RUN_ADVANCEMENT=worker_local` to
+make API and Slack-created runs advance through the in-process local worker, and
+set `BEK_STORAGE=postgres` with `DATABASE_URL` to run the API against the
+Postgres-backed snapshot repository. The `worker` profile and
+`pnpm worker:local` remain deterministic runner smoke tests for the worker
+contract.
 
 ## Install And Setup Docs
 
@@ -115,8 +118,11 @@ operator:
 | Sandbox         | Docker local policy or hosted microVM provider credentials                                 |
 
 Several of these surfaces are contract foundations today, not production
-integrations. See [Launch Readiness](./docs/launch-readiness.md) before using
-Bek in a real workspace.
+integrations. The local worker bridge is executable, but hosted production
+still needs durable queue-backed workers, token vaulting, live Slack posting,
+and real repo/sandbox adapters. See
+[Launch Readiness](./docs/launch-readiness.md) before using Bek in a real
+workspace.
 
 ## Monorepo
 

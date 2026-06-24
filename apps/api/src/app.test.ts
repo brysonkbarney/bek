@@ -9,6 +9,7 @@ import { createApp } from "./app";
 
 const managedEnvKeys = [
   "BEK_ADMIN_API_TOKEN",
+  "BEK_RUN_ADVANCEMENT",
   "BEK_SLACK_OAUTH_EXCHANGE",
   "BEK_SLACK_USER_PRINCIPAL_MAP",
   "SLACK_BOT_SCOPES",
@@ -738,6 +739,184 @@ describe("Bek API", () => {
       status: "approved",
       decidedByPrincipalId: "principal_admin",
     });
+  });
+
+  it("advances allowed API runs through the local worker when enabled", async () => {
+    const app = createApp(new BekStore(), {
+      runAdvancement: "worker_local",
+    });
+    const res = await app.request("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: "@bek summarize checkout",
+        placeScopeId: "place_checkout",
+        capability: "slack.read",
+        resource: "slack:C_CHECKOUT",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(res.status).toBe(201);
+    const run = (await res.json()) as {
+      id: string;
+      status: string;
+      actualCostCents: number;
+    };
+    expect(run.status).toBe("completed");
+    expect(run.actualCostCents).toBeGreaterThan(0);
+
+    const detail = (await (
+      await app.request(`/api/runs/${run.id}`)
+    ).json()) as {
+      events: Array<{
+        type: string;
+        data?: { workerEventType?: string };
+      }>;
+    };
+    expect(
+      detail.events.some(
+        (event) => event.data?.workerEventType === "worker.completed",
+      ),
+    ).toBe(true);
+
+    const queue = (await (await app.request("/api/worker/queue")).json()) as {
+      enabled: boolean;
+      queue: {
+        records: Array<{ status: string; result?: { status: string } }>;
+      };
+    };
+    expect(queue.enabled).toBe(true);
+    expect(queue.queue.records[0]).toMatchObject({
+      status: "completed",
+      result: { status: "completed" },
+    });
+  });
+
+  it("resumes policy approvals through the local worker", async () => {
+    const app = createApp(new BekStore(), {
+      runAdvancement: "worker_local",
+    });
+    const { run, approval } = await createPrApproval(
+      app,
+      "@bek open a worker PR",
+    );
+    expect(run.status).toBe("awaiting_approval");
+
+    const approved = await app.request(
+      `/api/approvals/${approval.id}/approve`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          principalId: "principal_admin",
+          payloadHash: approval.payloadHash,
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(approved.status).toBe(200);
+    await expect(approved.json()).resolves.toMatchObject({
+      status: "approved",
+    });
+
+    await expect(expectJson(app, `/api/runs/${run.id}`)).resolves.toMatchObject(
+      {
+        run: {
+          status: "completed",
+        },
+      },
+    );
+  });
+
+  it("persists and resumes runtime-requested local worker approvals", async () => {
+    const app = createApp(new BekStore(), {
+      runAdvancement: "worker_local",
+    });
+    const res = await app.request("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: "@bek ask for approval before touching anything",
+        placeScopeId: "place_checkout",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(res.status).toBe(201);
+    const run = (await res.json()) as { id: string; status: string };
+    expect(run.status).toBe("awaiting_approval");
+
+    const detail = (await (
+      await app.request(`/api/runs/${run.id}`)
+    ).json()) as {
+      approvals: Array<{ id: string; payloadHash: string; status: string }>;
+    };
+    expect(detail.approvals).toHaveLength(1);
+    expect(detail.approvals[0]).toMatchObject({ status: "pending" });
+
+    const approved = await app.request(
+      `/api/approvals/${detail.approvals[0]!.id}/approve`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          principalId: "principal_admin",
+          payloadHash: detail.approvals[0]!.payloadHash,
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(approved.status).toBe(200);
+
+    await expect(expectJson(app, `/api/runs/${run.id}`)).resolves.toMatchObject(
+      {
+        run: {
+          status: "completed",
+        },
+      },
+    );
+  });
+
+  it("cancels paused local worker work when approval is denied", async () => {
+    const app = createApp(new BekStore(), {
+      runAdvancement: "worker_local",
+    });
+    const res = await app.request("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: "@bek ask for approval and then stop",
+        placeScopeId: "place_checkout",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    const run = (await res.json()) as { id: string; status: string };
+    expect(run.status).toBe("awaiting_approval");
+
+    const detail = (await (
+      await app.request(`/api/runs/${run.id}`)
+    ).json()) as {
+      approvals: Array<{ id: string; payloadHash: string }>;
+    };
+
+    const denied = await app.request(
+      `/api/approvals/${detail.approvals[0]!.id}/deny`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          principalId: "principal_admin",
+          payloadHash: detail.approvals[0]!.payloadHash,
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(denied.status).toBe(200);
+
+    await expect(expectJson(app, `/api/runs/${run.id}`)).resolves.toMatchObject(
+      {
+        run: {
+          status: "cancelled",
+        },
+      },
+    );
+    const queue = (await (await app.request("/api/worker/queue")).json()) as {
+      queue: { records: Array<{ status: string }> };
+    };
+    expect(queue.queue.records[0]).toMatchObject({ status: "cancelled" });
   });
 
   it("rejects approval tampering and risky self-approval", async () => {

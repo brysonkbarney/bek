@@ -127,6 +127,86 @@ describe("Bek approvals", () => {
         ?.status,
     ).toBe("expired");
   });
+
+  it("queues approved risky work when the worker owns advancement", () => {
+    const store = new BekStore();
+    const approval = createPendingApproval(store);
+
+    const decided = store.decideApproval(approval.id, "approved", {
+      principalId: "principal_admin",
+      payloadHash: approval.payloadHash,
+      advanceMode: "worker",
+    });
+
+    const run = store
+      .read()
+      .runs.find((candidate) => candidate.id === decided.runId);
+    expect(run).toMatchObject({
+      status: "queued",
+      actualCostCents: 0,
+    });
+  });
+});
+
+describe("Bek worker advancement state", () => {
+  it("leaves allowed runs queued for worker execution", () => {
+    const store = new BekStore();
+
+    const run = store.createRun({
+      prompt: "@bek summarize checkout",
+      placeScopeId: "place_checkout",
+      capability: "slack.read",
+      resource: "slack:C_CHECKOUT",
+      advanceMode: "worker",
+    });
+
+    expect(run.status).toBe("queued");
+    expect(
+      store
+        .read()
+        .events.some(
+          (event) =>
+            event.runId === run.id &&
+            event.type === "run.status_changed" &&
+            event.message.includes("worker advancement"),
+        ),
+    ).toBe(true);
+  });
+
+  it("persists worker approvals and terminal run status", () => {
+    const store = new BekStore();
+    const run = store.createRun({
+      prompt: "@bek do something with approval",
+      placeScopeId: "place_checkout",
+      advanceMode: "worker",
+    });
+
+    const approval = store.upsertApprovalRequest({
+      id: "approval_worker_test",
+      orgId: run.orgId,
+      runId: run.id,
+      action: "local.approval",
+      risk: "write_external",
+      status: "pending",
+      payloadHash: "hash_hash_hash_hash",
+      requestedByPrincipalId: run.requesterPrincipalId,
+      createdAt: run.createdAt,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    expect(approval.status).toBe("pending");
+
+    const completed = store.setRunStatus({
+      runId: run.id,
+      status: "completed",
+      actualCostCents: 3,
+      message: "Worker completed test run.",
+    });
+
+    expect(completed).toMatchObject({
+      status: "completed",
+      actualCostCents: 3,
+    });
+  });
 });
 
 describe("Bek admin control plane store", () => {

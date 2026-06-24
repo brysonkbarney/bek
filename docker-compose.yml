@@ -17,6 +17,7 @@ x-bek-app-env: &bek-app-env
   BEK_DB_AUTO_SEED: ${BEK_DB_AUTO_SEED:-true}
   BEK_DB_LOGGER: ${BEK_DB_LOGGER:-false}
   BEK_ORG_ID: ${BEK_ORG_ID:-org_demo}
+  BEK_RUN_ADVANCEMENT: ${BEK_RUN_ADVANCEMENT:-worker_local}
   DATABASE_URL: ${DATABASE_URL:-postgres://bek:bek@postgres:5432/bek}
   REDIS_URL: ${REDIS_URL:-redis://redis:6379}
   S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
