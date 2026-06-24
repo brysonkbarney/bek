@@ -10,7 +10,7 @@ import type {
   Principal,
   RunEvent,
 } from "@bek/core";
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { BekDb } from "./client";
 import {
   accessBundlePlaces,
@@ -23,6 +23,7 @@ import {
   credentialMetadata,
   grants,
   ingressDeliveries,
+  modelUsage,
   modelPolicies,
   orgs,
   outboundDeliveries,
@@ -41,6 +42,7 @@ import {
   type CredentialMetadataRow,
   type GrantRow,
   type IngressDeliveryRow,
+  type ModelUsageRow,
   type ModelPolicyRow,
   type OrganizationRow,
   type OutboundDeliveryRow,
@@ -51,7 +53,7 @@ import {
   type RuntimeProfileRow,
 } from "./schema";
 
-type MutationDb = Pick<BekDb, "delete" | "insert">;
+type MutationDb = Pick<BekDb, "delete" | "insert" | "select">;
 
 type OrgSnapshotRow = Pick<
   OrganizationRow,
@@ -445,9 +447,14 @@ export class DrizzleBekSnapshotRepository implements BekSnapshotRepository {
 
     await this.db.transaction(async (tx) => {
       const db = tx as MutationDb;
+      const preservedModelUsageRows = await readPreservedModelUsageRows(
+        db,
+        rows,
+      );
       await deleteCurrentSnapshotRows(db, snapshot.org.id);
       await upsertOrgRow(db, rows.org);
       await insertSnapshotRows(db, rows);
+      await restoreModelUsageRows(db, preservedModelUsageRows);
     });
   }
 }
@@ -780,6 +787,58 @@ async function deleteCurrentSnapshotRows(db: MutationDb, orgId: string) {
   await db.delete(runtimeProfiles).where(eq(runtimeProfiles.orgId, orgId));
   await db.delete(modelPolicies).where(eq(modelPolicies.orgId, orgId));
   await db.delete(principals).where(eq(principals.orgId, orgId));
+}
+
+async function readPreservedModelUsageRows(
+  db: MutationDb,
+  rows: BekSnapshotRows,
+): Promise<ModelUsageRow[]> {
+  const runIds = rows.runs.map((run) => run.id);
+  if (runIds.length === 0) {
+    return [];
+  }
+
+  const existingRows = await db
+    .select()
+    .from(modelUsage)
+    .where(
+      and(eq(modelUsage.orgId, rows.org.id), inArray(modelUsage.runId, runIds)),
+    )
+    .orderBy(asc(modelUsage.id));
+
+  return preserveModelUsageRowsForSnapshot(rows, existingRows);
+}
+
+export function preserveModelUsageRowsForSnapshot(
+  rows: BekSnapshotRows,
+  existingRows: ModelUsageRow[],
+): ModelUsageRow[] {
+  const runIds = new Set(rows.runs.map((run) => run.id));
+  const eventIds = new Set(rows.events.map((event) => event.id));
+  const modelPolicyIds = new Set(rows.modelPolicies.map((policy) => policy.id));
+
+  return existingRows
+    .filter((row) => row.orgId === rows.org.id && runIds.has(row.runId))
+    .map((row) => ({
+      ...row,
+      runEventId:
+        row.runEventId && eventIds.has(row.runEventId) ? row.runEventId : null,
+      modelPolicyId:
+        row.modelPolicyId && modelPolicyIds.has(row.modelPolicyId)
+          ? row.modelPolicyId
+          : null,
+    }));
+}
+
+async function restoreModelUsageRows(
+  db: MutationDb,
+  rows: ModelUsageRow[],
+): Promise<void> {
+  if (rows.length === 0) {
+    return;
+  }
+
+  await db.insert(modelUsage).values(rows).onConflictDoNothing();
 }
 
 async function upsertOrgRow(db: MutationDb, org: OrgSnapshotRow) {

@@ -62,11 +62,17 @@ import {
   type RunAdvancementMode,
   type WorkerQueuePersistenceOptions,
 } from "./worker-runtime";
+import {
+  modelUsageTotalsFromRuns,
+  type ModelUsageRepository,
+  type ModelUsageSink,
+} from "./persistence";
 
 export interface CreateAppOptions {
   runAdvancement?: RunAdvancementMode | undefined;
   slackClient?: SlackWebApiClient | undefined;
   workerQueuePersistence?: WorkerQueuePersistenceOptions | undefined;
+  modelUsageRepository?: Partial<ModelUsageRepository> | undefined;
 }
 
 type CreateStoreRunInput = Parameters<BekStore["createRun"]>[0];
@@ -77,11 +83,15 @@ export function createApp(
   options: CreateAppOptions = {},
 ) {
   const app = new Hono();
+  const modelUsageSink = modelUsageSinkFromRepository(
+    options.modelUsageRepository,
+  );
   const workerController = new LocalWorkerController(
     store,
     options.runAdvancement ?? runAdvancementModeFromEnv(),
     {
       persistence: options.workerQueuePersistence,
+      modelUsageSink,
     },
   );
   const slackOutbound = createSlackOutboundDelivery(store, {
@@ -192,6 +202,7 @@ export function createApp(
     try {
       await workerController.flushChanges();
       await store.flushChanges();
+      await workerController.flushModelUsageChanges();
     } catch (error) {
       if (deliveryKey) {
         store.removeIngressDelivery(deliveryKey, { recordChange: false });
@@ -307,6 +318,7 @@ export function createApp(
     enqueueSlackOutcomesForWorkerDrain(result);
     await workerController.flushChanges();
     await store.flushChanges();
+    await workerController.flushModelUsageChanges();
   }
 
   let slackBackgroundWork: Promise<void> | undefined;
@@ -614,15 +626,15 @@ export function createApp(
   app.get("/api/audit-events", (c) =>
     c.json(store.read().events.map(publicRunEvent)),
   );
-  app.get("/api/model-usage", (c) => {
-    const runs = store.read().runs;
+  app.get("/api/model-usage", async (c) => {
+    const snapshot = store.read();
+    const repositoryTotals =
+      await options.modelUsageRepository?.readModelUsageTotals?.(
+        snapshot.org.id,
+      );
     return c.json({
-      totalEstimatedCents: runs.reduce(
-        (sum, run) => sum + run.estimatedCostCents,
-        0,
-      ),
-      totalActualCents: runs.reduce((sum, run) => sum + run.actualCostCents, 0),
-      runs: runs.length,
+      ...(repositoryTotals ?? modelUsageTotalsFromRuns(snapshot.runs)),
+      source: repositoryTotals ? "model_usage" : "runs",
     });
   });
   app.get("/api/runs/:runId", (c) => {
@@ -685,6 +697,7 @@ export function createApp(
     enqueueSlackOutcomesForWorkerDrain(result);
     await workerController.flushChanges();
     await store.flushChanges();
+    await workerController.flushModelUsageChanges();
     const outbound = await drainSlackOutboundDeliveries({ limit: 25 });
     return c.json({
       mode: workerController.mode,
@@ -763,6 +776,7 @@ export function createApp(
     });
     await workerController.flushChanges();
     await store.flushChanges();
+    await workerController.flushModelUsageChanges();
     return c.json({
       mode: workerController.mode,
       enabled: workerController.enabled,
@@ -816,6 +830,7 @@ export function createApp(
     }
     await workerController.flushChanges();
     await store.flushChanges();
+    await workerController.flushModelUsageChanges();
     return c.json({
       mode: workerController.mode,
       decision,
@@ -828,6 +843,7 @@ export function createApp(
     const body = createRunSchema.parse(await c.req.json());
     const run = await createRunAndAdvance(body);
     await store.flushChanges();
+    await workerController.flushModelUsageChanges();
     return c.json(run, 201);
   });
 
@@ -839,6 +855,7 @@ export function createApp(
       body,
     );
     await store.flushChanges();
+    await workerController.flushModelUsageChanges();
     return c.json(approval);
   });
 
@@ -850,6 +867,7 @@ export function createApp(
       body,
     );
     await store.flushChanges();
+    await workerController.flushModelUsageChanges();
     return c.json(approval);
   });
 
@@ -1682,6 +1700,17 @@ function publicSnapshot(snapshot: BekSnapshot): BekSnapshot {
     events: snapshot.events.map(publicRunEvent),
     connectorInstalls: snapshot.connectorInstalls.map(publicConnectorInstall),
     credentials: snapshot.credentials.map(publicCredential),
+  };
+}
+
+function modelUsageSinkFromRepository(
+  repository: Partial<ModelUsageRepository> | undefined,
+): ModelUsageSink | undefined {
+  if (!repository?.recordModelUsage) {
+    return undefined;
+  }
+  return {
+    recordModelUsage: (input) => repository.recordModelUsage!(input),
   };
 }
 

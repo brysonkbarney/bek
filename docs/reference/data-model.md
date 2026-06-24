@@ -49,12 +49,33 @@ Migration-safe UUID plan:
 - `audit_events`: append-only side-effect and governance log entries.
 - `model_usage`, `tool_usage`: cost, latency, decision, and execution accounting for model calls and tool calls.
 
+## Model Usage Ledger
+
+The Drizzle schema includes `model_usage` as the durable model-call ledger. It is
+keyed by org and run, can link back to the `run_events` timeline, and stores the
+selected model policy, provider, model, token counts, estimated cost, local
+actual estimate, latency, status, error code, and reconciliation metadata.
+
+For the current AI Gateway path, live execution emits `model.completed` worker
+events with the data needed to populate this table. In Postgres mode, Bek writes
+those events into `model_usage` and `/api/model-usage` prefers the durable
+ledger summary. In memory mode, `/api/model-usage` falls back to run-level
+totals and marks the response with `source: "runs"`.
+
+`actualCostCents` is a local estimated actual calculated from response usage and
+Bek's benchmark pricing; it is not a provider invoice amount. Billed-cost
+reconciliation against Vercel AI Gateway or provider dashboards stays as a
+separate operational process and should write explicit reconciliation metadata
+rather than overwriting the local estimate semantics.
+
 ## Persistence Runtime
 
 `@bek/db` is the persistence package. It exports:
 
 - `createBekDbClient()`: creates a Drizzle `pg` client from `DATABASE_URL`.
 - `DrizzleBekSnapshotRepository`: reads and writes the current `BekSnapshot` domain without exposing internal capability rows to users.
+- `DrizzleModelUsageRepository`: records deterministic model-call ledger rows
+  from worker events and returns grouped usage summaries for the API.
 - `seedBekSnapshot()`: writes the demo seed snapshot into Postgres.
 
 The repository keeps the launch invariant explicit: each org must read back as exactly one visible `@bek` agent. Capability profiles, grants, runtime profiles, model policies, and budget policies remain internal governed capabilities behind that handle.

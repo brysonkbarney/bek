@@ -18,7 +18,8 @@ The model-router package now includes local productization foundations:
 - An in-memory provider registry for configured providers and model metadata.
 - A deterministic fake model gateway for tests and demos.
 - An optional AI SDK Gateway runtime adapter selected with `BEK_MODEL_GATEWAY`.
-- Cost ledger helpers for preflight estimates and completed calls.
+- Cost ledger helpers for preflight estimates and locally estimated completed
+  calls.
 - A budget preflight result shape with per-model estimates and remaining-budget status.
 - Failover routing that can try configured fallbacks when a provider call fails.
 - Failover attempt metadata that records whether each tried route was primary or fallback, its estimate, and its budget decision.
@@ -35,7 +36,13 @@ Vercel AI Gateway is the preferred first live model path for hosted or shared de
 - `BEK_MODEL_GATEWAY=vercel_ai_sdk` to select live calls over the deterministic local runtime.
 - `BEK_AI_GATEWAY_TAGS` for optional low-cardinality reporting tags such as `env:staging` or `team:platform`.
 
-The adapter emits `model.requested` and `model.completed` worker events with route attempts, provider, model, usage counts, estimated cost, actual estimate, latency, finish reason, and Gateway response ID when the provider returns one. Durable `model_usage` persistence and billed-cost reconciliation are still launch blockers.
+The adapter emits `model.requested` and `model.completed` worker events with
+route attempts, provider, model, usage counts, estimated cost, local actual
+estimate, latency, finish reason, and Gateway response ID when the provider
+returns one. The completed-event `actualCostCents` value is Bek's local estimate
+from AI SDK response usage and model benchmark pricing. In Postgres mode, Bek
+writes those completed events into the durable `model_usage` ledger; the value
+is useful for local cost review, but it is not billed-cost evidence.
 
 ## Admin Setup Model
 
@@ -46,7 +53,8 @@ A production-ready setup should let admins configure:
 - Per-run and per-day budget ceilings.
 - Fallback order and allowed model classes.
 - Approval requirements for unusually expensive, privileged, or data-sensitive runs.
-- Audit records for selected model, cost estimate, actual cost, and fallback reason.
+- Audit records for selected model, cost estimate, local actual estimate,
+  billed-cost reconciliation status, and fallback reason.
 
 ## User Experience Rule
 
@@ -73,23 +81,26 @@ The current repo has the product primitives for cost control:
 - fallback model lists,
 - deterministic route estimates in `@bek/model-router`,
 - explicit budget preflight metadata for selected and fallback routes,
-- model usage ledger helpers,
+- model usage ledger helpers for estimates and local actuals,
 - run-level estimated and actual cost fields,
-- `/api/model-usage` summary for seeded/local runs.
+- `/api/model-usage` summary that prefers the durable ledger in Postgres mode
+  and falls back to run-level totals in memory mode.
 
-These are not yet production billing controls. The Drizzle schema includes a
-`model_usage` table, but the current API summary is still derived from run-level
-estimated and actual cost fields, and the model-router ledger is in-memory test
-infrastructure. Before a shared workspace or hosted beta, Bek still needs
-persistent usage records, daily/workspace ceilings, billed provider response
-accounting, alerts, and approval checkpoints for budget step-ups.
+These are not yet production billing controls. Live AI Gateway execution emits
+`model.completed` events, Postgres-backed API instances persist those calls to
+`model_usage`, and `/api/model-usage` reports `source: "model_usage"` when it is
+reading that ledger. Before a shared workspace or hosted beta, Bek still needs
+daily/workspace ceilings, billed provider response reconciliation, alerts, and
+approval checkpoints for budget step-ups.
 
 Usage ledger entries should record each attempt with org, run, model policy,
-provider, model, input/output usage counts, estimated cost, actual cost,
-latency, status, error code, and enough metadata to reconcile Bek totals with
-Gateway/provider dashboards. Failed attempts and fallback attempts should be
-recorded too; otherwise budget and incident review will undercount real
-execution.
+provider, model, input/output usage counts, estimated cost, local actual
+estimate, latency, status, error code, fallback metadata, and Gateway response
+ID when present. Failed attempts and fallback attempts should be recorded too;
+otherwise budget and incident review will undercount real execution. Keep
+billed-cost reconciliation separate: provider invoices and Gateway dashboards
+can validate or annotate ledger rows, but the ledger's `actualCostCents` field
+currently means Bek's local estimated actual.
 
 Recommended local/pilot defaults:
 
@@ -104,6 +115,6 @@ Recommended local/pilot defaults:
 ## Launch Blockers
 
 - Credential broker.
-- Cost ledger persistence wired to real calls.
+- Billed-cost reconciliation against Gateway/provider invoices and dashboards.
 - Model catalog picker and live Gateway model discovery in the admin UI.
 - Production budget enforcement across persisted daily and per-run usage.

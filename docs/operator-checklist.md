@@ -99,11 +99,16 @@ the current OSS spine.
 - [ ] Verify real execution is actually enabled before announcing it by running
       a worker drain and checking for AI SDK Gateway `model.requested` and
       `model.completed` events instead of local stub events.
-- [ ] Reconcile each live model attempt against a persistent usage ledger with
-      provider, model, estimated cost, actual usage, actual cost, latency,
-      status, error code, and fallback metadata.
-- [ ] Blocked: wire persistent usage ledgers before billing or shared budget
-      enforcement.
+- [ ] Confirm the durable `model_usage` ledger is populated from
+      `model.completed` events with provider, model, token usage, estimated
+      cost, local actual estimate, latency, status, error code, Gateway response
+      ID, and fallback metadata.
+- [ ] Treat `actualCostCents` in Bek usage records as a local estimated actual,
+      not as provider-billed cost.
+- [ ] Verify `/api/model-usage` returns `source: "model_usage"` in Postgres mode
+      before using ledger totals for shared budget enforcement.
+- [ ] Blocked: add billed-cost reconciliation against Gateway/provider
+      dashboards before issuing invoices or making finance reports.
 - [ ] Blocked: add daily/workspace ceilings and alerting before hosted beta.
 
 ## MCP And Tools

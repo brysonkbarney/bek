@@ -1,4 +1,5 @@
 export * from "./client";
+export * from "./model-usage-repository";
 export * from "./schema";
 export * from "./seed";
 export * from "./snapshot-repository";

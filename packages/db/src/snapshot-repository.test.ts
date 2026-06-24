@@ -1,6 +1,11 @@
 import { createSeedSnapshot, type BekSnapshot } from "@bek/core";
 import { describe, expect, it } from "vitest";
-import { rowsToSnapshot, snapshotToRows } from "./snapshot-repository";
+import type { ModelUsageRow } from "./schema";
+import {
+  preserveModelUsageRowsForSnapshot,
+  rowsToSnapshot,
+  snapshotToRows,
+} from "./snapshot-repository";
 
 describe("Bek snapshot persistence mapping", () => {
   it("normalizes the seed snapshot into relational rows", () => {
@@ -206,4 +211,69 @@ describe("Bek snapshot persistence mapping", () => {
 
     expect(() => snapshotToRows(snapshot)).toThrow(/@bek agent/i);
   });
+
+  it("preserves model usage rows only for runs kept by a destructive snapshot save", () => {
+    const rows = snapshotToRows(
+      {
+        ...createSeedSnapshot("2026-01-02T03:04:05.000Z"),
+        events: [],
+      },
+      new Date("2026-01-02T03:04:05.000Z"),
+    );
+
+    const preserved = preserveModelUsageRowsForSnapshot(rows, [
+      modelUsageRow({
+        id: "usage_kept",
+        runId: "run_demo",
+        runEventId: "event_deleted_by_snapshot",
+        modelPolicyId: "model_auto",
+      }),
+      modelUsageRow({
+        id: "usage_deleted_run",
+        runId: "run_removed",
+        runEventId: null,
+        modelPolicyId: "model_auto",
+      }),
+      modelUsageRow({
+        id: "usage_other_org",
+        orgId: "org_other",
+        runId: "run_demo",
+        runEventId: null,
+        modelPolicyId: "model_auto",
+      }),
+    ]);
+
+    expect(preserved).toEqual([
+      expect.objectContaining({
+        id: "usage_kept",
+        orgId: "org_demo",
+        runId: "run_demo",
+        runEventId: null,
+        modelPolicyId: "model_auto",
+      }),
+    ]);
+  });
 });
+
+function modelUsageRow(overrides: Partial<ModelUsageRow>): ModelUsageRow {
+  return {
+    id: "usage",
+    orgId: "org_demo",
+    runId: "run_demo",
+    runEventId: null,
+    modelPolicyId: null,
+    provider: "openai",
+    model: "gpt-5.4",
+    inputTokens: 10,
+    outputTokens: 5,
+    totalTokens: 15,
+    estimatedCostCents: 1,
+    actualCostCents: 1,
+    latencyMs: 200,
+    status: "succeeded",
+    errorCode: null,
+    metadata: {},
+    createdAt: new Date("2026-01-02T03:04:05.000Z"),
+    ...overrides,
+  };
+}

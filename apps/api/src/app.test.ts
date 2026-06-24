@@ -504,6 +504,36 @@ describe("Bek API", () => {
     );
   });
 
+  it("prefers model usage repository totals when they are available", async () => {
+    const app = createApp(new BekStore(), {
+      modelUsageRepository: {
+        readModelUsageTotals: (orgId) => {
+          expect(orgId).toBe("org_demo");
+          return {
+            runs: 2,
+            totalEstimatedCents: 11,
+            totalActualCents: 9,
+            modelCalls: 3,
+            inputTokens: 2400,
+            outputTokens: 600,
+            totalTokens: 3000,
+          };
+        },
+      },
+    });
+
+    await expect(expectJson(app, "/api/model-usage")).resolves.toEqual({
+      runs: 2,
+      totalEstimatedCents: 11,
+      totalActualCents: 9,
+      modelCalls: 3,
+      inputTokens: 2400,
+      outputTokens: 600,
+      totalTokens: 3000,
+      source: "model_usage",
+    });
+  });
+
   it("updates the agent while preserving the single visible handle", async () => {
     const res = await createApp().request("/api/agent", {
       method: "PATCH",

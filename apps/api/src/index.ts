@@ -9,6 +9,7 @@ serve(
   {
     fetch: createApp(handle.store, {
       workerQueuePersistence: handle.workerQueuePersistence,
+      modelUsageRepository: handle.modelUsageRepository,
     }).fetch,
     port,
   },

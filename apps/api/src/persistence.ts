@@ -1,10 +1,18 @@
-import { BekStore, createSeedSnapshot } from "@bek/core";
+import {
+  BekStore,
+  createSeedSnapshot,
+  type Run,
+  type RunEvent,
+} from "@bek/core";
 import {
   createBekDbClient,
   DrizzleBekSnapshotRepository,
+  DrizzleModelUsageRepository,
   DrizzleWorkerQueueRepository,
   seedBekSnapshot,
   type BekDbClient,
+  type ModelUsageSummary,
+  type RecordModelUsageInput,
 } from "@bek/db";
 import type { WorkerSnapshot } from "@bek/worker";
 
@@ -16,6 +24,7 @@ export interface BekApiStoreHandle {
   storageMode: BekApiStorageMode;
   workerQueueBackend: BekWorkerQueueBackend;
   workerQueuePersistence?: BekWorkerQueuePersistence | undefined;
+  modelUsageRepository?: Partial<ModelUsageRepository> | undefined;
   close: () => Promise<void>;
 }
 
@@ -23,6 +32,55 @@ export interface BekWorkerQueuePersistence {
   initialSnapshot: WorkerSnapshot;
   onSnapshotChanged: (snapshot: WorkerSnapshot) => Promise<void> | void;
 }
+
+export type ModelUsageStatus = "succeeded" | "failed" | "cancelled";
+
+export interface ModelUsageWrite {
+  id: string;
+  orgId: string;
+  runId: string;
+  runEventId: string;
+  modelPolicyId?: string | undefined;
+  provider: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estimatedCostCents: number;
+  actualCostCents: number;
+  latencyMs?: number | undefined;
+  status: ModelUsageStatus;
+  errorCode?: string | undefined;
+  metadata?: Record<string, unknown> | undefined;
+  createdAt: string;
+}
+
+export interface ModelUsageTotals {
+  runs: number;
+  totalEstimatedCents: number;
+  totalActualCents: number;
+  modelCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
+export interface ModelUsageSink {
+  recordModelUsage(input: ModelUsageWrite): Promise<void> | void;
+}
+
+export interface ModelUsageTotalsRepository {
+  readModelUsageTotals(
+    orgId: string,
+  ):
+    | Promise<ModelUsageTotals | null | undefined>
+    | ModelUsageTotals
+    | null
+    | undefined;
+}
+
+export interface ModelUsageRepository
+  extends ModelUsageSink, ModelUsageTotalsRepository {}
 
 export async function createApiStoreFromEnv(
   env: Record<string, string | undefined> = process.env,
@@ -115,6 +173,7 @@ async function createPostgresStoreHandle(
     storageMode: "postgres",
     workerQueueBackend,
     workerQueuePersistence,
+    modelUsageRepository: createApiModelUsageRepository(client),
     close: async () => {
       await store.flushChanges();
       await client.close();
@@ -159,4 +218,221 @@ async function seedDefaultSnapshot(input: {
     throw new Error(`Bek failed to seed ${input.orgId}.`);
   }
   return seeded;
+}
+
+export function modelUsageTotalsFromRuns(
+  runs: readonly Pick<Run, "estimatedCostCents" | "actualCostCents">[],
+): ModelUsageTotals {
+  return {
+    totalEstimatedCents: runs.reduce(
+      (sum, run) => sum + run.estimatedCostCents,
+      0,
+    ),
+    totalActualCents: runs.reduce((sum, run) => sum + run.actualCostCents, 0),
+    modelCalls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    runs: runs.length,
+  };
+}
+
+export function modelUsageTotalsFromSummaries(
+  summaries: readonly ModelUsageSummary[],
+): ModelUsageTotals {
+  const runIds = new Set<string>();
+  return summaries.reduce<ModelUsageTotals>(
+    (totals, summary) => {
+      runIds.add(summary.runId);
+      totals.modelCalls += summary.calls;
+      totals.totalEstimatedCents += summary.estimatedCostCents;
+      totals.totalActualCents += summary.actualCostCents;
+      totals.inputTokens += summary.inputTokens;
+      totals.outputTokens += summary.outputTokens;
+      totals.totalTokens += summary.totalTokens;
+      totals.runs = runIds.size;
+      return totals;
+    },
+    {
+      runs: 0,
+      totalEstimatedCents: 0,
+      totalActualCents: 0,
+      modelCalls: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+    },
+  );
+}
+
+function createApiModelUsageRepository(
+  client: BekDbClient,
+): ModelUsageRepository {
+  const repository = new DrizzleModelUsageRepository(client.db);
+  return {
+    recordModelUsage: async (input) => {
+      const record: RecordModelUsageInput = {
+        id: input.id,
+        orgId: input.orgId,
+        runId: input.runId,
+        runEventId: input.runEventId,
+        modelPolicyId: input.modelPolicyId ?? null,
+        provider: input.provider,
+        model: input.model,
+        inputTokens: input.inputTokens,
+        outputTokens: input.outputTokens,
+        totalTokens: input.totalTokens,
+        estimatedCostCents: input.estimatedCostCents,
+        actualCostCents: input.actualCostCents,
+        latencyMs: input.latencyMs ?? null,
+        status: input.status,
+        errorCode: input.errorCode ?? null,
+        createdAt: input.createdAt,
+      };
+      if (input.metadata !== undefined) {
+        record.metadata = input.metadata;
+      }
+      await repository.recordUsage(record);
+    },
+    readModelUsageTotals: async (orgId) =>
+      modelUsageTotalsFromSummaries(await repository.summarizeUsage({ orgId })),
+  };
+}
+
+export function modelUsageWriteFromRunEvent(
+  event: RunEvent,
+  run?: Pick<Run, "modelPolicyId" | "estimatedCostCents" | "actualCostCents">,
+): ModelUsageWrite | undefined {
+  const data = event.data;
+  if (!data || data.workerEventType !== "model.completed") {
+    return undefined;
+  }
+
+  const attemptedRoute = routeFromAttempts(data.attempts);
+  const provider = readString(data.provider) ?? attemptedRoute?.provider;
+  const model = readString(data.model) ?? attemptedRoute?.model;
+  if (!provider || !model) {
+    return undefined;
+  }
+
+  const usage = isRecord(data.usage) ? data.usage : undefined;
+  const inputTokens = normalizeNonNegativeInteger(usage?.input);
+  const outputTokens = normalizeNonNegativeInteger(usage?.output);
+  const totalTokens = Math.max(
+    normalizeNonNegativeInteger(usage?.total),
+    inputTokens + outputTokens,
+  );
+  const metadata = usageMetadata(data);
+
+  return compactUsageWrite({
+    id: `usage_${event.id}`,
+    orgId: event.orgId,
+    runId: event.runId,
+    runEventId: event.id,
+    modelPolicyId: run?.modelPolicyId,
+    provider,
+    model,
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    estimatedCostCents: normalizeNonNegativeInteger(
+      data.estimatedCostCents ?? run?.estimatedCostCents,
+    ),
+    actualCostCents: normalizeNonNegativeInteger(
+      data.actualCostCents ?? run?.actualCostCents,
+    ),
+    latencyMs: readOptionalNonNegativeInteger(data.latencyMs),
+    status: normalizeUsageStatus(data.status, data.error),
+    errorCode: readString(data.errorCode),
+    metadata,
+    createdAt: event.createdAt,
+  });
+}
+
+function usageMetadata(
+  data: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const omitted = new Set([
+    "provider",
+    "model",
+    "usage",
+    "estimatedCostCents",
+    "actualCostCents",
+    "latencyMs",
+    "status",
+    "errorCode",
+  ]);
+  const entries = Object.entries(data).filter(
+    ([key, value]) => !omitted.has(key) && value !== undefined,
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function routeFromAttempts(
+  attempts: unknown,
+): { provider: string; model: string } | undefined {
+  if (!Array.isArray(attempts)) {
+    return undefined;
+  }
+  const candidate =
+    attempts
+      .filter(isRecord)
+      .find((attempt) => attempt.status === "succeeded") ??
+    attempts.filter(isRecord).at(-1);
+  const provider = readString(candidate?.provider);
+  const model = readString(candidate?.model);
+  return provider && model ? { provider, model } : undefined;
+}
+
+function normalizeUsageStatus(
+  status: unknown,
+  error: unknown,
+): ModelUsageStatus {
+  const normalized = readString(status)?.toLowerCase();
+  if (normalized === "failed" || normalized === "error") {
+    return "failed";
+  }
+  if (normalized === "cancelled" || normalized === "canceled") {
+    return "cancelled";
+  }
+  if (
+    normalized === "succeeded" ||
+    normalized === "success" ||
+    normalized === "completed"
+  ) {
+    return "succeeded";
+  }
+  return error === undefined ? "succeeded" : "failed";
+}
+
+function readOptionalNonNegativeInteger(value: unknown): number | undefined {
+  const normalized = normalizeNonNegativeInteger(value);
+  return value === undefined ? undefined : normalized;
+}
+
+function normalizeNonNegativeInteger(value: unknown): number {
+  const numeric =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number(value)
+        : 0;
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return Math.max(0, Math.round(numeric));
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function compactUsageWrite(input: ModelUsageWrite): ModelUsageWrite {
+  return Object.fromEntries(
+    Object.entries(input).filter(([, value]) => value !== undefined),
+  ) as ModelUsageWrite;
 }

@@ -23,6 +23,11 @@ import {
   type WorkerSnapshot,
   type WorkerWorkRecord,
 } from "@bek/worker";
+import {
+  modelUsageWriteFromRunEvent,
+  type ModelUsageSink,
+  type ModelUsageWrite,
+} from "./persistence";
 
 export type RunAdvancementMode = "inline_stub" | "worker_local";
 
@@ -39,6 +44,7 @@ export interface WorkerQueuePersistenceOptions {
 
 export interface LocalWorkerControllerOptions {
   persistence?: WorkerQueuePersistenceOptions | undefined;
+  modelUsageSink?: ModelUsageSink | undefined;
 }
 
 export class LocalWorkerController {
@@ -47,6 +53,9 @@ export class LocalWorkerController {
   private readonly store: BekStore;
   private readonly queue: InMemoryWorkerQueue | SnapshotPersistedWorkerQueue;
   private readonly service: WorkerRuntimeService;
+  private readonly modelUsageSink: ModelUsageSink | undefined;
+  private modelUsageQueue: Promise<void> = Promise.resolve();
+  private modelUsageError: Error | undefined;
 
   constructor(
     store: BekStore,
@@ -56,6 +65,7 @@ export class LocalWorkerController {
     this.store = store;
     this.mode = mode;
     this.enabled = mode === "worker_local";
+    this.modelUsageSink = options.modelUsageSink;
     const memoryQueue = new InMemoryWorkerQueue({
       initialSnapshot: options.persistence?.initialSnapshot,
       eventSink: {
@@ -176,6 +186,15 @@ export class LocalWorkerController {
     }
   }
 
+  async flushModelUsageChanges(): Promise<void> {
+    await this.modelUsageQueue;
+    if (this.modelUsageError) {
+      const error = this.modelUsageError;
+      this.modelUsageError = undefined;
+      throw error;
+    }
+  }
+
   private applyProcessedDecision(decision: ProcessNextRunWorkDecision): void {
     if (decision.decision !== "processed") {
       return;
@@ -265,7 +284,7 @@ export class LocalWorkerController {
   }
 
   private recordWorkerEvent(event: WorkerEvent): void {
-    this.store.appendRunEvent({
+    const runEvent = this.store.appendRunEvent({
       runId: event.runId,
       type: runEventTypeForWorkerEvent(event),
       message: event.message,
@@ -278,6 +297,33 @@ export class LocalWorkerController {
       }),
       now: event.createdAt,
     });
+
+    if (event.type === "model.completed") {
+      const modelUsage = modelUsageWriteFromRunEvent(
+        runEvent,
+        this.findRun(runEvent.runId),
+      );
+      if (modelUsage) {
+        this.enqueueModelUsageWrite(modelUsage);
+      }
+    }
+  }
+
+  private enqueueModelUsageWrite(input: ModelUsageWrite): void {
+    if (!this.modelUsageSink) {
+      return;
+    }
+    this.modelUsageQueue = this.modelUsageQueue
+      .then(async () => {
+        if (this.modelUsageError) {
+          return;
+        }
+        await this.modelUsageSink?.recordModelUsage(input);
+      })
+      .catch((error: unknown) => {
+        this.modelUsageError =
+          error instanceof Error ? error : new Error(String(error));
+      });
   }
 
   private approvalFromWorkerRecord(
