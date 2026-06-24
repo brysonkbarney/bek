@@ -947,6 +947,92 @@ describe("Bek API", () => {
     expect(queue.queue.events.length).toBeGreaterThan(0);
   });
 
+  it("cancels non-terminal worker runs through the admin API", async () => {
+    const app = createApp(new BekStore(), {
+      runAdvancement: "worker_local",
+    });
+    const { run } = await createPrApproval(app, "@bek pause then cancel");
+    expect(run.status).toBe("awaiting_approval");
+
+    const cancelled = await app.request(`/api/runs/${run.id}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ reason: "No longer needed." }),
+      headers: { "content-type": "application/json" },
+    });
+
+    expect(cancelled.status).toBe(200);
+    await expect(cancelled.json()).resolves.toMatchObject({
+      decision: { decision: "not_found" },
+      run: { status: "cancelled" },
+    });
+    await expect(expectJson(app, `/api/runs/${run.id}`)).resolves.toMatchObject(
+      {
+        run: { status: "cancelled" },
+        events: expect.arrayContaining([
+          expect.objectContaining({
+            type: "run.status_changed",
+            message: "No longer needed.",
+          }),
+        ]),
+      },
+    );
+  });
+
+  it("does not cancel worker runs when local worker mode is disabled", async () => {
+    const app = createApp(new BekStore(), {
+      runAdvancement: "inline_stub",
+    });
+    const created = await app.request("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: "@bek open a PR",
+        placeScopeId: "place_checkout",
+        capability: "github.pr",
+        resource: "github:redohq/checkout",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    const run = (await created.json()) as { id: string };
+
+    const cancelled = await app.request(`/api/runs/${run.id}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ reason: "No longer needed." }),
+      headers: { "content-type": "application/json" },
+    });
+
+    expect(cancelled.status).toBe(409);
+  });
+
+  it("reports already-terminal worker run cancellation as a no-op", async () => {
+    const app = createApp(new BekStore(), {
+      runAdvancement: "worker_local",
+    });
+    const created = await app.request("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: "@bek summarize checkout",
+        placeScopeId: "place_checkout",
+        capability: "slack.read",
+        resource: "slack:C_CHECKOUT",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    const run = (await created.json()) as { id: string; status: string };
+    expect(run.status).toBe("completed");
+
+    const cancelled = await app.request(`/api/runs/${run.id}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ reason: "No longer needed." }),
+      headers: { "content-type": "application/json" },
+    });
+
+    expect(cancelled.status).toBe(200);
+    await expect(cancelled.json()).resolves.toMatchObject({
+      decision: { decision: "already_terminal" },
+      run: { status: "completed" },
+    });
+  });
+
   it("resumes policy approvals through the local worker", async () => {
     const app = createApp(new BekStore(), {
       runAdvancement: "worker_local",

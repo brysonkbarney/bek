@@ -222,6 +222,12 @@ h2 {
   gap: 14px;
 }
 
+.worker-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
 .grid {
   grid-template-columns: 1fr 1.4fr;
 }
@@ -361,6 +367,17 @@ h2 {
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+}
+
+.inline-control input {
+  width: 76px;
+  min-height: 42px;
+  padding: 0 10px;
+  border: 1px solid #cfe0d6;
+  border-radius: 8px;
+  background: white;
+  color: #18211f;
+  font: inherit;
 }
 
 .split-row {
@@ -861,6 +878,7 @@ select {
 
   .page-header,
   .metrics,
+  .worker-metrics,
   .grid,
   .settings-grid,
   .channel-grid,

@@ -24,6 +24,7 @@ import {
 import { DashboardPage } from "./ui/DashboardPage";
 import { RunsPage } from "./ui/RunsPage";
 import { SettingsPage } from "./ui/SettingsPage";
+import { WorkerPage } from "./ui/WorkerPage";
 import "./styles.css";
 
 const rootRoute = createRootRoute({
@@ -46,6 +47,12 @@ const runDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/runs/$runId",
   component: RunDetailPage,
+});
+
+const workerRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/worker",
+  component: WorkerPage,
 });
 
 const setupRoute = createRoute({
@@ -123,6 +130,7 @@ const routeTree = rootRoute.addChildren([
   accessBundleDetailRoute,
   runsRoute,
   runDetailRoute,
+  workerRoute,
   approvalsRoute,
   connectorsRoute,
   modelsRoute,

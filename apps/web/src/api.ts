@@ -180,6 +180,92 @@ export interface RunDetail {
   approvals: ApprovalRequest[];
 }
 
+export interface WorkerWorkItem {
+  orgId: string;
+  runId: string;
+  attempt: number;
+  reason: string;
+  traceId: string;
+  enqueuedAt: string;
+}
+
+export interface WorkerLease {
+  id: string;
+  workerId: string;
+  expiresAt: string;
+  heartbeatAt: string;
+}
+
+export interface WorkerWorkRecord {
+  id: string;
+  sequence: number;
+  idempotencyKey: string;
+  item: WorkerWorkItem;
+  status: string;
+  attemptState: string;
+  availableAt: string;
+  createdAt: string;
+  updatedAt: string;
+  lease?: WorkerLease;
+  retryOf?: string;
+  cancelRequestedAt?: string;
+  cancelReason?: string;
+  terminalReason?: string;
+  result?: { status?: string; error?: string; finalText?: string };
+}
+
+export interface WorkerDeadLetterRecord {
+  id: string;
+  sequence: number;
+  workId: string;
+  idempotencyKey: string;
+  item: WorkerWorkItem;
+  reason: string;
+  failedAt: string;
+  result: { status?: string; error?: string };
+  retryPolicy: { maxAttempts?: number };
+}
+
+export interface WorkerEvent {
+  id: string;
+  sequence: number;
+  type: string;
+  orgId: string;
+  runId: string;
+  attempt?: number;
+  traceId?: string;
+  message: string;
+  data?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface WorkerSnapshot {
+  records: WorkerWorkRecord[];
+  deadLetters: WorkerDeadLetterRecord[];
+  events: WorkerEvent[];
+}
+
+export interface WorkerQueueResponse {
+  mode: string;
+  enabled: boolean;
+  queue: WorkerSnapshot;
+}
+
+export interface DrainWorkerResponse extends WorkerQueueResponse {
+  result: {
+    processed: number;
+    stoppedReason: string;
+    decisions: Array<{ decision: string }>;
+  };
+}
+
+export interface CancelRunResponse {
+  mode: string;
+  decision: { decision: string };
+  run: Run;
+  queue: WorkerSnapshot;
+}
+
 export async function fetchBootstrap(): Promise<Bootstrap> {
   const res = await fetch(`${API_URL}/api/bootstrap`, { headers: headers() });
   if (!res.ok) {
@@ -347,6 +433,36 @@ export async function fetchRunDetail(runId: string): Promise<RunDetail> {
     throw new Error("Failed to load Bek run detail");
   }
   return res.json() as Promise<RunDetail>;
+}
+
+export async function fetchWorkerQueue(): Promise<WorkerQueueResponse> {
+  return jsonRequest<WorkerQueueResponse>("/api/worker/queue");
+}
+
+export async function drainWorker(input: {
+  maxItems?: number;
+}): Promise<DrainWorkerResponse> {
+  return jsonRequest<DrainWorkerResponse>("/api/worker/drain", {
+    method: "POST",
+    body: JSON.stringify(input),
+    headers: { "content-type": "application/json" },
+  });
+}
+
+export async function cancelRun(input: {
+  runId: string;
+  reason?: string;
+}): Promise<CancelRunResponse> {
+  const { runId, ...body } = input;
+  return jsonRequest<CancelRunResponse>(cancelRunPath(runId), {
+    method: "POST",
+    body: JSON.stringify(body),
+    headers: { "content-type": "application/json" },
+  });
+}
+
+export function cancelRunPath(runId: string): string {
+  return `/api/runs/${encodeURIComponent(runId)}/cancel`;
 }
 
 export async function decideApproval(input: {

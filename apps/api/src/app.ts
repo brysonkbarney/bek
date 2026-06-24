@@ -485,6 +485,58 @@ export function createApp(
     });
   });
 
+  app.post("/api/runs/:runId/cancel", async (c) => {
+    if (!workerController.enabled) {
+      return c.json(
+        {
+          error: "Run cancellation requires BEK_RUN_ADVANCEMENT=worker_local.",
+        },
+        409,
+      );
+    }
+    const snapshot = store.read();
+    const run = snapshot.runs.find(
+      (candidate) => candidate.id === c.req.param("runId"),
+    );
+    if (!run) {
+      return c.json({ error: "Run not found" }, 404);
+    }
+    if (isTerminalRunStatus(run.status)) {
+      return c.json({
+        mode: workerController.mode,
+        decision: { decision: "already_terminal", affectedRecords: [] },
+        run: publicRun(run),
+        queue: workerController.read(),
+      });
+    }
+
+    const body = cancelRunSchema.parse(await c.req.json().catch(() => ({})));
+    const decision = workerController.cancelRun(
+      run,
+      body.reason ?? "Cancelled from Bek admin.",
+    );
+    const claimedCancellation =
+      decision.decision === "cancel_requested" &&
+      decision.affectedRecords.some((record) => record.status === "claimed");
+    if (!claimedCancellation) {
+      store.setRunStatus({
+        runId: run.id,
+        status: "cancelled",
+        actualCostCents: run.actualCostCents,
+        message: body.reason ?? "Bek run cancelled.",
+        data: { workerCancelDecision: decision.decision },
+      });
+    }
+    await workerController.flushChanges();
+    await store.flushChanges();
+    return c.json({
+      mode: workerController.mode,
+      decision,
+      run: publicRun(latestRun(store, run.id)),
+      queue: workerController.read(),
+    });
+  });
+
   app.post("/api/runs", async (c) => {
     const body = createRunSchema.parse(await c.req.json());
     const run = await createRunAndAdvance(body);
@@ -1052,6 +1104,12 @@ const drainWorkerSchema = z
   })
   .strict();
 
+const cancelRunSchema = z
+  .object({
+    reason: z.string().min(1).max(500).optional(),
+  })
+  .strict();
+
 const sensitivitySchema = z.enum([
   "public",
   "internal",
@@ -1195,6 +1253,12 @@ function latestApproval(store: BekStore, approvalId: string) {
     throw new Error("Approval not found.");
   }
   return approval;
+}
+
+function isTerminalRunStatus(status: Run["status"]): boolean {
+  return (
+    status === "completed" || status === "failed" || status === "cancelled"
+  );
 }
 
 function resolveSlackPlace(

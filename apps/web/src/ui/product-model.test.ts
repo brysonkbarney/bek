@@ -4,6 +4,7 @@ import {
   connectorSummaries,
   setupChecklistFromStatus,
   setupProgress,
+  workerQueueSummary,
 } from "./product-model";
 
 const readySetup: SetupStatus = {
@@ -232,4 +233,72 @@ describe("admin product helpers", () => {
       detail: expect.stringContaining("no Slack bot token is stored"),
     });
   });
+
+  it("summarizes worker queue states for operator cards", () => {
+    expect(
+      workerQueueSummary({
+        records: [
+          workerRecord("work_1", "queued", "queued"),
+          workerRecord("work_2", "claimed", "claimed"),
+          workerRecord("work_3", "failed", "retry_scheduled"),
+          workerRecord("work_4", "completed", "completed"),
+        ],
+        deadLetters: [
+          {
+            id: "dead_1",
+            sequence: 5,
+            workId: "work_5",
+            idempotencyKey: "run_attempt:org:run_dead:1",
+            item: workerItem("run_dead"),
+            reason: "failed",
+            failedAt: "2026-06-24T18:00:00.000Z",
+            result: { status: "failed" },
+            retryPolicy: { maxAttempts: 3 },
+          },
+        ],
+        events: [
+          {
+            id: "event_1",
+            sequence: 6,
+            type: "worker.completed",
+            orgId: "org_demo",
+            runId: "run_4",
+            message: "done",
+            createdAt: "2026-06-24T18:00:00.000Z",
+          },
+        ],
+      }),
+    ).toMatchObject({
+      active: 2,
+      retryScheduled: 1,
+      completed: 1,
+      deadLetters: 1,
+      events: 1,
+    });
+  });
 });
+
+function workerItem(runId: string) {
+  return {
+    orgId: "org_demo",
+    runId,
+    attempt: 1,
+    reason: "new_run",
+    traceId: `trace_${runId}`,
+    enqueuedAt: "2026-06-24T18:00:00.000Z",
+  };
+}
+
+function workerRecord(id: string, status: string, attemptState: string) {
+  return {
+    id,
+    sequence: Number(id.replace("work_", "")),
+    idempotencyKey: `run_attempt:org_demo:run_${id}:1`,
+    item: workerItem(`run_${id}`),
+    status,
+    attemptState,
+    availableAt: "2026-06-24T18:00:00.000Z",
+    createdAt: "2026-06-24T18:00:00.000Z",
+    updatedAt: "2026-06-24T18:00:00.000Z",
+  };
+}

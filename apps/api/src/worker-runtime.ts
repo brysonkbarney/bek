@@ -14,6 +14,7 @@ import {
   type DrainRunWorkInput,
   type DrainRunWorkResult,
   type EnqueueRunWorkDecision,
+  type CancelRunWorkDecision,
   type ProcessNextRunWorkDecision,
   type ResumeAfterApprovalDecision,
   type WorkerEvent,
@@ -125,6 +126,16 @@ export class LocalWorkerController {
       resumeDecision,
       drain: await this.drain({ maxItems: 10 }),
     };
+  }
+
+  cancelRun(run: Run, reason: string): CancelRunWorkDecision {
+    this.assertEnabled();
+    return this.queue.cancelRun({
+      orgId: run.orgId,
+      runId: run.id,
+      reason,
+      now: new Date().toISOString(),
+    });
   }
 
   read(): WorkerSnapshot {

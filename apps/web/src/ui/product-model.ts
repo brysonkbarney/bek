@@ -5,6 +5,7 @@ import {
   Brain,
   ClipboardCheck,
   ClipboardList,
+  Cpu,
   Database,
   GitBranch,
   KeyRound,
@@ -22,6 +23,7 @@ import type {
   PlaceScope,
   Run,
   SetupStatus,
+  WorkerSnapshot,
 } from "../api";
 
 type AdminRoute =
@@ -37,6 +39,7 @@ export const navigationItems = [
   { to: "/channels", label: "Channels", icon: Slack },
   { to: "/access-bundles", label: "Access", icon: ShieldCheck },
   { to: "/runs", label: "Runs", icon: ClipboardList },
+  { to: "/worker", label: "Worker", icon: Cpu },
   { to: "/approvals", label: "Approvals", icon: KeyRound },
   { to: "/connectors", label: "Connectors", icon: Boxes },
   { to: "/models", label: "Models", icon: Route },
@@ -94,6 +97,35 @@ export function pendingApprovals(
   approvals: ApprovalRequest[],
 ): ApprovalRequest[] {
   return approvals.filter((approval) => approval.status === "pending");
+}
+
+export function workerQueueSummary(queue: WorkerSnapshot) {
+  const queued = queue.records.filter((record) => record.status === "queued");
+  const claimed = queue.records.filter((record) => record.status === "claimed");
+  const awaitingApproval = queue.records.filter(
+    (record) => record.status === "awaiting_approval",
+  );
+  const retryScheduled = queue.records.filter(
+    (record) => record.attemptState === "retry_scheduled",
+  );
+  const completed = queue.records.filter(
+    (record) => record.status === "completed",
+  );
+  const cancelled = queue.records.filter(
+    (record) => record.status === "cancelled",
+  );
+
+  return {
+    active: queued.length + claimed.length + awaitingApproval.length,
+    queued: queued.length,
+    claimed: claimed.length,
+    awaitingApproval: awaitingApproval.length,
+    retryScheduled: retryScheduled.length,
+    completed: completed.length,
+    cancelled: cancelled.length,
+    deadLetters: queue.deadLetters.length,
+    events: queue.events.length,
+  };
 }
 
 export function setupChecklistFromStatus(status: SetupStatus): Array<{
