@@ -480,7 +480,85 @@ export function createApp(
     await store.flushChanges();
     return c.json({
       mode: workerController.mode,
+      enabled: workerController.enabled,
       result,
+      queue: workerController.read(),
+    });
+  });
+
+  app.post("/api/worker/dead-letters/:deadLetterId/redrive", async (c) => {
+    if (!workerController.enabled) {
+      return c.json(
+        {
+          error:
+            "Dead-letter redrive requires BEK_RUN_ADVANCEMENT=worker_local.",
+        },
+        409,
+      );
+    }
+    const snapshot = store.read();
+    const deadLetterId = c.req.param("deadLetterId");
+    const deadLetter = workerController
+      .read()
+      .deadLetters.find(
+        (candidate) =>
+          candidate.id === deadLetterId &&
+          candidate.item.orgId === snapshot.org.id,
+      );
+    if (!deadLetter) {
+      return c.json({ error: "Dead letter not found" }, 404);
+    }
+    const run = snapshot.runs.find(
+      (candidate) =>
+        candidate.id === deadLetter.item.runId &&
+        candidate.orgId === snapshot.org.id,
+    );
+    if (!run) {
+      return c.json({ error: "Dead-lettered run not found" }, 409);
+    }
+
+    const body = redriveDeadLetterSchema.parse(
+      await c.req.json().catch(() => ({})),
+    );
+    const decision = workerController.redriveDeadLetter({
+      orgId: snapshot.org.id,
+      deadLetterId,
+      reason: body.reason ?? "Queued dead-letter redrive from Bek admin.",
+    });
+    if (decision.decision === "not_found") {
+      return c.json({ error: decision.reason }, 404);
+    }
+    if (decision.decision === "active_work_exists") {
+      return c.json(
+        {
+          mode: workerController.mode,
+          enabled: workerController.enabled,
+          decision,
+          run: publicRun(run),
+          queue: workerController.read(),
+        },
+        409,
+      );
+    }
+
+    store.setRunStatus({
+      runId: run.id,
+      status: "queued",
+      actualCostCents: run.actualCostCents,
+      message: body.reason ?? "Bek queued a dead-letter redrive.",
+      data: {
+        workerDecision: decision.decision,
+        deadLetterId,
+        workerRecordId: decision.record.id,
+      },
+    });
+    await workerController.flushChanges();
+    await store.flushChanges();
+    return c.json({
+      mode: workerController.mode,
+      enabled: workerController.enabled,
+      decision,
+      run: publicRun(latestRun(store, run.id)),
       queue: workerController.read(),
     });
   });
@@ -1105,6 +1183,12 @@ const drainWorkerSchema = z
   .strict();
 
 const cancelRunSchema = z
+  .object({
+    reason: z.string().min(1).max(500).optional(),
+  })
+  .strict();
+
+const redriveDeadLetterSchema = z
   .object({
     reason: z.string().min(1).max(500).optional(),
   })

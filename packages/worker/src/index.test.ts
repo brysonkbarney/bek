@@ -340,6 +340,37 @@ describe("in-memory worker queue", () => {
       reason: "still broken",
     });
     expect(queue.read().deadLetters).toHaveLength(1);
+    const redrive = queue.redriveDeadLetter({
+      orgId: "org_demo",
+      deadLetterId: dead.deadLetter.id,
+      reason: "Operator fixed the dependency.",
+      traceId: "trace_redrive",
+      now: "2026-06-24T18:00:04.000Z",
+    });
+    expect(redrive.decision).toBe("redrive_enqueued");
+    if (redrive.decision !== "redrive_enqueued") {
+      throw new Error("Expected redrive.");
+    }
+    expect(redrive.record).toMatchObject({
+      retryOf: dead.deadLetter.workId,
+      status: "queued",
+      attemptState: "queued",
+      item: {
+        runId: "run_retry",
+        attempt: 1,
+        reason: "resume",
+        traceId: "trace_redrive",
+      },
+    });
+    expect(queue.read().deadLetters).toHaveLength(1);
+    expect(queue.read().events.map((event) => event.type)).toContain(
+      "worker.redrive_enqueued",
+    );
+    const duplicateRedrive = queue.redriveDeadLetter({
+      orgId: "org_demo",
+      deadLetterId: dead.deadLetter.id,
+    });
+    expect(duplicateRedrive.decision).toBe("active_work_exists");
     expect(
       retryDelayMs(3, { maxAttempts: 4, baseDelayMs: 500, maxDelayMs: 900 }),
     ).toBe(900);

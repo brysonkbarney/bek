@@ -7,6 +7,7 @@ import {
   ListChecks,
   Play,
   RefreshCw,
+  RotateCcw,
   TimerReset,
 } from "lucide-react";
 import { useState } from "react";
@@ -14,6 +15,7 @@ import {
   cancelRun,
   drainWorker,
   fetchWorkerQueue,
+  redriveDeadLetter,
   type WorkerDeadLetterRecord,
   type WorkerEvent,
   type WorkerWorkRecord,
@@ -49,6 +51,17 @@ export function WorkerPage() {
       cancelRun({
         runId: record.item.runId,
         reason: "Cancelled from worker queue.",
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["worker-queue"] });
+      void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+    },
+  });
+  const redriveMutation = useMutation({
+    mutationFn: (deadLetter: WorkerDeadLetterRecord) =>
+      redriveDeadLetter({
+        deadLetterId: deadLetter.id,
+        reason: "Redriven from worker dead-letter queue.",
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["worker-queue"] });
@@ -116,7 +129,14 @@ export function WorkerPage() {
           {drainMutation.data.result.stoppedReason}.
         </SuccessCallout>
       ) : null}
-      {drainMutation.isError || cancelMutation.isError ? (
+      {redriveMutation.isSuccess ? (
+        <SuccessCallout>
+          Redrive queued for {redriveMutation.data.run.id}.
+        </SuccessCallout>
+      ) : null}
+      {drainMutation.isError ||
+      cancelMutation.isError ||
+      redriveMutation.isError ? (
         <WarningCallout>
           Bek could not update the worker queue. Refresh and try again.
         </WarningCallout>
@@ -159,7 +179,11 @@ export function WorkerPage() {
 
       <section className="grid">
         <Panel title="Dead Letters">
-          <DeadLettersTable deadLetters={data.queue.deadLetters} />
+          <DeadLettersTable
+            deadLetters={data.queue.deadLetters}
+            redrivingDeadLetterId={redriveMutation.variables?.id}
+            onRedrive={(deadLetter) => redriveMutation.mutate(deadLetter)}
+          />
         </Panel>
         <Panel title="Recent Worker Events">
           <WorkerEventsList events={data.queue.events.slice(-8).reverse()} />
@@ -261,8 +285,12 @@ function WorkerRecordsTable({
 
 function DeadLettersTable({
   deadLetters,
+  redrivingDeadLetterId,
+  onRedrive,
 }: {
   deadLetters: WorkerDeadLetterRecord[];
+  redrivingDeadLetterId?: string | undefined;
+  onRedrive: (deadLetter: WorkerDeadLetterRecord) => void;
 }) {
   if (deadLetters.length === 0) {
     return (
@@ -282,6 +310,7 @@ function DeadLettersTable({
             <th>Reason</th>
             <th>Attempts</th>
             <th>Failed</th>
+            <th>Action</th>
           </tr>
         </thead>
         <tbody>
@@ -302,6 +331,18 @@ function DeadLettersTable({
                 {deadLetter.retryPolicy.maxAttempts ?? "-"}
               </td>
               <td data-label="Failed">{formatDateTime(deadLetter.failedAt)}</td>
+              <td data-label="Action">
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={() => onRedrive(deadLetter)}
+                  aria-label={`Redrive ${deadLetter.item.runId}`}
+                  disabled={redrivingDeadLetterId === deadLetter.id}
+                  title="Redrive dead letter"
+                >
+                  <RotateCcw size={15} aria-hidden="true" />
+                </button>
+              </td>
             </tr>
           ))}
         </tbody>

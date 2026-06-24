@@ -266,6 +266,11 @@ export interface CancelRunResponse {
   queue: WorkerSnapshot;
 }
 
+export interface RedriveDeadLetterResponse extends WorkerQueueResponse {
+  decision: { decision: string };
+  run: Run;
+}
+
 export async function fetchBootstrap(): Promise<Bootstrap> {
   const res = await fetch(`${API_URL}/api/bootstrap`, { headers: headers() });
   if (!res.ok) {
@@ -463,6 +468,25 @@ export async function cancelRun(input: {
 
 export function cancelRunPath(runId: string): string {
   return `/api/runs/${encodeURIComponent(runId)}/cancel`;
+}
+
+export async function redriveDeadLetter(input: {
+  deadLetterId: string;
+  reason?: string;
+}): Promise<RedriveDeadLetterResponse> {
+  const { deadLetterId, ...body } = input;
+  return jsonRequest<RedriveDeadLetterResponse>(
+    redriveDeadLetterPath(deadLetterId),
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    },
+  );
+}
+
+export function redriveDeadLetterPath(deadLetterId: string): string {
+  return `/api/worker/dead-letters/${encodeURIComponent(deadLetterId)}/redrive`;
 }
 
 export async function decideApproval(input: {

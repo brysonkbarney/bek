@@ -1033,6 +1033,137 @@ describe("Bek API", () => {
     });
   });
 
+  it("redrives dead-lettered worker runs through the admin API", async () => {
+    const now = "2026-06-24T18:00:00.000Z";
+    const snapshot = createSeedSnapshot(now);
+    const templateRun = snapshot.runs[0]!;
+    const failedRun = {
+      ...templateRun,
+      id: "run_dead",
+      prompt: "@bek retry this failed run",
+      status: "failed" as const,
+      actualCostCents: 3,
+      createdAt: now,
+      updatedAt: now,
+    };
+    snapshot.runs.unshift(failedRun);
+    const failedItem: WorkerSnapshot["records"][number]["item"] = {
+      orgId: snapshot.org.id,
+      runId: failedRun.id,
+      attempt: 3,
+      reason: "retry",
+      traceId: "trace_dead",
+      enqueuedAt: now,
+    };
+    const failedResult: WorkerSnapshot["records"][number]["result"] = {
+      status: "failed",
+      artifactRefs: [],
+      actualCostCents: 3,
+      error: "still broken",
+    };
+    let persistedWorkerQueue: WorkerSnapshot = {
+      records: [
+        {
+          id: "work_dead",
+          sequence: 1,
+          idempotencyKey: "run_attempt:org_demo:run_dead:3",
+          item: failedItem,
+          status: "dead",
+          attemptState: "dead_lettered",
+          availableAt: now,
+          createdAt: now,
+          updatedAt: now,
+          terminalReason: "still broken",
+          result: failedResult,
+        },
+      ],
+      deadLetters: [
+        {
+          id: "dead_1",
+          sequence: 2,
+          workId: "work_dead",
+          idempotencyKey: "run_attempt:org_demo:run_dead:3",
+          item: failedItem,
+          reason: "still broken",
+          failedAt: now,
+          result: failedResult!,
+          retryPolicy: {
+            maxAttempts: 3,
+            baseDelayMs: 1_000,
+            maxDelayMs: 30_000,
+          },
+        },
+      ],
+      events: [],
+    };
+    const app = createApp(new BekStore(snapshot), {
+      runAdvancement: "worker_local",
+      workerQueuePersistence: {
+        initialSnapshot: persistedWorkerQueue,
+        onSnapshotChanged: (queue) => {
+          persistedWorkerQueue = queue;
+        },
+      },
+    });
+
+    const redrive = await app.request(
+      "/api/worker/dead-letters/dead_1/redrive",
+      {
+        method: "POST",
+        body: JSON.stringify({ reason: "Retry after dependency fix." }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+
+    expect(redrive.status).toBe(200);
+    await expect(redrive.json()).resolves.toMatchObject({
+      decision: {
+        decision: "redrive_enqueued",
+        record: {
+          retryOf: "work_dead",
+          status: "queued",
+          item: { attempt: 1, reason: "resume", runId: "run_dead" },
+        },
+      },
+      run: { status: "queued" },
+      queue: {
+        deadLetters: [{ id: "dead_1" }],
+      },
+    });
+    expect(persistedWorkerQueue.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          retryOf: "work_dead",
+          status: "queued",
+          item: expect.objectContaining({ runId: "run_dead" }),
+        }),
+      ]),
+    );
+    await expect(expectJson(app, "/api/runs/run_dead")).resolves.toMatchObject({
+      run: { status: "queued" },
+      events: expect.arrayContaining([
+        expect.objectContaining({
+          data: expect.objectContaining({
+            workerEventType: "worker.redrive_enqueued",
+          }),
+        }),
+        expect.objectContaining({
+          message: "Retry after dependency fix.",
+        }),
+      ]),
+    });
+
+    const duplicate = await app.request(
+      "/api/worker/dead-letters/dead_1/redrive",
+      {
+        method: "POST",
+        body: JSON.stringify({ reason: "Try again." }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(duplicate.status).toBe(409);
+  });
+
   it("resumes policy approvals through the local worker", async () => {
     const app = createApp(new BekStore(), {
       runAdvancement: "worker_local",

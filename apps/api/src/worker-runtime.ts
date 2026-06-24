@@ -16,6 +16,7 @@ import {
   type EnqueueRunWorkDecision,
   type CancelRunWorkDecision,
   type ProcessNextRunWorkDecision,
+  type RedriveDeadLetterDecision,
   type ResumeAfterApprovalDecision,
   type WorkerEvent,
   type WorkerSnapshot,
@@ -134,6 +135,21 @@ export class LocalWorkerController {
       orgId: run.orgId,
       runId: run.id,
       reason,
+      now: new Date().toISOString(),
+    });
+  }
+
+  redriveDeadLetter(input: {
+    orgId: string;
+    deadLetterId: string;
+    reason?: string | undefined;
+  }): RedriveDeadLetterDecision {
+    this.assertEnabled();
+    return this.queue.redriveDeadLetter({
+      orgId: input.orgId,
+      deadLetterId: input.deadLetterId,
+      reason: input.reason,
+      traceId: createId("trace"),
       now: new Date().toISOString(),
     });
   }

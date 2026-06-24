@@ -35,6 +35,7 @@ export type WorkerLifecycleEventType =
   | "worker.approval_resumed"
   | "worker.approval_blocked"
   | "worker.cancel_requested"
+  | "worker.redrive_enqueued"
   | "worker.completed"
   | "worker.failed"
   | "worker.dead_lettered"
@@ -250,6 +251,27 @@ export type CancelRunWorkDecision =
   | { decision: "already_terminal"; affectedRecords: WorkerWorkRecord[] }
   | { decision: "not_found"; affectedRecords: [] };
 
+export interface RedriveDeadLetterInput {
+  orgId: string;
+  deadLetterId: string;
+  reason?: string | undefined;
+  traceId?: string | undefined;
+  now?: string | undefined;
+}
+
+export type RedriveDeadLetterDecision =
+  | {
+      decision: "redrive_enqueued";
+      record: WorkerWorkRecord;
+      deadLetter: WorkerDeadLetterRecord;
+    }
+  | {
+      decision: "active_work_exists";
+      record: WorkerWorkRecord;
+      deadLetter: WorkerDeadLetterRecord;
+    }
+  | { decision: "not_found"; reason: string };
+
 export interface ResumeAfterApprovalInput {
   approval: ApprovalRequest;
   traceId?: string | undefined;
@@ -311,6 +333,7 @@ export interface WorkerQueueContract {
   expireLeases(input?: ExpireWorkerLeasesInput): ExpireWorkerLeasesDecision;
   settle(input: SettleRunWorkInput): SettleRunWorkDecision;
   cancelRun(input: CancelRunWorkInput): CancelRunWorkDecision;
+  redriveDeadLetter(input: RedriveDeadLetterInput): RedriveDeadLetterDecision;
   resumeAfterApproval(
     input: ResumeAfterApprovalInput,
   ): ResumeAfterApprovalDecision;
@@ -670,6 +693,76 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
     return {
       decision: "cancel_requested",
       affectedRecords: clone(activeRecords),
+    };
+  }
+
+  redriveDeadLetter(input: RedriveDeadLetterInput): RedriveDeadLetterDecision {
+    const now = this.time(input.now);
+    const deadLetter = this.deadLetters.find(
+      (candidate) =>
+        candidate.id === input.deadLetterId &&
+        candidate.item.orgId === input.orgId,
+    );
+    if (!deadLetter) {
+      return {
+        decision: "not_found",
+        reason: "Dead letter not found.",
+      };
+    }
+
+    const activeRecord = this.records.find(
+      (candidate) =>
+        candidate.item.orgId === deadLetter.item.orgId &&
+        candidate.item.runId === deadLetter.item.runId &&
+        isActiveStatus(candidate.status),
+    );
+    if (activeRecord) {
+      return {
+        decision: "active_work_exists",
+        record: clone(activeRecord),
+        deadLetter: clone(deadLetter),
+      };
+    }
+
+    const item: RunWorkItem = {
+      ...deadLetter.item,
+      attempt: 1,
+      reason: "resume",
+      traceId: input.traceId ?? this.idFactory("trace"),
+      enqueuedAt: now,
+    };
+    const record: WorkerWorkRecord = {
+      id: this.idFactory("work"),
+      sequence: this.nextSequence++,
+      idempotencyKey: createWorkerIdempotencyKey(item),
+      item,
+      status: "queued",
+      attemptState: "queued",
+      availableAt: now,
+      createdAt: now,
+      updatedAt: now,
+      retryOf: deadLetter.workId,
+    };
+    this.records.push(record);
+    this.emit({
+      type: "worker.redrive_enqueued",
+      orgId: record.item.orgId,
+      runId: record.item.runId,
+      attempt: record.item.attempt,
+      traceId: record.item.traceId,
+      message: input.reason ?? "Dead-lettered run work was redriven.",
+      data: {
+        deadLetterId: deadLetter.id,
+        previousWorkId: deadLetter.workId,
+        previousAttempt: deadLetter.item.attempt,
+      },
+      now,
+    });
+
+    return {
+      decision: "redrive_enqueued",
+      record: clone(record),
+      deadLetter: clone(deadLetter),
     };
   }
 
@@ -1113,6 +1206,14 @@ export class SnapshotPersistedWorkerQueue implements WorkerQueueContract {
   cancelRun(input: CancelRunWorkInput): CancelRunWorkDecision {
     const decision = this.queue.cancelRun(input);
     if (decision.decision !== "not_found") {
+      this.recordChange();
+    }
+    return decision;
+  }
+
+  redriveDeadLetter(input: RedriveDeadLetterInput): RedriveDeadLetterDecision {
+    const decision = this.queue.redriveDeadLetter(input);
+    if (decision.decision === "redrive_enqueued") {
       this.recordChange();
     }
     return decision;
