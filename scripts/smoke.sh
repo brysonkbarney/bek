@@ -4,6 +4,8 @@ set -euo pipefail
 API_URL="${VITE_BEK_API_URL:-http://localhost:${BEK_SMOKE_API_PORT:-4317}}"
 API_URL="${API_URL%/}"
 START_API="${BEK_SMOKE_START_API:-auto}"
+SMOKE_STORAGE="${BEK_SMOKE_STORAGE:-memory}"
+SMOKE_WORKER_QUEUE_BACKEND="${BEK_SMOKE_WORKER_QUEUE_BACKEND:-${SMOKE_STORAGE}}"
 API_PID=""
 API_LOG=""
 
@@ -14,6 +16,24 @@ case "${START_API}" in
     exit 2
     ;;
 esac
+case "${SMOKE_STORAGE}" in
+  memory | postgres) ;;
+  *)
+    echo "BEK_SMOKE_STORAGE must be 'memory' or 'postgres'." >&2
+    exit 2
+    ;;
+esac
+case "${SMOKE_WORKER_QUEUE_BACKEND}" in
+  memory | postgres) ;;
+  *)
+    echo "BEK_SMOKE_WORKER_QUEUE_BACKEND must be 'memory' or 'postgres'." >&2
+    exit 2
+    ;;
+esac
+if [[ "${SMOKE_WORKER_QUEUE_BACKEND}" == "postgres" && "${SMOKE_STORAGE}" != "postgres" ]]; then
+  echo "BEK_SMOKE_WORKER_QUEUE_BACKEND=postgres requires BEK_SMOKE_STORAGE=postgres." >&2
+  exit 2
+fi
 
 cleanup() {
   if [[ -n "${API_PID}" ]] && kill -0 "${API_PID}" 2>/dev/null; then
@@ -48,15 +68,23 @@ start_api() {
   port="$(api_port)"
   API_LOG="$(mktemp -t bek-smoke-api.XXXXXX.log)"
 
-  echo "Starting Bek API on ${API_URL} with memory storage"
+  echo "Starting Bek API on ${API_URL} with ${SMOKE_STORAGE} storage and ${SMOKE_WORKER_QUEUE_BACKEND} worker queue"
   echo "API log: ${API_LOG}"
-  env \
-    -u BEK_ADMIN_API_TOKEN \
-    -u DATABASE_URL \
+  local -a env_args=(
+    -u BEK_ADMIN_API_TOKEN
     BEK_REQUIRE_ADMIN_AUTH=false \
-    BEK_STORAGE=memory \
-    BEK_API_PORT="${port}" \
-    pnpm --filter @bek/api start >"${API_LOG}" 2>&1 &
+    BEK_STORAGE="${SMOKE_STORAGE}" \
+    BEK_WORKER_QUEUE_BACKEND="${SMOKE_WORKER_QUEUE_BACKEND}" \
+    BEK_RUN_ADVANCEMENT=worker_local \
+    BEK_API_PORT="${port}"
+  )
+  if [[ "${SMOKE_STORAGE}" == "memory" ]]; then
+    env_args=(-u DATABASE_URL "${env_args[@]}")
+  elif [[ -z "${DATABASE_URL:-}" ]]; then
+    echo "DATABASE_URL is required when BEK_SMOKE_STORAGE=postgres." >&2
+    exit 2
+  fi
+  env "${env_args[@]}" pnpm --filter @bek/api start >"${API_LOG}" 2>&1 &
   API_PID="$!"
 }
 
@@ -247,6 +275,23 @@ try {
   assert(
     finalDetail.events?.some((event) => event.type === "approval.decided"),
     "Run detail should include an approval.decided event.",
+  );
+  assert(
+    finalDetail.events?.some((event) => event.data?.workerEventType === "worker.completed"),
+    "Run detail should include a worker.completed event.",
+  );
+
+  console.log("Verifying worker queue state");
+  const workerQueue = await jsonRequest("/api/worker/queue");
+  assert(workerQueue.enabled === true, "Smoke API must run BEK_RUN_ADVANCEMENT=worker_local.");
+  assert(workerQueue.mode === "worker_local", "Worker queue mode should be worker_local.");
+  assert(
+    workerQueue.queue?.records?.some((record) => record.item?.runId === run.id && record.status === "completed"),
+    "Worker queue should contain the completed run work record.",
+  );
+  assert(
+    workerQueue.queue?.events?.some((event) => event.runId === run.id && event.type === "worker.completed"),
+    "Worker queue should contain a worker.completed event.",
   );
 
   console.log(`Bek smoke test passed for run ${run.id}`);

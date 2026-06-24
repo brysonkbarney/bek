@@ -27,7 +27,7 @@ This repository is a working OSS product spine for Bek. It runs locally without 
 - React + TanStack admin app with setup, channels, access bundles, runs, approvals, connectors, model policy, memory stance, audit, and settings.
 - Core TypeScript domain package with policy, approval, redaction, run, and security tests.
 - Slack helpers with fail-closed signature verification, OAuth state, OAuth code exchange, local encrypted install-token storage, slash-command parsing, approval interactions, message rendering, and Web API posting through vaulted OAuth tokens or `SLACK_BOT_TOKEN`.
-- In-process `worker_local` run advancement for local/API/Slack flows, including runtime events, policy approvals, runtime-requested approvals, resume after approval, and final run cost/status.
+- `worker_local` run advancement for local/API/Slack flows, including runtime events, policy approvals, runtime-requested approvals, resume after approval, and final run cost/status. The worker queue can run memory-backed for zero-config demos or Postgres-backed for restart-safe self-hosting.
 - Model-router and MCP-gateway packages with provider-neutral routing/tool-manifest tests.
 - Runtime and sandbox contract packages for AI SDK, OpenCode, Docker, Vercel Sandbox, and E2B style adapters.
 - Drizzle/Postgres schema and snapshot repository for the launch data model.
@@ -59,9 +59,19 @@ pnpm smoke
 ```
 
 `pnpm smoke` reuses `VITE_BEK_API_URL` when it already points at a healthy
-API. Otherwise it starts a temporary memory-backed API, verifies bootstrap,
-setup status, policy evaluation, approval-gated run creation, and approval
+API. Otherwise it starts a temporary memory-backed API with
+`BEK_RUN_ADVANCEMENT=worker_local`, verifies bootstrap, setup status, policy
+evaluation, approval-gated run creation, worker completion, and approval
 completion, then stops the API process.
+
+To smoke the restart-safe Postgres worker queue, run migrations first and then:
+
+```bash
+BEK_SMOKE_STORAGE=postgres \
+BEK_SMOKE_WORKER_QUEUE_BACKEND=postgres \
+DATABASE_URL=postgres://bek:bek@localhost:54329/bek \
+pnpm smoke
+```
 
 The local demo does not require external credentials. It runs the API against
 seeded in-memory workspace data and starts the admin app for exploring channels,
@@ -76,11 +86,11 @@ docker compose up -d
 
 The default Compose command starts Postgres, Valkey, and MinIO. Use the `app`
 profile for the API/web containers. Set `BEK_RUN_ADVANCEMENT=worker_local` to
-make API and Slack-created runs advance through the in-process local worker, and
-set `BEK_STORAGE=postgres` with `DATABASE_URL` to run the API against the
-Postgres-backed snapshot repository. The `worker` profile and
-`pnpm worker:local` remain deterministic runner smoke tests for the worker
-contract.
+make API and Slack-created runs advance through the local worker, and set
+`BEK_STORAGE=postgres` with `BEK_WORKER_QUEUE_BACKEND=postgres` to persist both
+the Bek snapshot and worker queue/dead-letter/event state in Postgres. The
+`worker` profile and `pnpm worker:local` remain deterministic runner smoke
+tests for the worker contract.
 
 ## Install And Setup Docs
 
@@ -118,10 +128,11 @@ operator:
 | Sandbox         | Docker local policy or hosted microVM provider credentials                                         |
 
 Several of these surfaces are contract foundations today, not production
-integrations. The local worker bridge is executable and self-hosted Slack
-posting can use stored OAuth tokens or `SLACK_BOT_TOKEN`, but hosted production
-still needs durable queue-backed workers, managed credential brokering/KMS, and
-real repo/sandbox adapters. See
+integrations. The local worker bridge is executable, Postgres mode persists the
+worker queue for restart-safe self-hosting, and self-hosted Slack posting can
+use stored OAuth tokens or `SLACK_BOT_TOKEN`, but hosted production still needs
+daemonized worker fleets, managed credential brokering/KMS, side-effect outbox
+semantics, and real repo/sandbox adapters. See
 [Launch Readiness](./docs/launch-readiness.md) before using Bek in a real
 workspace.
 

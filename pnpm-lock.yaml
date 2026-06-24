@@ -133,6 +133,12 @@ importers:
       "@bek/core":
         specifier: workspace:*
         version: link:../core
+      "@bek/runtime":
+        specifier: workspace:*
+        version: link:../runtime
+      "@bek/worker":
+        specifier: workspace:*
+        version: link:../worker
       drizzle-orm:
         specifier: ^0.45.1
         version: 0.45.2(@types/pg@8.20.0)(pg@8.22.0)

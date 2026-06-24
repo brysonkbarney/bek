@@ -1,10 +1,18 @@
 # Worker Orchestrator Foundation
 
-Status: deterministic queue/runtime service, local runner, and API
-`worker_local` bridge. API and Slack-created runs can be advanced through the
-worker path in-process by setting `BEK_RUN_ADVANCEMENT=worker_local`. The next
-production step is replacing the in-memory queue with a durable queue/worker
-process while preserving this contract.
+Status: deterministic queue/runtime service, local runner, API
+`worker_local` bridge, and Postgres-backed local durability. API and
+Slack-created runs can be advanced through the worker path by setting
+`BEK_RUN_ADVANCEMENT=worker_local`. Use `BEK_WORKER_QUEUE_BACKEND=memory` for
+zero-config demos, or `BEK_STORAGE=postgres` plus
+`BEK_WORKER_QUEUE_BACKEND=postgres` to persist worker records, dead letters,
+and worker events across API restarts.
+
+This is restart-safe self-hosting durability, not the final hosted worker fleet.
+Hosted production still needs daemonized workers, transactional claims with
+`FOR UPDATE SKIP LOCKED` or an equivalent queue backend, lease sweepers,
+dead-letter redrive, idempotent side-effect outboxes, metrics, autoscaling, and
+tenant-isolation hardening.
 
 Bek keeps one visible Slack teammate, `@bek`. The worker is an internal control
 plane component: it chooses runtimes, claims work, retries safely, pauses for
@@ -30,11 +38,29 @@ the single visible `@bek` agent identity, access bundles, runtime profile,
 model policy, budget state, pending approvals, and cancellation markers. Policy
 and budget decisions are never trusted from the queue payload.
 
-## In-Memory Contract
+## Queue Tiers
 
 `@bek/worker` provides `InMemoryWorkerQueue` as a deterministic model of the
-durable worker boundary. It is intentionally storage-neutral and can be mapped
-to Postgres, a queue, or a workflow engine later.
+durable worker boundary. It is intentionally storage-neutral and powers unit
+tests, local memory mode, and the local runner.
+
+`SnapshotPersistedWorkerQueue` wraps any `WorkerQueueContract` and persists the
+queue snapshot after mutations. In self-hosted Postgres mode,
+`apps/api` hydrates an `InMemoryWorkerQueue` from
+`DrizzleWorkerQueueRepository`, attaches the API event sink, wraps it with
+`SnapshotPersistedWorkerQueue`, and flushes queue changes before responding to
+run/approval/drain requests.
+
+The Postgres repository owns separate worker tables:
+
+- `worker_work_records`
+- `worker_dead_letters`
+- `worker_events`
+
+These tables keep `run_id`, `work_id`, and approval IDs as soft references
+because the Bek snapshot repository currently rewrites run/control-plane rows
+during normal saves. Worker rows only have an `org_id` foreign key, so ordinary
+admin edits cannot cascade-delete active queue state.
 
 - `enqueue` stores active work idempotently by
   `run_attempt:{orgId}:{runId}:{attempt}`. The same key is copied onto leases
@@ -70,14 +96,15 @@ assert exact claim, heartbeat, retry, and resume decisions.
   the runtime.
 - Runtime-requested approvals are upserted into core approvals from the worker
   pause record, so mid-run checkpoints show up in the same admin approval UI.
-- `GET /api/worker/queue` exposes the local worker queue snapshot.
+- `GET /api/worker/queue` exposes the local worker queue snapshot, including
+  records, dead letters, and worker events.
 - `POST /api/worker/drain` manually drains pending local work when the mode is
-  enabled.
+  enabled, and flushes queue/store state before returning.
 
-This bridge is deliberately in-process for the local product loop. Hosted or
-multi-instance deployments must move the same queue contract to Postgres,
-Valkey, a workflow engine, or another durable backend so claims, leases, event
-publication, and run settlement are transactional and crash-safe.
+This bridge is deliberately in-process for the local product loop. The
+Postgres-backed queue survives restarts, but multi-instance deployments must
+move claim, lease, event publication, and settlement to transactional queue
+operations before enabling multiple concurrent drainers.
 
 ## Attempt State Machine
 

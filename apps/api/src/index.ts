@@ -7,7 +7,9 @@ const handle = await createApiStoreFromEnv();
 
 serve(
   {
-    fetch: createApp(handle.store).fetch,
+    fetch: createApp(handle.store, {
+      workerQueuePersistence: handle.workerQueuePersistence,
+    }).fetch,
     port,
   },
   (info) => {

@@ -7,6 +7,7 @@ import {
   verifySlackOAuthState,
 } from "@bek/slack";
 import { BekStore, createSeedSnapshot } from "@bek/core";
+import type { WorkerSnapshot } from "@bek/worker";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "./app";
 
@@ -888,6 +889,62 @@ describe("Bek API", () => {
       status: "completed",
       result: { status: "completed" },
     });
+  });
+
+  it("hydrates persisted local worker queue state after app restart", async () => {
+    let persistedWorkerQueue: WorkerSnapshot = {
+      records: [],
+      deadLetters: [],
+      events: [],
+    };
+    const store = new BekStore();
+    const app = createApp(store, {
+      runAdvancement: "worker_local",
+      workerQueuePersistence: {
+        initialSnapshot: persistedWorkerQueue,
+        onSnapshotChanged: (snapshot) => {
+          persistedWorkerQueue = snapshot;
+        },
+      },
+    });
+
+    const created = await app.request("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: "@bek summarize checkout after restart",
+        placeScopeId: "place_checkout",
+        capability: "slack.read",
+        resource: "slack:C_CHECKOUT",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(created.status).toBe(201);
+    const run = (await created.json()) as { id: string; status: string };
+    expect(run.status).toBe("completed");
+    expect(persistedWorkerQueue.records[0]).toMatchObject({
+      item: { runId: run.id },
+      status: "completed",
+    });
+
+    const restarted = createApp(new BekStore(store.read()), {
+      runAdvancement: "worker_local",
+      workerQueuePersistence: {
+        initialSnapshot: persistedWorkerQueue,
+        onSnapshotChanged: (snapshot) => {
+          persistedWorkerQueue = snapshot;
+        },
+      },
+    });
+    const queue = (await (
+      await restarted.request("/api/worker/queue")
+    ).json()) as {
+      enabled: boolean;
+      queue: WorkerSnapshot;
+    };
+
+    expect(queue.enabled).toBe(true);
+    expect(queue.queue.records).toEqual(persistedWorkerQueue.records);
+    expect(queue.queue.events.length).toBeGreaterThan(0);
   });
 
   it("resumes policy approvals through the local worker", async () => {

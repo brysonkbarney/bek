@@ -18,6 +18,8 @@
   },
   "dependencies": {
     "@bek/core": "workspace:*",
+    "@bek/runtime": "workspace:*",
+    "@bek/worker": "workspace:*",
     "drizzle-orm": "^0.45.1",
     "pg": "^8.16.3"
   },

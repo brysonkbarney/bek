@@ -8,6 +8,7 @@ import {
 import { createRunWorkItem, type RuntimeWorkReason } from "@bek/runtime";
 import {
   InMemoryWorkerQueue,
+  SnapshotPersistedWorkerQueue,
   WorkerRuntimeService,
   createDeterministicLocalRuntimeAdapters,
   type DrainRunWorkInput,
@@ -27,22 +28,42 @@ export interface ApprovalAdvanceResult {
   drain?: DrainRunWorkResult | undefined;
 }
 
+export interface WorkerQueuePersistenceOptions {
+  initialSnapshot: WorkerSnapshot;
+  onSnapshotChanged: (snapshot: WorkerSnapshot) => Promise<void> | void;
+}
+
+export interface LocalWorkerControllerOptions {
+  persistence?: WorkerQueuePersistenceOptions | undefined;
+}
+
 export class LocalWorkerController {
   readonly mode: RunAdvancementMode;
   readonly enabled: boolean;
   private readonly store: BekStore;
-  private readonly queue: InMemoryWorkerQueue;
+  private readonly queue: InMemoryWorkerQueue | SnapshotPersistedWorkerQueue;
   private readonly service: WorkerRuntimeService;
 
-  constructor(store: BekStore, mode: RunAdvancementMode) {
+  constructor(
+    store: BekStore,
+    mode: RunAdvancementMode,
+    options: LocalWorkerControllerOptions = {},
+  ) {
     this.store = store;
     this.mode = mode;
     this.enabled = mode === "worker_local";
-    this.queue = new InMemoryWorkerQueue({
+    const memoryQueue = new InMemoryWorkerQueue({
+      initialSnapshot: options.persistence?.initialSnapshot,
       eventSink: {
         emit: (event) => this.recordWorkerEvent(event),
       },
     });
+    this.queue = options.persistence
+      ? new SnapshotPersistedWorkerQueue({
+          queue: memoryQueue,
+          onSnapshotChanged: options.persistence.onSnapshotChanged,
+        })
+      : memoryQueue;
     this.service = new WorkerRuntimeService({
       queue: this.queue,
       state: () => this.store.read(),
@@ -108,6 +129,12 @@ export class LocalWorkerController {
 
   read(): WorkerSnapshot {
     return this.queue.read();
+  }
+
+  async flushChanges(): Promise<void> {
+    if (this.queue instanceof SnapshotPersistedWorkerQueue) {
+      await this.queue.flushChanges();
+    }
   }
 
   private applyProcessedDecision(decision: ProcessNextRunWorkDecision): void {

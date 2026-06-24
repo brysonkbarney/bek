@@ -91,7 +91,8 @@ pnpm smoke
 By default the script targets `VITE_BEK_API_URL` or
 `http://localhost:${BEK_SMOKE_API_PORT:-4317}`. If that API is already healthy,
 the script exercises it. If not, it starts `apps/api` with `BEK_STORAGE=memory`,
-no `DATABASE_URL`, and no admin token, runs the checks, and stops the process.
+`BEK_RUN_ADVANCEMENT=worker_local`, a memory worker queue, no `DATABASE_URL`,
+and no admin token, runs the checks, and stops the process.
 
 The smoke flow verifies:
 
@@ -102,7 +103,19 @@ The smoke flow verifies:
 - `/api/runs` creation for a seeded `github.pr` request
 - `/api/runs/:id` pending approval details and run events
 - `/api/approvals/:id/approve`
-- final completed run state
+- final completed run state and `/api/worker/queue` worker completion state
+
+To smoke the restart-safe Postgres worker queue, start Postgres, run migrations,
+and then run:
+
+```bash
+docker compose up -d postgres
+DATABASE_URL=postgres://bek:bek@localhost:54329/bek pnpm db:migrate
+BEK_SMOKE_STORAGE=postgres \
+BEK_SMOKE_WORKER_QUEUE_BACKEND=postgres \
+DATABASE_URL=postgres://bek:bek@localhost:54329/bek \
+pnpm smoke
+```
 
 Set `BEK_SMOKE_START_API=never` when you want the script to fail unless an API
 is already running. If you point the script at an API that requires admin auth,
@@ -156,6 +169,17 @@ processed through `WorkerRuntimeService`, and settled back into the run timeline
 BEK_RUN_ADVANCEMENT=worker_local pnpm dev:api
 ```
 
+For restart-safe self-hosted evaluation, use Postgres for both the Bek snapshot
+and the worker queue:
+
+```bash
+BEK_STORAGE=postgres \
+BEK_WORKER_QUEUE_BACKEND=postgres \
+BEK_RUN_ADVANCEMENT=worker_local \
+DATABASE_URL=postgres://bek:bek@localhost:54329/bek \
+pnpm dev:api
+```
+
 Create a safe run and inspect its worker events:
 
 ```bash
@@ -171,8 +195,10 @@ curl -s http://localhost:4317/api/runs \
 curl -s http://localhost:4317/api/worker/queue
 ```
 
-`worker_local` is in-process and meant for local evaluation. Production/hosted
-installs still need a durable queue-backed worker before broad rollout.
+`worker_local` is in-process and meant for local evaluation. Postgres queue mode
+survives API restarts, but production/hosted installs still need daemonized
+workers, lease sweepers, dead-letter redrive, side-effect outbox semantics, and
+autoscaling before broad rollout.
 
 ## Try The Standalone Worker Runner
 
@@ -259,8 +285,9 @@ pnpm check
   it with `BEK_STORAGE=postgres` plus `DATABASE_URL`. The default local mode is
   still in-memory for zero-credential demos.
 - `BEK_RUN_ADVANCEMENT=worker_local` exercises the local worker path in-process;
-  durable queue-backed workers are still required for hosted or multi-instance
-  production.
+  `BEK_WORKER_QUEUE_BACKEND=postgres` persists queue/dead-letter/event state for
+  restart-safe self-hosted evaluation. Hosted or multi-instance production still
+  needs daemonized workers and transactional claim/lease operations.
 - Model calls, GitHub writes, sandbox execution, and MCP tool proxying are
   foundations, deterministic local providers, or contracts.
 - Do not use this repo for production workspaces until the launch blockers in `docs/launch-readiness.md` are closed.

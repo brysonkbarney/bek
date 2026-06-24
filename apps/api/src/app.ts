@@ -45,11 +45,13 @@ import {
   LocalWorkerController,
   runAdvancementModeFromEnv,
   type RunAdvancementMode,
+  type WorkerQueuePersistenceOptions,
 } from "./worker-runtime";
 
 export interface CreateAppOptions {
   runAdvancement?: RunAdvancementMode | undefined;
   slackClient?: SlackWebApiClient | undefined;
+  workerQueuePersistence?: WorkerQueuePersistenceOptions | undefined;
 }
 
 type CreateStoreRunInput = Parameters<BekStore["createRun"]>[0];
@@ -63,6 +65,9 @@ export function createApp(
   const workerController = new LocalWorkerController(
     store,
     options.runAdvancement ?? runAdvancementModeFromEnv(),
+    {
+      persistence: options.workerQueuePersistence,
+    },
   );
   const slackOutbound = createSlackOutboundDelivery(store, {
     slackClient: options.slackClient,
@@ -128,6 +133,7 @@ export function createApp(
     if (workerController.enabled && run.status === "queued") {
       workerController.enqueueRun(run);
       await workerController.drain({ maxItems: 10 });
+      await workerController.flushChanges();
     }
     return latestRun(store, run.id);
   }
@@ -143,6 +149,7 @@ export function createApp(
     });
     if (workerController.enabled) {
       await workerController.advanceApproval(approval);
+      await workerController.flushChanges();
     }
     return latestApproval(store, approval.id);
   }
@@ -469,6 +476,7 @@ export function createApp(
     }
     const body = drainWorkerSchema.parse(await c.req.json().catch(() => ({})));
     const result = await workerController.drain(body);
+    await workerController.flushChanges();
     await store.flushChanges();
     return c.json({
       mode: workerController.mode,

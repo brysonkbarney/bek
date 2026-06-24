@@ -277,6 +277,7 @@ export interface InMemoryWorkerQueueOptions {
   idFactory?: ((prefix: string) => string) | undefined;
   retryPolicy?: Partial<WorkerRetryPolicy> | undefined;
   eventSink?: WorkerEventSink | undefined;
+  initialSnapshot?: WorkerSnapshot | undefined;
 }
 
 export interface WorkerEventSink {
@@ -334,7 +335,28 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
 
   constructor(options: InMemoryWorkerQueueOptions = {}) {
     this.nowFn = options.now ?? (() => new Date().toISOString());
-    this.idFactory = options.idFactory ?? createSequentialIdFactory();
+    if (options.initialSnapshot) {
+      this.records = clone(options.initialSnapshot.records).sort(
+        (left, right) => left.sequence - right.sequence,
+      );
+      this.deadLetters = clone(options.initialSnapshot.deadLetters).sort(
+        (left, right) => left.sequence - right.sequence,
+      );
+      this.events = clone(options.initialSnapshot.events).sort(
+        (left, right) => left.sequence - right.sequence,
+      );
+      this.nextSequence = maxWorkerSequence(options.initialSnapshot) + 1;
+    }
+    this.idFactory =
+      options.idFactory ??
+      createSequentialIdFactory(
+        options.initialSnapshot
+          ? Math.max(
+              this.nextSequence,
+              maxWorkerGeneratedId(options.initialSnapshot) + 1,
+            )
+          : this.nextSequence,
+      );
     this.retryPolicy = {
       ...defaultWorkerRetryPolicy,
       ...options.retryPolicy,
@@ -1032,6 +1054,132 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
   }
 }
 
+export interface SnapshotPersistedWorkerQueueOptions {
+  queue: WorkerQueueContract;
+  onSnapshotChanged: (snapshot: WorkerSnapshot) => Promise<void> | void;
+}
+
+export class SnapshotPersistedWorkerQueue implements WorkerQueueContract {
+  private readonly queue: WorkerQueueContract;
+  private readonly onSnapshotChanged: (
+    snapshot: WorkerSnapshot,
+  ) => Promise<void> | void;
+  private persistenceQueue: Promise<void> = Promise.resolve();
+  private persistenceError: Error | undefined;
+
+  constructor(options: SnapshotPersistedWorkerQueueOptions) {
+    this.queue = options.queue;
+    this.onSnapshotChanged = options.onSnapshotChanged;
+  }
+
+  enqueue(input: EnqueueRunWorkInput): EnqueueRunWorkDecision {
+    const decision = this.queue.enqueue(input);
+    if (decision.decision === "enqueued") {
+      this.recordChange();
+    }
+    return decision;
+  }
+
+  claimNext(input: ClaimRunWorkInput): ClaimRunWorkDecision {
+    const before = snapshotDigest(this.queue.read());
+    const decision = this.queue.claimNext(input);
+    this.recordChangeIfChanged(before);
+    return decision;
+  }
+
+  heartbeat(input: HeartbeatRunWorkInput): HeartbeatRunWorkDecision {
+    const before = snapshotDigest(this.queue.read());
+    const decision = this.queue.heartbeat(input);
+    this.recordChangeIfChanged(before);
+    return decision;
+  }
+
+  expireLeases(input?: ExpireWorkerLeasesInput): ExpireWorkerLeasesDecision {
+    const decision = this.queue.expireLeases(input);
+    if (decision.decision === "expired") {
+      this.recordChange();
+    }
+    return decision;
+  }
+
+  settle(input: SettleRunWorkInput): SettleRunWorkDecision {
+    const decision = this.queue.settle(input);
+    if (decision.decision !== "lost_lease") {
+      this.recordChange();
+    }
+    return decision;
+  }
+
+  cancelRun(input: CancelRunWorkInput): CancelRunWorkDecision {
+    const decision = this.queue.cancelRun(input);
+    if (decision.decision !== "not_found") {
+      this.recordChange();
+    }
+    return decision;
+  }
+
+  resumeAfterApproval(
+    input: ResumeAfterApprovalInput,
+  ): ResumeAfterApprovalDecision {
+    const before = snapshotDigest(this.queue.read());
+    const decision = this.queue.resumeAfterApproval(input);
+    this.recordChangeIfChanged(before);
+    return decision;
+  }
+
+  emit(input: WorkerEventInput): WorkerEvent {
+    const event = this.queue.emit(input);
+    this.recordChange();
+    return event;
+  }
+
+  emitRuntimeEvent(input: {
+    leaseId: string;
+    event: RuntimeObservabilityEvent;
+    now?: string | undefined;
+  }): WorkerEvent | undefined {
+    const event = this.queue.emitRuntimeEvent(input);
+    if (event) {
+      this.recordChange();
+    }
+    return event;
+  }
+
+  read(): WorkerSnapshot {
+    return this.queue.read();
+  }
+
+  async flushChanges(): Promise<void> {
+    await this.persistenceQueue;
+    if (this.persistenceError) {
+      const error = this.persistenceError;
+      this.persistenceError = undefined;
+      throw error;
+    }
+  }
+
+  private recordChangeIfChanged(before: string): void {
+    if (snapshotDigest(this.queue.read()) !== before) {
+      this.recordChange();
+    }
+  }
+
+  private recordChange(): void {
+    const snapshot = this.queue.read();
+    this.persistenceQueue = this.persistenceQueue
+      .then(() => {
+        if (this.persistenceError) {
+          return;
+        }
+        return this.onSnapshotChanged(snapshot);
+      })
+      .catch((error: unknown) => {
+        this.persistenceError =
+          error instanceof Error ? error : new Error(String(error));
+      });
+  }
+}
+
 export interface WorkerRuntimeStateReader {
   read(): BekSnapshot;
 }
@@ -1680,6 +1828,36 @@ export function createWorkerIdempotencyKey(
   item: Pick<RunWorkItem, "orgId" | "runId" | "attempt">,
 ): string {
   return `run_attempt:${item.orgId}:${item.runId}:${item.attempt}`;
+}
+
+function maxWorkerSequence(snapshot: WorkerSnapshot): number {
+  return Math.max(
+    0,
+    ...snapshot.records.map((record) => record.sequence),
+    ...snapshot.deadLetters.map((deadLetter) => deadLetter.sequence),
+    ...snapshot.events.map((event) => event.sequence),
+  );
+}
+
+function maxWorkerGeneratedId(snapshot: WorkerSnapshot): number {
+  return Math.max(
+    0,
+    ...snapshot.records.flatMap((record) => [
+      idNumericSuffix(record.id),
+      record.lease ? idNumericSuffix(record.lease.id) : 0,
+    ]),
+    ...snapshot.deadLetters.map((deadLetter) => idNumericSuffix(deadLetter.id)),
+    ...snapshot.events.map((event) => idNumericSuffix(event.id)),
+  );
+}
+
+function idNumericSuffix(id: string): number {
+  const match = /_(\d+)$/.exec(id);
+  return match ? Number(match[1]) : 0;
+}
+
+function snapshotDigest(snapshot: WorkerSnapshot): string {
+  return JSON.stringify(snapshot);
 }
 
 export function retryDelayMs(

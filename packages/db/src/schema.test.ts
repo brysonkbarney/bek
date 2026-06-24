@@ -13,6 +13,9 @@ import {
   principals,
   runEvents,
   runs,
+  workerDeadLetters,
+  workerEvents,
+  workerWorkRecords,
 } from "./schema";
 
 describe("Bek schema", () => {
@@ -45,6 +48,9 @@ describe("Bek schema", () => {
       ingressDeliveries,
       connectorInstalls,
       credentialMetadata,
+      workerWorkRecords,
+      workerDeadLetters,
+      workerEvents,
     ].map((table) => getTableConfig(table).name);
 
     expect(tableNames).toEqual([
@@ -60,6 +66,9 @@ describe("Bek schema", () => {
       "ingress_deliveries",
       "connector_installs",
       "credential_metadata",
+      "worker_work_records",
+      "worker_dead_letters",
+      "worker_events",
     ]);
   });
 
@@ -75,6 +84,20 @@ describe("Bek schema", () => {
     expect(indexNames(approvals)).toContain("approvals_org_status_idx");
     expect(indexNames(ingressDeliveries)).toContain(
       "ingress_deliveries_org_key_unique",
+    );
+    expect(indexNames(workerWorkRecords)).toEqual(
+      expect.arrayContaining([
+        "worker_work_records_claim_idx",
+        "worker_work_records_active_idempotency_unique",
+        "worker_work_records_lease_expiry_idx",
+        "worker_work_records_org_run_idx",
+      ]),
+    );
+    expect(indexNames(workerDeadLetters)).toContain(
+      "worker_dead_letters_org_failed_idx",
+    );
+    expect(indexNames(workerEvents)).toContain(
+      "worker_events_org_run_created_idx",
     );
   });
 });

@@ -74,10 +74,12 @@ The `migrate` service runs `pnpm db:migrate` before the API starts. With
 `BEK_STORAGE=postgres`, the API auto-seeds the demo organization on first boot
 unless `BEK_DB_AUTO_SEED=false`.
 
-The API container defaults to `BEK_RUN_ADVANCEMENT=worker_local`, so local
-API/Slack-created runs advance through the in-process worker bridge. This is
-useful for self-hosted evaluation; a durable production worker still needs
-queue-backed claim/lease/settlement storage.
+The API container defaults to `BEK_RUN_ADVANCEMENT=worker_local` and
+`BEK_WORKER_QUEUE_BACKEND=postgres`, so local API/Slack-created runs advance
+through the worker bridge while worker records, leases, dead letters, and
+worker events persist in Postgres. This is useful for restart-safe self-hosted
+evaluation; production still needs daemonized workers, lease sweepers,
+dead-letter redrive, side-effect outbox semantics, and operational metrics.
 
 When you change `VITE_BEK_API_URL` or `VITE_BEK_ADMIN_API_TOKEN`, rebuild the
 web image because Vite embeds those values at build time.
@@ -106,11 +108,12 @@ docker compose --profile app down -v
 
 ## Current Self-Host Limits
 
-- The API can persist the seeded Bek snapshot in Postgres, but Valkey queues,
-  MinIO artifacts, and object-store-backed run outputs are not wired end to end.
-- `packages/worker` includes a deterministic local runner for demos and
-  verification, but not yet a long-running durable queue daemon backed by
-  Valkey/Postgres.
+- The API can persist the seeded Bek snapshot and local worker queue state in
+  Postgres, but Valkey queues, MinIO artifacts, and object-store-backed run
+  outputs are not wired end to end.
+- `packages/worker` includes the deterministic queue contract and local runner,
+  but not yet a long-running separate worker daemon with transactional
+  multi-drainer claims, redrive UI, or autoscaling.
 - Slack OAuth code exchange, local encrypted token storage, and Slack posting
   are available, but hosted-grade KMS/broker operations, live model routing,
   GitHub writes, MCP transports, and hardened sandbox execution are not

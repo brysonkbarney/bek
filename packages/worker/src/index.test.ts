@@ -540,6 +540,48 @@ describe("in-memory worker queue", () => {
     });
     expect(settled.decision).toBe("completed");
   });
+
+  it("hydrates persisted snapshots with sequence and generated ID continuity", () => {
+    const queue = new InMemoryWorkerQueue();
+    queue.enqueue({ item: workItem({ runId: "run_hydrate" }) });
+    const claim = queue.claimNext({
+      workerId: "worker_before_restart",
+      leaseMs: 5_000,
+      now: baseNow,
+    });
+    if (claim.decision !== "claimed") {
+      throw new Error("Expected claim.");
+    }
+
+    const snapshot = queue.read();
+    const hydrated = new InMemoryWorkerQueue({ initialSnapshot: snapshot });
+
+    expect(hydrated.read()).toEqual(snapshot);
+
+    const enqueued = hydrated.enqueue({
+      item: workItem({ runId: "run_after_restart" }),
+      now: "2026-06-24T18:00:01.000Z",
+    });
+    expect(enqueued.decision).toBe("enqueued");
+    if (enqueued.decision !== "enqueued") {
+      throw new Error("Expected enqueue after hydrate.");
+    }
+
+    const ids = JSON.stringify(snapshot);
+    expect(ids).not.toContain(enqueued.record.id);
+    expect(enqueued.record.sequence).toBeGreaterThan(
+      Math.max(
+        ...snapshot.records.map((record) => record.sequence),
+        ...snapshot.events.map((event) => event.sequence),
+      ),
+    );
+
+    const duplicate = hydrated.enqueue({
+      item: workItem({ runId: "run_hydrate" }),
+      now: "2026-06-24T18:00:02.000Z",
+    });
+    expect(duplicate.decision).toBe("duplicate");
+  });
 });
 
 describe("worker runtime service", () => {

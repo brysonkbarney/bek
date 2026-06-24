@@ -2,16 +2,26 @@ import { BekStore, createSeedSnapshot } from "@bek/core";
 import {
   createBekDbClient,
   DrizzleBekSnapshotRepository,
+  DrizzleWorkerQueueRepository,
   seedBekSnapshot,
   type BekDbClient,
 } from "@bek/db";
+import type { WorkerSnapshot } from "@bek/worker";
 
 export type BekApiStorageMode = "memory" | "postgres";
+export type BekWorkerQueueBackend = "memory" | "postgres";
 
 export interface BekApiStoreHandle {
   store: BekStore;
   storageMode: BekApiStorageMode;
+  workerQueueBackend: BekWorkerQueueBackend;
+  workerQueuePersistence?: BekWorkerQueuePersistence | undefined;
   close: () => Promise<void>;
+}
+
+export interface BekWorkerQueuePersistence {
+  initialSnapshot: WorkerSnapshot;
+  onSnapshotChanged: (snapshot: WorkerSnapshot) => Promise<void> | void;
 }
 
 export async function createApiStoreFromEnv(
@@ -23,6 +33,7 @@ export async function createApiStoreFromEnv(
     return {
       store,
       storageMode,
+      workerQueueBackend: selectWorkerQueueBackend(env, storageMode),
       close: () => store.flushChanges(),
     };
   }
@@ -53,6 +64,26 @@ export function selectStorageMode(
   throw new Error("BEK_STORAGE must be either memory or postgres.");
 }
 
+export function selectWorkerQueueBackend(
+  env: Record<string, string | undefined>,
+  storageMode = selectStorageMode(env),
+): BekWorkerQueueBackend {
+  const configured = env.BEK_WORKER_QUEUE_BACKEND?.trim().toLowerCase();
+  const backend =
+    configured ?? (storageMode === "postgres" ? "postgres" : "memory");
+  if (backend === "memory" || backend === "postgres") {
+    if (backend === "postgres" && storageMode !== "postgres") {
+      throw new Error(
+        "BEK_WORKER_QUEUE_BACKEND=postgres requires BEK_STORAGE=postgres or DATABASE_URL.",
+      );
+    }
+    return backend;
+  }
+  throw new Error(
+    "BEK_WORKER_QUEUE_BACKEND must be either memory or postgres.",
+  );
+}
+
 async function createPostgresStoreHandle(
   client: BekDbClient,
   env: Record<string, string | undefined>,
@@ -73,14 +104,33 @@ async function createPostgresStoreHandle(
     onSnapshotChanged: (changedSnapshot) =>
       repository.saveSnapshot(changedSnapshot),
   });
+  const workerQueueBackend = selectWorkerQueueBackend(env, "postgres");
+  const workerQueuePersistence =
+    workerQueueBackend === "postgres"
+      ? await createPostgresWorkerQueuePersistence(client, orgId)
+      : undefined;
 
   return {
     store,
     storageMode: "postgres",
+    workerQueueBackend,
+    workerQueuePersistence,
     close: async () => {
       await store.flushChanges();
       await client.close();
     },
+  };
+}
+
+async function createPostgresWorkerQueuePersistence(
+  client: BekDbClient,
+  orgId: string,
+): Promise<BekWorkerQueuePersistence> {
+  const repository = new DrizzleWorkerQueueRepository(client.db);
+  return {
+    initialSnapshot: await repository.readSnapshot(orgId),
+    onSnapshotChanged: (changedSnapshot) =>
+      repository.saveSnapshot(orgId, changedSnapshot),
   };
 }
 

@@ -163,6 +163,31 @@ export const usageStatusEnum = pgEnum("usage_status", [
   "failed",
   "cancelled",
 ]);
+export const workerWorkStatusEnum = pgEnum("worker_work_status", [
+  "queued",
+  "claimed",
+  "awaiting_approval",
+  "completed",
+  "failed",
+  "cancelled",
+  "dead",
+]);
+export const workerAttemptStateEnum = pgEnum("worker_run_attempt_state", [
+  "queued",
+  "claimed",
+  "awaiting_approval",
+  "retry_scheduled",
+  "cancel_requested",
+  "completed",
+  "cancelled",
+  "dead_lettered",
+]);
+export const workerWorkReasonEnum = pgEnum("worker_work_reason", [
+  "new_run",
+  "approval_granted",
+  "retry",
+  "resume",
+]);
 
 export const orgs = pgTable(
   "orgs",
@@ -691,6 +716,129 @@ export const modelUsage = pgTable(
   ],
 );
 
+export const workerWorkRecords = pgTable(
+  "worker_work_records",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    runId: text("run_id").notNull(),
+    sequence: integer("sequence").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    item: jsonb("item").$type<unknown>().notNull(),
+    attempt: integer("attempt").notNull().default(1),
+    reason: workerWorkReasonEnum("reason").notNull(),
+    traceId: text("trace_id").notNull(),
+    status: workerWorkStatusEnum("status").notNull(),
+    attemptState: workerAttemptStateEnum("attempt_state").notNull(),
+    availableAt: timestamp("available_at", { withTimezone: true }).notNull(),
+    enqueuedAt: timestamp("enqueued_at", { withTimezone: true }).notNull(),
+    leaseId: text("lease_id"),
+    leaseWorkerId: text("lease_worker_id"),
+    leaseClaimedAt: timestamp("lease_claimed_at", { withTimezone: true }),
+    leaseHeartbeatAt: timestamp("lease_heartbeat_at", { withTimezone: true }),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    approvalId: text("approval_id"),
+    approvalPayloadHash: text("approval_payload_hash"),
+    approvalAction: text("approval_action"),
+    approvalRisk: riskLevelEnum("approval_risk"),
+    approvalStatus: approvalStatusEnum("approval_status"),
+    approvalCreatedAt: timestamp("approval_created_at", { withTimezone: true }),
+    approvalExpiresAt: timestamp("approval_expires_at", { withTimezone: true }),
+    retryOf: text("retry_of"),
+    cancelRequestedAt: timestamp("cancel_requested_at", {
+      withTimezone: true,
+    }),
+    cancelReason: text("cancel_reason"),
+    terminalReason: text("terminal_reason"),
+    result: jsonb("result").$type<unknown>(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    check("worker_work_records_attempt_positive", sql`${table.attempt} > 0`),
+    uniqueIndex("worker_work_records_active_idempotency_unique")
+      .on(table.orgId, table.idempotencyKey)
+      .where(
+        sql`${table.status} in ('queued', 'claimed', 'awaiting_approval')`,
+      ),
+    uniqueIndex("worker_work_records_lease_id_unique")
+      .on(table.leaseId)
+      .where(sql`${table.leaseId} is not null`),
+    index("worker_work_records_claim_idx")
+      .on(table.availableAt, table.sequence)
+      .where(sql`${table.status} = 'queued'`),
+    index("worker_work_records_lease_expiry_idx")
+      .on(table.leaseExpiresAt)
+      .where(sql`${table.status} = 'claimed'`),
+    index("worker_work_records_org_run_idx").on(
+      table.orgId,
+      table.runId,
+      table.attempt,
+    ),
+    index("worker_work_records_org_status_idx").on(
+      table.orgId,
+      table.status,
+      table.updatedAt,
+    ),
+    index("worker_work_records_approval_idx").on(table.approvalId),
+  ],
+);
+
+export const workerDeadLetters = pgTable(
+  "worker_dead_letters",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    workId: text("work_id").notNull(),
+    runId: text("run_id").notNull(),
+    sequence: integer("sequence").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    item: jsonb("item").$type<unknown>().notNull(),
+    reason: text("reason").notNull(),
+    failedAt: timestamp("failed_at", { withTimezone: true }).notNull(),
+    result: jsonb("result").$type<unknown>().notNull(),
+    retryPolicy: jsonb("retry_policy").$type<unknown>().notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("worker_dead_letters_work_unique").on(table.workId),
+    index("worker_dead_letters_org_failed_idx").on(table.orgId, table.failedAt),
+    index("worker_dead_letters_org_run_idx").on(table.orgId, table.runId),
+  ],
+);
+
+export const workerEvents = pgTable(
+  "worker_events",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    runId: text("run_id").notNull(),
+    workId: text("work_id"),
+    sequence: integer("sequence").notNull(),
+    type: text("type").notNull(),
+    attempt: integer("attempt"),
+    traceId: text("trace_id"),
+    message: text("message").notNull(),
+    data: jsonObject("data"),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    index("worker_events_org_created_idx").on(table.orgId, table.createdAt),
+    index("worker_events_org_run_created_idx").on(
+      table.orgId,
+      table.runId,
+      table.createdAt,
+    ),
+    index("worker_events_type_created_idx").on(table.type, table.createdAt),
+  ],
+);
+
 export const toolUsage = pgTable(
   "tool_usage",
   {
@@ -750,6 +898,9 @@ export const orgsRelations = relations(orgs, ({ one, many }) => ({
   credentialMetadata: many(credentialMetadata),
   auditEvents: many(auditEvents),
   ingressDeliveries: many(ingressDeliveries),
+  workerWorkRecords: many(workerWorkRecords),
+  workerDeadLetters: many(workerDeadLetters),
+  workerEvents: many(workerEvents),
 }));
 
 export const principalsRelations = relations(principals, ({ one, many }) => ({
@@ -909,6 +1060,8 @@ export const runsRelations = relations(runs, ({ one, many }) => ({
   modelUsage: many(modelUsage),
   toolUsage: many(toolUsage),
   ingressDeliveries: many(ingressDeliveries),
+  workerWorkRecords: many(workerWorkRecords),
+  workerEvents: many(workerEvents),
 }));
 
 export const runEventsRelations = relations(runEvents, ({ one, many }) => ({
@@ -1004,6 +1157,46 @@ export const modelUsageRelations = relations(modelUsage, ({ one }) => ({
   }),
 }));
 
+export const workerWorkRecordsRelations = relations(
+  workerWorkRecords,
+  ({ one, many }) => ({
+    org: one(orgs, {
+      fields: [workerWorkRecords.orgId],
+      references: [orgs.id],
+    }),
+    run: one(runs, {
+      fields: [workerWorkRecords.runId],
+      references: [runs.id],
+    }),
+    deadLetters: many(workerDeadLetters),
+  }),
+);
+
+export const workerDeadLettersRelations = relations(
+  workerDeadLetters,
+  ({ one }) => ({
+    org: one(orgs, {
+      fields: [workerDeadLetters.orgId],
+      references: [orgs.id],
+    }),
+    work: one(workerWorkRecords, {
+      fields: [workerDeadLetters.workId],
+      references: [workerWorkRecords.id],
+    }),
+  }),
+);
+
+export const workerEventsRelations = relations(workerEvents, ({ one }) => ({
+  org: one(orgs, {
+    fields: [workerEvents.orgId],
+    references: [orgs.id],
+  }),
+  run: one(runs, {
+    fields: [workerEvents.runId],
+    references: [runs.id],
+  }),
+}));
+
 export const toolUsageRelations = relations(toolUsage, ({ one }) => ({
   org: one(orgs, { fields: [toolUsage.orgId], references: [orgs.id] }),
   run: one(runs, { fields: [toolUsage.runId], references: [runs.id] }),
@@ -1071,5 +1264,11 @@ export type IngressDeliveryRow = InferSelectModel<typeof ingressDeliveries>;
 export type NewIngressDeliveryRow = InferInsertModel<typeof ingressDeliveries>;
 export type ModelUsageRow = InferSelectModel<typeof modelUsage>;
 export type NewModelUsageRow = InferInsertModel<typeof modelUsage>;
+export type WorkerWorkRecordRow = InferSelectModel<typeof workerWorkRecords>;
+export type NewWorkerWorkRecordRow = InferInsertModel<typeof workerWorkRecords>;
+export type WorkerDeadLetterRow = InferSelectModel<typeof workerDeadLetters>;
+export type NewWorkerDeadLetterRow = InferInsertModel<typeof workerDeadLetters>;
+export type WorkerEventRow = InferSelectModel<typeof workerEvents>;
+export type NewWorkerEventRow = InferInsertModel<typeof workerEvents>;
 export type ToolUsageRow = InferSelectModel<typeof toolUsage>;
 export type NewToolUsageRow = InferInsertModel<typeof toolUsage>;
