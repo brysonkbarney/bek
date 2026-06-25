@@ -8,6 +8,7 @@ import type {
   IngressDelivery,
   OutboundDelivery,
   Principal,
+  Run,
   RunEvent,
 } from "@bek/core";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
@@ -222,6 +223,7 @@ type RunSnapshotRow = Pick<
   | "runtimeProfileId"
   | "estimatedCostCents"
   | "actualCostCents"
+  | "metadata"
   | "createdAt"
   | "updatedAt"
 >;
@@ -598,7 +600,19 @@ export function snapshotToRows(
       updatedAt: toDate(credential.updatedAt),
     })),
     runs: snapshot.runs.map((run) => ({
-      ...run,
+      id: run.id,
+      orgId: run.orgId,
+      agentId: run.agentId,
+      requesterPrincipalId: run.requesterPrincipalId,
+      placeScopeId: run.placeScopeId,
+      trigger: run.trigger,
+      prompt: run.prompt,
+      status: run.status,
+      modelPolicyId: run.modelPolicyId,
+      runtimeProfileId: run.runtimeProfileId,
+      estimatedCostCents: run.estimatedCostCents,
+      actualCostCents: run.actualCostCents,
+      metadata: runMetadataFromSnapshot(run),
       createdAt: toDate(run.createdAt),
       updatedAt: toDate(run.updatedAt),
     })),
@@ -754,6 +768,7 @@ export function rowsToSnapshot(rows: BekSnapshotRows): BekSnapshot {
       placeScopeId: run.placeScopeId,
       trigger: run.trigger,
       prompt: run.prompt,
+      ...runIntentFromMetadata(run.metadata),
       status: run.status,
       modelPolicyId: run.modelPolicyId,
       runtimeProfileId: run.runtimeProfileId,
@@ -1163,6 +1178,51 @@ function nonEmptyRecord(
     return undefined;
   }
   return value;
+}
+
+function runMetadataFromSnapshot(run: Run): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {};
+  if (run.capability) {
+    metadata.capability = run.capability;
+  }
+  if (run.resource) {
+    metadata.resource = run.resource;
+  }
+  return metadata;
+}
+
+function runIntentFromMetadata(metadata: Record<string, unknown>): {
+  capability?: NonNullable<Run["capability"]>;
+  resource?: string;
+} {
+  const intent: {
+    capability?: NonNullable<Run["capability"]>;
+    resource?: string;
+  } = {};
+  if (isCapabilityKind(metadata.capability)) {
+    intent.capability = metadata.capability;
+  }
+  if (typeof metadata.resource === "string" && metadata.resource.trim()) {
+    intent.resource = metadata.resource;
+  }
+  return intent;
+}
+
+function isCapabilityKind(
+  value: unknown,
+): value is NonNullable<Run["capability"]> {
+  return (
+    value === "slack.read" ||
+    value === "slack.write" ||
+    value === "github.read" ||
+    value === "github.branch" ||
+    value === "github.pr" ||
+    value === "linear.read" ||
+    value === "linear.write" ||
+    value === "mcp.tool" ||
+    value === "sandbox.exec" ||
+    value === "model.call"
+  );
 }
 
 function toDate(value: Date | string): Date {

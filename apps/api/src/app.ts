@@ -20,7 +20,6 @@ import type {
 } from "@bek/core";
 import {
   createGitHubDraftPullRequestWorkflowPlan,
-  createGitHubDraftPullRequestWorkflowApprovalPayload,
   createGitHubInstallationTokenRequest,
   createGitHubWebhookDeliveryDedupeKey,
   normalizeGitHubWebhookEvent,
@@ -267,20 +266,14 @@ export function createApp(
   });
 
   function createRunAndQueue(input: CreateStoreRunInput) {
-    const githubApprovalPayload =
-      githubExecution.installationId && input.capability === "github.pr"
-        ? githubDraftPullRequestApprovalPayloadFactory(
-            input,
-            githubExecution.installationId,
-          )
-        : undefined;
     const runInput: CreateStoreRunInput = {
       ...input,
       advanceMode: workerController.enabled ? "worker" : "inline_stub",
+      deferApproval:
+        workerController.enabled &&
+        Boolean(githubExecution.installationId) &&
+        input.capability === "github.pr",
     };
-    if (githubApprovalPayload) {
-      runInput.approvalPayload = githubApprovalPayload;
-    }
     const run = store.createRun(runInput);
     if (workerController.enabled && run.status === "queued") {
       workerController.enqueueRun(run);
@@ -2957,53 +2950,6 @@ function githubDraftPullRequestWorkflowPreview(
       repository: plan.approvalHashInput.repository,
       installationId,
     },
-  };
-}
-
-function githubDraftPullRequestApprovalPayloadFactory(
-  input: CreateStoreRunInput,
-  installationId: string,
-): (
-  run: Run,
-) => ReturnType<typeof createGitHubDraftPullRequestWorkflowApprovalPayload> {
-  const repositoryResource = input.resource;
-  if (!repositoryResource) {
-    throw new Error("GitHub PR execution requires a repo resource.");
-  }
-  const repository = parseGitHubRepoResource(repositoryResource);
-  return (run) => {
-    const safeRunId = safeIdPart(run.id).toLowerCase();
-    const plan = createGitHubDraftPullRequestWorkflowPlan({
-      repository,
-      installationId,
-      title: `Bek run ${run.id}`,
-      body: [
-        "Approved Bek GitHub workflow.",
-        "",
-        `Run: ${run.id}`,
-        `Requester: ${run.requesterPrincipalId}`,
-        `Resource: ${repository.resource}`,
-      ].join("\n"),
-      headBranch: `bek/${safeRunId}`,
-      commitMessage: `Bek run ${run.id}`,
-      changes: [
-        {
-          path: `.bek/runs/${safeRunId}.md`,
-          content: [
-            "# Bek GitHub Workflow",
-            "",
-            `Run: ${run.id}`,
-            `Requester: ${run.requesterPrincipalId}`,
-            `Resource: ${repository.resource}`,
-            "",
-          ].join("\n"),
-        },
-      ],
-      labels: ["bek"],
-      runId: run.id,
-      requesterPrincipalId: run.requesterPrincipalId,
-    });
-    return createGitHubDraftPullRequestWorkflowApprovalPayload(plan);
   };
 }
 

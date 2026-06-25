@@ -633,6 +633,7 @@ export class BekStore {
     resource?: string | undefined;
     advanceMode?: RunAdvanceMode | undefined;
     approvalPayload?: unknown | ((run: Run) => unknown);
+    deferApproval?: boolean | undefined;
   }): Run {
     const advanceMode = input.advanceMode ?? "inline_stub";
     const { modelPolicy, runtimeProfile } = this.resolveRunProfiles(
@@ -653,6 +654,8 @@ export class BekStore {
       placeScopeId: input.placeScopeId,
       trigger: input.trigger ?? "api",
       prompt: input.prompt,
+      capability: input.capability,
+      resource: input.resource,
       modelPolicy,
       runtimeProfile,
     });
@@ -705,35 +708,51 @@ export class BekStore {
           ),
         );
       } else if (decision.requiresApproval) {
-        const approvalPayload =
-          typeof input.approvalPayload === "function"
-            ? input.approvalPayload(run)
-            : (input.approvalPayload ?? {
-                prompt: input.prompt,
+        if (input.deferApproval && advanceMode === "worker") {
+          this.snapshot.events.unshift(
+            createRunEvent(
+              this.snapshot.org.id,
+              run.id,
+              "run.status_changed",
+              "Policy requires approval; worker planning will prepare the approval payload.",
+              {
+                advanceMode,
                 capability: input.capability,
                 resource: input.resource,
-              });
-        const approval = createApprovalRequest(
-          this.snapshot.org.id,
-          run.id,
-          run.requesterPrincipalId,
-          input.capability,
-          approvalPayload,
-          decision.risk,
-        );
-        run.status = "awaiting_approval";
-        this.snapshot.approvals.unshift(approval);
-        this.snapshot.events.unshift(
-          createRunEvent(
+              },
+            ),
+          );
+        } else {
+          const approvalPayload =
+            typeof input.approvalPayload === "function"
+              ? input.approvalPayload(run)
+              : (input.approvalPayload ?? {
+                  prompt: input.prompt,
+                  capability: input.capability,
+                  resource: input.resource,
+                });
+          const approval = createApprovalRequest(
             this.snapshot.org.id,
             run.id,
-            "approval.requested",
-            `Approval required for ${input.capability}.`,
-            {
-              approvalId: approval.id,
-            },
-          ),
-        );
+            run.requesterPrincipalId,
+            input.capability,
+            approvalPayload,
+            decision.risk,
+          );
+          run.status = "awaiting_approval";
+          this.snapshot.approvals.unshift(approval);
+          this.snapshot.events.unshift(
+            createRunEvent(
+              this.snapshot.org.id,
+              run.id,
+              "approval.requested",
+              `Approval required for ${input.capability}.`,
+              {
+                approvalId: approval.id,
+              },
+            ),
+          );
+        }
       } else {
         if (advanceMode === "inline_stub") {
           run.status = "completed";

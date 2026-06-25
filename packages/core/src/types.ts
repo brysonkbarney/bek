@@ -219,6 +219,8 @@ export interface Run {
   placeScopeId: string;
   trigger: TriggerKind;
   prompt: string;
+  capability?: CapabilityKind;
+  resource?: string;
   status: RunStatus;
   modelPolicyId: string;
   runtimeProfileId: string;

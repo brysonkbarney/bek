@@ -1353,6 +1353,12 @@ interface SandboxPreparation {
 export interface WorkerGitHubDraftPullRequestExecutionOptions {
   tokenProvider: GitHubInstallationTokenProvider;
   client: GitHubDraftPullRequestWorkflowExecutionClient;
+  approvalPlanProvider?: (input: {
+    record: WorkerWorkRecord;
+    context: WorkerRuntimeContext;
+  }) =>
+    | GitHubDraftPullRequestWorkflowPlan
+    | Promise<GitHubDraftPullRequestWorkflowPlan>;
   planProvider: (input: {
     record: WorkerWorkRecord;
     context: WorkerRuntimeContext;
@@ -1589,6 +1595,16 @@ export class WorkerRuntimeService {
       return { result: githubPullRequestResult };
     }
 
+    const githubPullRequestApproval =
+      await this.createGitHubPullRequestApprovalIfConfigured(
+        claim.lease.id,
+        claim.record,
+        context,
+      );
+    if (githubPullRequestApproval) {
+      return githubPullRequestApproval;
+    }
+
     this.emitBudgetCheckedEvent(claim.lease.id, context.modelRoute);
     const budgetApproval = this.createBudgetApprovalIfOverLimit(
       claim.lease.id,
@@ -1780,6 +1796,102 @@ export class WorkerRuntimeService {
       });
       throw error;
     }
+  }
+
+  private async createGitHubPullRequestApprovalIfConfigured(
+    leaseId: string,
+    record: WorkerWorkRecord,
+    context: WorkerRuntimeContext,
+  ): Promise<
+    | {
+        result: RuntimeResult;
+        approval?: ApprovalRequest | undefined;
+      }
+    | undefined
+  > {
+    if (record.item.reason === "approval_granted") {
+      return undefined;
+    }
+    if (context.run.capability !== "github.pr") {
+      return undefined;
+    }
+    const executor = this.githubDraftPullRequest;
+    if (!executor?.approvalPlanProvider) {
+      return undefined;
+    }
+
+    const plan = await executor.approvalPlanProvider({
+      record: clone(record),
+      context: clone(context),
+    });
+    validatePlannedGitHubDraftPullRequestPlan(plan, context);
+
+    const decision = evaluatePolicy(context.accessBundles, {
+      placeScopeId: context.place.id,
+      capability: "github.pr",
+      resource: plan.resource,
+    });
+    if (decision.decision === "deny") {
+      return {
+        result: {
+          status: "failed",
+          artifactRefs: [],
+          actualCostCents: 0,
+          error: `GitHub PR planning denied: ${decision.reason}`,
+        },
+      };
+    }
+    if (!decision.requiresApproval) {
+      return {
+        result: {
+          status: "failed",
+          artifactRefs: [],
+          actualCostCents: 0,
+          error:
+            "GitHub PR execution currently requires an approval-bound workflow plan.",
+        },
+      };
+    }
+
+    const now = this.time();
+    const payload = createGitHubDraftPullRequestWorkflowApprovalPayload(plan);
+    const approval = createApprovalRequest(
+      record.item.orgId,
+      record.item.runId,
+      context.run.requesterPrincipalId,
+      "github.pr",
+      payload,
+      decision.risk,
+      now,
+      addMs(now, this.approvalExpiresInMs),
+    );
+    this.queue.emitRuntimeEvent({
+      leaseId,
+      event: {
+        type: "tool.requested",
+        message: `Approval requested for GitHub draft PR ${plan.pullRequest.headBranch}.`,
+        data: {
+          approvalId: approval.id,
+          action: approval.action,
+          kind: "external.write",
+          resource: plan.resource,
+          risk: approval.risk,
+          branch: plan.pullRequest.headBranch,
+          fileCount: plan.commit.changes.length,
+        },
+      },
+      now,
+    });
+
+    return {
+      result: {
+        status: "awaiting_approval",
+        finalText: `Approval required before Bek opens a draft PR for ${plan.resource}.`,
+        artifactRefs: [],
+        actualCostCents: Math.max(1, context.run.estimatedCostCents),
+      },
+      approval,
+    };
   }
 
   private createRuntimeInput(
@@ -2199,6 +2311,9 @@ export class WorkerRuntimeService {
       risk: gate.risk,
       status: gate.status,
       payloadHash: gate.payloadHash,
+      ...(gate.payloadMetadata
+        ? { payloadMetadata: clone(gate.payloadMetadata) }
+        : {}),
       requestedByPrincipalId: context.run.requesterPrincipalId,
       createdAt: gate.createdAt,
       expiresAt: gate.expiresAt,
@@ -3455,11 +3570,29 @@ function validateApprovedGitHubDraftPullRequestPlan(
   approval: ApprovalRequest,
   context: WorkerRuntimeContext,
 ): void {
+  validatePlannedGitHubDraftPullRequestPlan(plan, context);
+  if (approval.action !== "github.pr" || approval.status !== "approved") {
+    throw new Error("GitHub PR execution requires an approved github.pr gate.");
+  }
+  if (
+    hashPayload(createGitHubDraftPullRequestWorkflowApprovalPayload(plan)) !==
+    approval.payloadHash
+  ) {
+    throw new Error(
+      "GitHub PR workflow plan hash does not match the approved payload.",
+    );
+  }
+}
+
+function validatePlannedGitHubDraftPullRequestPlan(
+  plan: GitHubDraftPullRequestWorkflowPlan,
+  context: WorkerRuntimeContext,
+): void {
   if (plan.type !== "github.draft_pull_request_workflow_plan") {
     throw new Error("GitHub PR execution requires a draft PR workflow plan.");
   }
-  if (approval.action !== "github.pr" || approval.status !== "approved") {
-    throw new Error("GitHub PR execution requires an approved github.pr gate.");
+  if (context.run.capability !== "github.pr") {
+    throw new Error("GitHub PR workflow planning requires a github.pr run.");
   }
   if (plan.runId !== context.run.id) {
     throw new Error("GitHub PR workflow plan run does not match the run.");
@@ -3471,6 +3604,8 @@ function validateApprovedGitHubDraftPullRequestPlan(
   }
   if (
     plan.resource !== plan.repository.resource ||
+    (context.run.resource !== undefined &&
+      plan.resource !== context.run.resource) ||
     plan.resource !== plan.pullRequest.resource ||
     plan.resource !== plan.approvalHashInput.resource ||
     plan.branch.resource !== plan.resource ||
@@ -3484,14 +3619,6 @@ function validateApprovedGitHubDraftPullRequestPlan(
   if (plan.approvalHashInput.installationId !== plan.installationId) {
     throw new Error(
       "GitHub PR approval hash input installation does not match the workflow plan.",
-    );
-  }
-  if (
-    hashPayload(createGitHubDraftPullRequestWorkflowApprovalPayload(plan)) !==
-    approval.payloadHash
-  ) {
-    throw new Error(
-      "GitHub PR workflow plan hash does not match the approved payload.",
     );
   }
 }

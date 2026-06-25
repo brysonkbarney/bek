@@ -28,8 +28,10 @@ import {
   FakeGitHubClient,
   FakeGitHubInstallationTokenProvider,
   GitHubRestClient,
+  createGitHubDraftPullRequestWorkflowPlan,
   createGitHubDraftPullRequestWorkflowPlanFromApprovalPayload,
   createGitHubInstallationTokenProviderFromEnv,
+  parseGitHubRepoResource,
   validateGitHubAppConfig,
   type GitHubDraftPullRequestWorkflowApprovalPayload,
   type GitHubDraftPullRequestWorkflowPlan,
@@ -467,6 +469,8 @@ export function resolveGitHubExecutionFromEnv(
       executor: {
         tokenProvider: new FakeGitHubInstallationTokenProvider(),
         client: new AutoSeedingFakeGitHubClient(),
+        approvalPlanProvider:
+          createDefaultGitHubDraftPullRequestPlanProvider(fakeInstallationId),
         planProvider: approvedGitHubDraftPullRequestPlanFromApproval,
       },
     };
@@ -508,6 +512,8 @@ export function resolveGitHubExecutionFromEnv(
         apiBaseUrl: env.GITHUB_API_BASE_URL,
         userAgent: "bek-api-worker",
       }),
+      approvalPlanProvider:
+        createDefaultGitHubDraftPullRequestPlanProvider(installationId),
       planProvider: approvedGitHubDraftPullRequestPlanFromApproval,
     },
   };
@@ -549,6 +555,55 @@ function approvedGitHubDraftPullRequestPlanFromApproval(input: {
       metadata,
     ) as unknown as GitHubDraftPullRequestWorkflowApprovalPayload,
   );
+}
+
+function createDefaultGitHubDraftPullRequestPlanProvider(
+  installationId: string,
+): NonNullable<
+  WorkerGitHubDraftPullRequestExecutionOptions["approvalPlanProvider"]
+> {
+  return ({ context }) => {
+    const repositoryResource = context.run.resource;
+    if (!repositoryResource) {
+      throw new Error("GitHub PR planning requires a repo resource.");
+    }
+    const repository = parseGitHubRepoResource(repositoryResource);
+    const safeRunId = safeIdPart(context.run.id).toLowerCase();
+    return createGitHubDraftPullRequestWorkflowPlan({
+      repository,
+      installationId,
+      title: `Bek run ${context.run.id}`,
+      body: [
+        "Approved Bek GitHub workflow.",
+        "",
+        `Run: ${context.run.id}`,
+        `Requester: ${context.run.requesterPrincipalId}`,
+        `Resource: ${repository.resource}`,
+      ].join("\n"),
+      headBranch: `bek/${safeRunId}`,
+      commitMessage: `Bek run ${context.run.id}`,
+      changes: [
+        {
+          path: `.bek/runs/${safeRunId}.md`,
+          content: [
+            "# Bek GitHub Workflow",
+            "",
+            `Run: ${context.run.id}`,
+            `Requester: ${context.run.requesterPrincipalId}`,
+            `Resource: ${repository.resource}`,
+            "",
+          ].join("\n"),
+        },
+      ],
+      labels: ["bek"],
+      runId: context.run.id,
+      requesterPrincipalId: context.run.requesterPrincipalId,
+    });
+  };
+}
+
+function safeIdPart(value: string): string {
+  return value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-") || "run";
 }
 
 class AutoSeedingFakeGitHubClient extends FakeGitHubClient {

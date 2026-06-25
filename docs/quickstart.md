@@ -316,8 +316,8 @@ pnpm check
 - AI SDK Gateway model calls and the local Docker sandbox-command adapter are
   opt-in. Gateway calls fail closed unless every policy model has benchmark
   pricing in Bek's model registry. GitHub approved worker execution is opt-in:
-  `BEK_GITHUB_EXECUTION=fake` validates the flow locally, and `real` can open a
-  hash-bound deterministic Bek run manifest PR after approval. AI-generated repo
+  `BEK_GITHUB_EXECUTION=fake` validates the flow locally, and `real` can plan a
+  hash-bound deterministic Bek run manifest PR in the worker, then open it after approval. AI-generated repo
   diffs, hosted sandbox execution, full OpenCode repo orchestration, and MCP
   tool proxying remain foundations or contracts.
 - Do not use this repo for production workspaces until the launch blockers in `docs/launch-readiness.md` are closed.

@@ -43,8 +43,8 @@ It is not production-ready yet. Slack posting can use vaulted OAuth tokens or
 `SLACK_BOT_TOKEN` in self-hosted/local deployments, but managed credential
 broker/KMS operations, live MCP proxying, daemonized worker execution, and
 production sandboxing are not wired end to end. GitHub writes are disabled by
-default; the opt-in worker path can validate locally with fake execution or open
-a deterministic Bek run manifest PR in real mode after a hash-bound approval.
+default; the opt-in worker path can validate locally with fake execution or plan
+a deterministic Bek run manifest PR in real mode behind a hash-bound approval.
 Live AI SDK Gateway text generation is available only when explicitly enabled
 with Gateway auth.
 

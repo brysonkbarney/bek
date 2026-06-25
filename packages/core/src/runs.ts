@@ -3,6 +3,7 @@ import { createId } from "./ids";
 import { redactSecrets, redactUnknown } from "./security";
 import type {
   ApprovalRequest,
+  CapabilityKind,
   ModelPolicy,
   Run,
   RunEvent,
@@ -17,6 +18,8 @@ export interface CreateRunInput {
   placeScopeId: string;
   trigger: TriggerKind;
   prompt: string;
+  capability?: CapabilityKind | undefined;
+  resource?: string | undefined;
   modelPolicy: ModelPolicy;
   runtimeProfile: RuntimeProfile;
 }
@@ -34,6 +37,8 @@ export function createRun(
     placeScopeId: input.placeScopeId,
     trigger: input.trigger,
     prompt,
+    ...(input.capability ? { capability: input.capability } : {}),
+    ...(input.resource ? { resource: input.resource } : {}),
     status: "queued",
     modelPolicyId: input.modelPolicy.id,
     runtimeProfileId: input.runtimeProfile.id,

@@ -155,7 +155,7 @@ fallback. Hosted production still needs daemonized worker fleets, managed
 credential brokering/KMS, side-effect outbox dispatchers, AI-generated repo
 diffs, and hosted sandbox adapters. Signed GitHub webhook ingress is wired for
 normalized delivery persistence; opt-in GitHub execution can validate locally in
-fake mode or open a deterministic draft PR in real mode after approval. See
+fake mode or plan and open a deterministic draft PR in real mode after approval. See
 [Launch Readiness](./docs/launch-readiness.md) before using Bek in a real
 workspace.
 

@@ -59,6 +59,26 @@ describe("Bek snapshot persistence mapping", () => {
     );
   });
 
+  it("round-trips run capability intent through run metadata", () => {
+    const snapshot = createSeedSnapshot("2026-01-02T03:04:05.000Z");
+    snapshot.runs[0] = {
+      ...snapshot.runs[0]!,
+      capability: "github.pr",
+      resource: "github:redohq/checkout",
+    };
+
+    const rows = snapshotToRows(snapshot);
+
+    expect(rows.runs[0]?.metadata).toMatchObject({
+      capability: "github.pr",
+      resource: "github:redohq/checkout",
+    });
+    expect(rowsToSnapshot(rows).runs[0]).toMatchObject({
+      capability: "github.pr",
+      resource: "github:redohq/checkout",
+    });
+  });
+
   it("preserves optional approval decision fields", () => {
     const snapshot: BekSnapshot = {
       ...createSeedSnapshot("2026-01-02T03:04:05.000Z"),

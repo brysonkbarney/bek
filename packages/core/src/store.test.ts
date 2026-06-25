@@ -56,6 +56,38 @@ describe("Bek approvals", () => {
     ).not.toThrow();
   });
 
+  it("persists run intent and can defer approval payload creation to a worker", () => {
+    const store = new BekStore();
+
+    const run = store.createRun({
+      prompt: "@bek prepare a PR",
+      placeScopeId: "place_checkout",
+      capability: "github.pr",
+      resource: "github:redohq/checkout",
+      advanceMode: "worker",
+      deferApproval: true,
+    });
+
+    expect(run).toMatchObject({
+      capability: "github.pr",
+      resource: "github:redohq/checkout",
+      status: "queued",
+    });
+    expect(
+      store.read().approvals.some((approval) => approval.runId === run.id),
+    ).toBe(false);
+    expect(
+      store
+        .read()
+        .events.some(
+          (event) =>
+            event.runId === run.id &&
+            event.type === "run.status_changed" &&
+            event.data?.capability === "github.pr",
+        ),
+    ).toBe(true);
+  });
+
   it("rejects hash tampering and self-approval for risky writes", () => {
     const store = new BekStore();
     const approval = createPendingApproval(store);

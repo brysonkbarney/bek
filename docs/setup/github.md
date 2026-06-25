@@ -21,18 +21,19 @@ The current foundation provides signed ingress and local workflow helpers:
 - A fetch-based GitHub REST workflow client for creating branches, writing git
   trees/commits, updating refs, opening draft pull requests, and applying
   requested labels/reviewers with installation tokens.
-- An opt-in approved worker execution path. `BEK_GITHUB_EXECUTION=fake`
-  exercises the full approval/token/client flow without network calls, while
+- An opt-in worker planning and execution path. `BEK_GITHUB_EXECUTION=fake`
+  creates the hash-bound `github.pr` approval payload in the local worker and
+  exercises the approval/token/client flow without network calls, while
   `BEK_GITHUB_EXECUTION=real` uses the GitHub App token provider and REST
-  client only after a hash-bound `github.pr` approval.
+  client only after approval.
 - An admin setup preview route that validates GitHub App env, parses repo grants, and previews repo-scoped installation token requests without calling GitHub.
 - Signed webhook ingress at `POST /api/github/webhooks` with delivery dedupe, `ping` acknowledgement, ignored unsupported events, and normalized `installation`, `installation_repositories`, `pull_request`, and `check_run` persistence.
 
 The setup route still does not call GitHub, clone repositories, or create runs
 from GitHub webhooks. Real worker execution is disabled by default and currently
-opens a deterministic Bek run manifest PR after approval; richer AI-generated
-repo diffs, hosted credential custody, and GitHub webhook-to-run routing remain
-launch work.
+plans a deterministic Bek run manifest PR for approval, then opens it only after
+approval; richer AI-generated repo diffs, hosted credential custody, and GitHub
+webhook-to-run routing remain launch work.
 
 ## GitHub App Settings
 
@@ -166,19 +167,19 @@ Opening a pull request should use a proposal object first. The proposal carries 
 Draft PR workflows should use the workflow plan helpers before any worker talks
 to a real provider:
 
-1. Mint a repo-scoped installation token through a `GitHubInstallationTokenProvider`.
-2. Validate the token lease against the workflow token request, including installation id, canonical repo resource, required permissions, and remaining TTL.
-3. Create a branch plan with `capability: "github.branch"`.
-4. Create a commit plan with normalized safe relative file paths.
-5. Create a draft PR proposal and PR approval hash input.
-6. Execute the plan through the draft PR workflow execution contract after bundle policy and human approval have passed. The execution result should keep only redacted token lease metadata, not the token secret.
+1. Create a branch plan with `capability: "github.branch"`.
+2. Create a commit plan with normalized safe relative file paths.
+3. Create a draft PR proposal and PR approval hash input.
+4. Store the no-token workflow approval payload on the pending approval.
+5. After approval, mint a repo-scoped installation token through a `GitHubInstallationTokenProvider`.
+6. Validate the token lease against the workflow token request, including installation id, canonical repo resource, required permissions, and remaining TTL.
+7. Execute the plan through the draft PR workflow execution contract. The execution result should keep only redacted token lease metadata, not the token secret.
 
-The worker stores a no-token workflow approval payload and verifies its hash
-before leasing a token. Generic `github.pr` approvals are not enough for real
-execution. `BEK_GITHUB_EXECUTION=fake` uses the fake provider/client for local
-end-to-end validation. `BEK_GITHUB_EXECUTION=real` validates GitHub App config
-at readiness time and performs GitHub network calls only inside an approved
-worker run.
+The worker verifies the approved payload hash before leasing a token. Generic
+`github.pr` approvals are not enough for real execution.
+`BEK_GITHUB_EXECUTION=fake` uses the fake provider/client for local end-to-end
+validation. `BEK_GITHUB_EXECUTION=real` validates GitHub App config at readiness
+time and performs GitHub network calls only inside an approved worker run.
 
 ## Launch Blockers
 

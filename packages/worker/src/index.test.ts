@@ -79,6 +79,8 @@ function snapshotWithQueuedRun(input: {
   runId: string;
   prompt?: string | undefined;
   runtimeProfileId?: string | undefined;
+  capability?: "github.pr" | undefined;
+  resource?: string | undefined;
 }) {
   const snapshot = createSeedSnapshot(baseNow);
   const template = snapshot.runs[0];
@@ -89,6 +91,8 @@ function snapshotWithQueuedRun(input: {
     ...template,
     id: input.runId,
     prompt: input.prompt ?? "@bek process this queued run",
+    ...(input.capability ? { capability: input.capability } : {}),
+    ...(input.resource ? { resource: input.resource } : {}),
     status: "queued" as const,
     runtimeProfileId: input.runtimeProfileId ?? template.runtimeProfileId,
     actualCostCents: 0,
@@ -1939,9 +1943,93 @@ describe("worker runtime service", () => {
     });
   });
 
+  it("plans a hash-bound GitHub draft PR approval before execution", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_github_planning",
+      capability: "github.pr",
+      resource: "github:redohq/checkout",
+    });
+    const plan = createGitHubDraftPullRequestWorkflowPlan({
+      repository: "github:redohq/checkout",
+      installationId: 99,
+      title: "Bek run run_github_planning",
+      body: "Approved Bek GitHub workflow.",
+      headBranch: "bek/run-github-planning",
+      commitMessage: "Bek run run_github_planning",
+      changes: [{ path: ".bek/run_github_planning.txt", content: "ok\n" }],
+      labels: ["bek"],
+      runId: run.id,
+      requesterPrincipalId: run.requesterPrincipalId,
+    });
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: workItem({
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_github_planning",
+      }),
+      now: baseNow,
+    });
+    let approvedPlanProviderCalled = false;
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [resumeTrackingAdapter(() => undefined)],
+      workerId: "worker_service",
+      now: () => baseNow,
+      githubDraftPullRequest: {
+        tokenProvider: new FakeGitHubInstallationTokenProvider({
+          now: () => new Date(baseNow),
+        }),
+        client: new FakeGitHubClient([
+          { repository: "github:redohq/checkout" },
+        ]),
+        approvalPlanProvider: () => plan,
+        planProvider: () => {
+          approvedPlanProviderCalled = true;
+          return plan;
+        },
+      },
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected processed GitHub planning decision.");
+    }
+    expect(decision.result.status).toBe("awaiting_approval");
+    expect(decision.settlement.decision).toBe("paused_for_approval");
+    expect(approvedPlanProviderCalled).toBe(false);
+    expect(queue.read().records[0]?.approval?.payloadMetadata).toMatchObject({
+      type: "github.draft_pull_request_workflow_approval_payload",
+      resource: "github:redohq/checkout",
+      pullRequest: expect.objectContaining({
+        headBranch: "bek/run-github-planning",
+      }),
+    });
+    expect(queue.read().events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "tool.requested",
+          data: expect.objectContaining({
+            action: "github.pr",
+            resource: "github:redohq/checkout",
+            fileCount: 1,
+          }),
+        }),
+      ]),
+    );
+  });
+
   it("executes an approved hash-bound GitHub draft PR workflow", async () => {
     const { snapshot, run } = snapshotWithQueuedRun({
       runId: "run_github_execution",
+      capability: "github.pr",
+      resource: "github:redohq/checkout",
     });
     const plan = createGitHubDraftPullRequestWorkflowPlan({
       repository: "github:redohq/checkout",
@@ -2037,6 +2125,8 @@ describe("worker runtime service", () => {
   it("fails GitHub execution before token leasing when the approved hash differs", async () => {
     const { snapshot, run } = snapshotWithQueuedRun({
       runId: "run_github_hash_mismatch",
+      capability: "github.pr",
+      resource: "github:redohq/checkout",
     });
     const plan = createGitHubDraftPullRequestWorkflowPlan({
       repository: "github:redohq/checkout",
@@ -2114,6 +2204,8 @@ describe("worker runtime service", () => {
   it("fails GitHub execution before token leasing when policy drifts to deny", async () => {
     const { snapshot, run } = snapshotWithQueuedRun({
       runId: "run_github_policy_drift",
+      capability: "github.pr",
+      resource: "github:redohq/checkout",
     });
     const grant = snapshot.accessBundles
       .flatMap((bundle) => bundle.grants)
