@@ -20,6 +20,30 @@ function createPendingApproval(store: BekStore, prompt = "@bek open a PR") {
 }
 
 describe("Bek approvals", () => {
+  it("links external identities to principals without collisions", () => {
+    const store = new BekStore();
+
+    expect(
+      store.linkPrincipalExternalIdentity("principal_bryson", {
+        externalProvider: "slack",
+        externalId: "T123:U123",
+        metadata: { teamId: "T123" },
+      }),
+    ).toMatchObject({
+      id: "principal_bryson",
+      externalProvider: "slack",
+      externalId: "T123:U123",
+      metadata: { teamId: "T123" },
+    });
+
+    expect(() =>
+      store.linkPrincipalExternalIdentity("principal_admin", {
+        externalProvider: "slack",
+        externalId: "T123:U123",
+      }),
+    ).toThrow(/already linked/i);
+  });
+
   it("requires another human to approve risky writes with the original payload hash", () => {
     const store = new BekStore();
     const approval = createPendingApproval(store);

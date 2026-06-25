@@ -8,6 +8,7 @@ import {
   fetchModelUsage,
   fetchSlackOutbox,
   hasStoredAdminToken,
+  linkPrincipalExternalIdentity,
   redriveDeadLetterPath,
   readAdminApiToken,
   saveAdminApiToken,
@@ -211,6 +212,53 @@ describe("web API helpers", () => {
     await expect(discoverSlackChannels({ limit: 25 })).resolves.toEqual(
       discovery,
     );
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("links principal external identities with admin auth", async () => {
+    const storage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveAdminApiToken("runtime-token");
+    const principal = {
+      id: "principal_bryson",
+      kind: "human",
+      displayName: "Bryson",
+      externalProvider: "slack",
+      externalId: "T123:U123",
+      metadata: { teamId: "T123" },
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(String(input)).toBe(
+        "http://localhost:4317/api/principals/principal_bryson/external-identity",
+      );
+      expect(init?.method).toBe("PATCH");
+      expect(init?.headers).toEqual({
+        authorization: "Bearer runtime-token",
+        "content-type": "application/json",
+      });
+      expect(init?.body).toBe(
+        JSON.stringify({
+          externalProvider: "slack",
+          externalId: "T123:U123",
+          metadata: { teamId: "T123" },
+        }),
+      );
+      return new Response(JSON.stringify(principal), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      linkPrincipalExternalIdentity({
+        principalId: "principal_bryson",
+        externalProvider: "slack",
+        externalId: "T123:U123",
+        metadata: { teamId: "T123" },
+      }),
+    ).resolves.toEqual(principal);
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 

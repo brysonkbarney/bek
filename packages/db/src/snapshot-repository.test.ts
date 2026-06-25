@@ -45,6 +45,20 @@ describe("Bek snapshot persistence mapping", () => {
     expect(rowsToSnapshot(rows)).toEqual(snapshot);
   });
 
+  it("round-trips principal external identities", () => {
+    const snapshot = createSeedSnapshot("2026-01-02T03:04:05.000Z");
+    snapshot.principals[1] = {
+      ...snapshot.principals[1]!,
+      externalProvider: "slack",
+      externalId: "T123:U123",
+      metadata: { teamId: "T123" },
+    };
+
+    expect(rowsToSnapshot(snapshotToRows(snapshot)).principals[1]).toEqual(
+      snapshot.principals[1],
+    );
+  });
+
   it("preserves optional approval decision fields", () => {
     const snapshot: BekSnapshot = {
       ...createSeedSnapshot("2026-01-02T03:04:05.000Z"),

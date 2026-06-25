@@ -61,14 +61,29 @@ The user asked for 25 subagents. We will run them in batches because the local a
 - Model routing fails closed when a supplied registry excludes every configured candidate, and over-budget worker runs pause for `budget.increase` approval before adapter/sandbox execution.
 - The Worker page now includes a Slack Outbox operating panel with summary counts, refresh, and drain controls.
 - `pnpm check` now includes format, lint, typecheck, tests, build, and smoke; the repo targets Node.js 24 LTS.
+- Persisted principal external identities now support Slack `TEAM_ID:USER_ID`
+  mappings, and Slack events, slash commands, and approval interactivity prefer
+  those mappings before the local env fallback.
+- Slack OAuth default scopes now include `channels:read` and `groups:read` for
+  channel discovery, and the Channels UI blocks importing channels the bot has
+  not joined.
+- Hosted/multi-tenant, admin/RBAC, real runtimes, arbitrary MCP connectors,
+  live GitHub execution, and Slack durable inbox/outbox leasing remain explicit
+  blockers rather than marketing claims.
 
 ## Current Build Wave
 
-| Agent           | Scope                                   | Status  |
-| --------------- | --------------------------------------- | ------- |
-| Hubble the 2nd  | Hosted multi-tenant implementation path | running |
-| Parfit the 2nd  | Docker/runtime packaging                | running |
-| Carson the 2nd  | OSS release and supply-chain readiness  | running |
-| Boole the 2nd   | Slack channel discovery API             | running |
-| Dirac the 2nd   | Setup/onboarding console                | running |
-| Feynman the 2nd | Approval context and safety             | running |
+| Agent             | Scope                                   | Status |
+| ----------------- | --------------------------------------- | ------ |
+| Hubble the 2nd    | Hosted multi-tenant implementation path | done   |
+| Parfit the 2nd    | Docker/runtime packaging                | done   |
+| Carson the 2nd    | OSS release and supply-chain readiness  | done   |
+| Boole the 2nd     | Slack channel discovery API             | done   |
+| Dirac the 2nd     | Setup/onboarding console                | done   |
+| Feynman the 2nd   | Approval context and safety             | done   |
+| Leibniz the 2nd   | Hosted/multi-tenant audit               | done   |
+| Franklin the 2nd  | Slack real-workspace audit              | done   |
+| Singer the 2nd    | Admin auth/RBAC audit                   | done   |
+| Pascal the 2nd    | MCP connector audit                     | done   |
+| Ramanujan the 2nd | Runtime/sandbox audit                   | done   |
+| Boyle the 2nd     | GitHub workflow readiness audit         | done   |

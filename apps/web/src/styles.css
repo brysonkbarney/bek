@@ -1059,6 +1059,19 @@ select {
   margin: 4px 0 0;
 }
 
+.connector-subsection {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #e2e9e5;
+}
+
+.connector-subsection h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
 .connector-actions {
   justify-content: flex-start;
   min-height: 0;

@@ -163,6 +163,9 @@ export interface Principal {
   kind: string;
   displayName: string;
   email?: string;
+  externalProvider?: string;
+  externalId?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface PlaceScope {
@@ -493,6 +496,23 @@ export async function updateAgent(input: {
     body: JSON.stringify(input),
     headers: { "content-type": "application/json" },
   });
+}
+
+export async function linkPrincipalExternalIdentity(input: {
+  principalId: string;
+  externalProvider: string;
+  externalId: string;
+  metadata?: Record<string, unknown>;
+}): Promise<Principal> {
+  const { principalId, ...body } = input;
+  return jsonRequest<Principal>(
+    `/api/principals/${encodeURIComponent(principalId)}/external-identity`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    },
+  );
 }
 
 export async function createChannel(input: {

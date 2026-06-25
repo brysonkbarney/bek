@@ -89,6 +89,9 @@ export interface Principal {
   kind: PrincipalKind;
   displayName: string;
   email?: string;
+  externalProvider?: string;
+  externalId?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface AgentIdentity {

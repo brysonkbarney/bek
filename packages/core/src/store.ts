@@ -21,6 +21,7 @@ import type {
   OutboundDelivery,
   OutboundDeliveryKind,
   PlaceScope,
+  Principal,
   Run,
   RunEvent,
   RunStatus,
@@ -204,6 +205,40 @@ export class BekStore {
     };
     this.recordChange();
     return structuredClone(this.snapshot.agent);
+  }
+
+  linkPrincipalExternalIdentity(
+    principalId: string,
+    input: {
+      externalProvider: string;
+      externalId: string;
+      metadata?: Record<string, unknown> | undefined;
+    },
+  ): Principal {
+    const principal = this.findPrincipal(principalId);
+    const externalProvider = input.externalProvider.trim();
+    const externalId = input.externalId.trim();
+    if (!externalProvider || !externalId) {
+      throw new Error("External provider and external ID are required.");
+    }
+    const existing = this.snapshot.principals.find(
+      (candidate) =>
+        candidate.id !== principal.id &&
+        candidate.orgId === principal.orgId &&
+        candidate.externalProvider === externalProvider &&
+        candidate.externalId === externalId,
+    );
+    if (existing) {
+      throw new Error(
+        "External identity is already linked to another principal.",
+      );
+    }
+
+    principal.externalProvider = externalProvider;
+    principal.externalId = externalId;
+    assignOptional(principal, "metadata", redactedRecord(input.metadata));
+    this.recordChange();
+    return structuredClone(principal);
   }
 
   createPlace(input: {
@@ -1089,6 +1124,16 @@ export class BekStore {
       throw new Error("Run not found.");
     }
     return run;
+  }
+
+  private findPrincipal(principalId: string): Principal {
+    const principal = this.snapshot.principals.find(
+      (candidate) => candidate.id === principalId,
+    );
+    if (!principal) {
+      throw new Error("Principal not found.");
+    }
+    return principal;
   }
 
   private findPlace(placeId: string): PlaceScope {

@@ -24,11 +24,11 @@ It does not call GitHub, exchange real installation tokens, clone repositories, 
 
 Create a GitHub App owned by the organization that will install Bek. Use the least permissions needed for the first repo workflow:
 
-| Permission    | Access         | Purpose                                  |
-| ------------- | -------------- | ---------------------------------------- |
-| Contents      | Read-only      | Read files and compare proposed changes. |
-| Pull requests | Read and write | Open or update PRs after approval.       |
-| Metadata      | Read-only      | Required by GitHub Apps.                 |
+| Permission    | Access         | Purpose                                           |
+| ------------- | -------------- | ------------------------------------------------- |
+| Contents      | Read and write | Create branches and commit approved file changes. |
+| Pull requests | Read and write | Open or update PRs after approval.                |
+| Metadata      | Read-only      | Required by GitHub Apps.                          |
 
 Recommended webhook events:
 

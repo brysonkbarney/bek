@@ -59,10 +59,24 @@ type OrgSnapshotRow = Pick<
   OrganizationRow,
   "id" | "name" | "slug" | "plan" | "primaryAgentId" | "createdAt" | "updatedAt"
 >;
-type PrincipalSnapshotRow = Pick<
-  PrincipalRow,
-  "id" | "orgId" | "kind" | "displayName" | "email" | "createdAt" | "updatedAt"
->;
+type PrincipalSnapshotRow = Omit<
+  Pick<
+    PrincipalRow,
+    | "id"
+    | "orgId"
+    | "kind"
+    | "displayName"
+    | "email"
+    | "externalProvider"
+    | "externalId"
+    | "metadata"
+    | "createdAt"
+    | "updatedAt"
+  >,
+  "metadata"
+> & {
+  metadata: Record<string, unknown>;
+};
 type AgentSnapshotRow = Pick<
   AgentRow,
   | "id"
@@ -479,6 +493,9 @@ export function snapshotToRows(
       kind: principal.kind,
       displayName: principal.displayName,
       email: principal.email ?? null,
+      externalProvider: principal.externalProvider ?? null,
+      externalId: principal.externalId ?? null,
+      metadata: principal.metadata ?? {},
       createdAt: now,
       updatedAt: now,
     })),
@@ -920,6 +937,15 @@ function principalFromRow(row: PrincipalSnapshotRow): Principal {
   };
   if (row.email) {
     principal.email = row.email;
+  }
+  if (row.externalProvider) {
+    principal.externalProvider = row.externalProvider;
+  }
+  if (row.externalId) {
+    principal.externalId = row.externalId;
+  }
+  if (Object.keys(row.metadata).length > 0) {
+    principal.metadata = row.metadata;
   }
   return principal;
 }

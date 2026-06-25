@@ -75,6 +75,9 @@ the current OSS spine.
       with admin auth, to confirm the pilot channel ID, `botIsMember=true`,
       and whether Bek already has a configured channel place. Use `limit` and
       `cursor` for bounded paging when calling the raw API.
+- [ ] In `/connectors`, map every pilot requester and approver Slack user ID
+      to a Bek human principal. Prefer persisted `TEAM_ID:USER_ID` mappings
+      over `BEK_SLACK_USER_PRINCIPAL_MAP`.
 - [ ] Verify an `@bek` mention posts a reply in the originating thread.
 - [ ] Verify an approval button click reaches `/api/slack/interactivity`, maps
       the Slack user to a Bek principal, and posts the decision/final answer.

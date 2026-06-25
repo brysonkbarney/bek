@@ -148,11 +148,13 @@ revocation workflows, or persistent Slack user/principal mapping.
     export SLACK_BOT_TOKEN=xoxb-...
     ```
 
-    Stored or manual tokens need `chat:write`; the default `SLACK_BOT_SCOPES`
-    includes it. Bek acknowledges Slack callbacks after ingress, run, worker,
-    and outbound-delivery state has been persisted. Slack Web API posting runs
-    through the outbound drain path after that ACK boundary, so a slow Slack API
-    call does not consume Slack's callback response budget.
+    Stored or manual tokens need `chat:write` for replies and
+    `channels:read`/`groups:read` for channel discovery; the default
+    `SLACK_BOT_SCOPES` includes them. Bek acknowledges Slack callbacks after
+    ingress, run, worker, and outbound-delivery state has been persisted.
+    Slack Web API posting runs through the outbound drain path after that ACK
+    boundary, so a slow Slack API call does not consume Slack's callback
+    response budget.
 
     Operator endpoints:
 
@@ -193,7 +195,13 @@ BEK_DEV_UNSIGNED_SLACK=true pnpm dev:api
 
 Do not use unsigned mode in shared environments.
 
-For local Slack testing, map Slack user IDs to seeded Bek principal IDs:
+For real Slack testing, map Slack user IDs to Bek human principals from the
+admin console at `/connectors`. The Slack panel stores identities as
+`TEAM_ID:USER_ID` on the selected principal, and Bek uses that persisted link
+for mentions, slash commands, and approval button decisions.
+
+For local scripts or temporary compatibility, you can still map Slack user IDs
+through an env var:
 
 ```bash
 export BEK_SLACK_USER_PRINCIPAL_MAP='{"T123:U123":"principal_bryson","T123:U_APPROVER":"principal_admin"}'

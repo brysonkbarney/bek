@@ -14,6 +14,7 @@ import type {
   CredentialRecord,
   OutboundDelivery,
   PlaceScope,
+  Principal,
   Run,
   RunEvent,
 } from "@bek/core";
@@ -698,6 +699,26 @@ export function createApp(
 
   app.get("/api/bootstrap", (c) => c.json(publicSnapshot(store.read())));
   app.get("/api/org", (c) => c.json(store.read().org));
+  app.get("/api/principals", (c) =>
+    c.json(store.read().principals.map(publicPrincipal)),
+  );
+  app.patch("/api/principals/:principalId/external-identity", async (c) => {
+    const body = linkPrincipalExternalIdentitySchema.parse(await c.req.json());
+    try {
+      const principal = store.linkPrincipalExternalIdentity(
+        c.req.param("principalId"),
+        body,
+      );
+      await store.flushChanges();
+      return c.json(publicPrincipal(principal));
+    } catch (error) {
+      const message = errorMessage(error);
+      if (message.toLowerCase().includes("already linked")) {
+        return c.json({ error: message }, 409);
+      }
+      throw error;
+    }
+  });
   app.get("/api/agent", (c) => c.json(store.read().agent));
   app.patch("/api/agent", async (c) => {
     const body = updateAgentSchema.parse(await c.req.json());
@@ -1674,6 +1695,7 @@ export function createApp(
     }
 
     const principalId = slackPrincipalIdForUser(
+      store.read(),
       interaction.slackUserId,
       interaction.teamId,
     );
@@ -1830,6 +1852,7 @@ export function createApp(
     }
 
     const requesterPrincipalId = slackPrincipalIdForUser(
+      snapshot,
       command.userId,
       command.teamId,
     );
@@ -1970,6 +1993,7 @@ export function createApp(
         return c.json(response);
       }
       const requesterPrincipalId = slackPrincipalIdForUser(
+        snapshot,
         event.userId,
         event.teamId,
       );
@@ -2038,6 +2062,19 @@ export function createApp(
 
   return app;
 }
+
+const linkPrincipalExternalIdentitySchema = z
+  .object({
+    externalProvider: z
+      .string()
+      .trim()
+      .min(1)
+      .max(60)
+      .regex(/^[a-z0-9._-]+$/),
+    externalId: z.string().trim().min(1).max(240),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
 
 const createRunSchema = z
   .object({
@@ -2319,7 +2356,7 @@ function slackPlaceAcceptsTeam(
 function publicSnapshot(snapshot: BekSnapshot): PublicBekSnapshot {
   return {
     org: snapshot.org,
-    principals: snapshot.principals,
+    principals: snapshot.principals.map(publicPrincipal),
     agent: snapshot.agent,
     capabilityProfiles: snapshot.capabilityProfiles,
     places: snapshot.places.map(publicPlace),
@@ -2333,6 +2370,16 @@ function publicSnapshot(snapshot: BekSnapshot): PublicBekSnapshot {
     connectorInstalls: snapshot.connectorInstalls.map(publicConnectorInstall),
     credentials: snapshot.credentials.map(publicCredential),
   };
+}
+
+function publicPrincipal(principal: Principal): Principal {
+  const { metadata, ...rest } = principal;
+  const publicRecord: Principal = { ...rest };
+  const publicMetadata = publicMetadataRecord(metadata);
+  if (publicMetadata) {
+    publicRecord.metadata = publicMetadata;
+  }
+  return publicRecord;
 }
 
 function modelUsageSinkFromRepository(
@@ -2988,6 +3035,8 @@ const defaultSlackBotScopes = [
   "reactions:read",
   "commands",
   "chat:write",
+  "channels:read",
+  "groups:read",
 ];
 
 function adminOrigins(): string[] {
@@ -3506,12 +3555,34 @@ function allowsLegacySlackUserPrincipalMap(): boolean {
 }
 
 function slackPrincipalIdForUser(
+  snapshot: BekSnapshot,
   slackUserId?: string | undefined,
   teamId?: string | undefined,
 ) {
   if (!slackUserId) {
     return undefined;
   }
+  if (teamId) {
+    const scopedPrincipal = snapshot.principals.find(
+      (principal) =>
+        principal.externalProvider === "slack" &&
+        principal.externalId === `${teamId}:${slackUserId}`,
+    );
+    if (scopedPrincipal) {
+      return scopedPrincipal.id;
+    }
+  }
+  if (allowsLegacySlackUserPrincipalMap() || !teamId) {
+    const legacyPrincipal = snapshot.principals.find(
+      (principal) =>
+        principal.externalProvider === "slack" &&
+        principal.externalId === slackUserId,
+    );
+    if (legacyPrincipal) {
+      return legacyPrincipal.id;
+    }
+  }
+
   const rawMap = process.env.BEK_SLACK_USER_PRINCIPAL_MAP;
   if (!rawMap) {
     return undefined;

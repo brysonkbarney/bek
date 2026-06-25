@@ -31,6 +31,7 @@ import {
   fetchSetupStatus,
   hasBuildTimeAdminToken,
   hasStoredAdminToken,
+  linkPrincipalExternalIdentity,
   updateModelPolicy,
   updateChannel,
   type AccessBundle,
@@ -621,6 +622,8 @@ function SlackDiscoveryResults({
                   : channel.id;
                 const alreadyConfigured =
                   channel.configured || configuredExternalIds.has(placeKey);
+                const canImport =
+                  channel.botIsMember && !alreadyConfigured && !isCreating;
                 return (
                   <tr key={channel.id}>
                     <td data-label="Channel">
@@ -649,11 +652,22 @@ function SlackDiscoveryResults({
                     <td data-label="Action">
                       <button
                         className="secondary"
-                        disabled={alreadyConfigured || isCreating}
+                        disabled={!canImport}
+                        title={
+                          channel.botIsMember
+                            ? alreadyConfigured
+                              ? "Already added"
+                              : "Add channel"
+                            : "Invite Bek to this channel first"
+                        }
                         onClick={() => onImport(channel)}
                       >
                         <Plus size={16} aria-hidden="true" />
-                        {alreadyConfigured ? "Added" : "Add"}
+                        {alreadyConfigured
+                          ? "Added"
+                          : channel.botIsMember
+                            ? "Add"
+                            : "Invite first"}
                       </button>
                     </td>
                   </tr>
@@ -1707,6 +1721,7 @@ function shortHash(hash: string): string {
 }
 
 export function ConnectorsPage() {
+  const queryClient = useQueryClient();
   const { data, isLoading, error } = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
@@ -1720,6 +1735,8 @@ export function ConnectorsPage() {
     queryFn: fetchSetupStatus,
   });
   const [pendingSlackInstallUrl, setPendingSlackInstallUrl] = useState("");
+  const [slackPrincipalId, setSlackPrincipalId] = useState("");
+  const [slackUserId, setSlackUserId] = useState("");
   const slackInstallMutation = useMutation({
     mutationFn: () => fetchSlackInstallStart("/connectors"),
     onSuccess: (install) => {
@@ -1728,6 +1745,13 @@ export function ConnectorsPage() {
         return;
       }
       setPendingSlackInstallUrl(install.url);
+    },
+  });
+  const slackIdentityMutation = useMutation({
+    mutationFn: linkPrincipalExternalIdentity,
+    onSuccess: () => {
+      setSlackUserId("");
+      return queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
     },
   });
   const slackInstallResult = new URLSearchParams(window.location.search).get(
@@ -1745,6 +1769,21 @@ export function ConnectorsPage() {
   const otherConnectors = connectorSummaries(data).filter(
     (connector) => connector.id !== "slack",
   );
+  const humanPrincipals = (data.principals ?? []).filter(
+    (principal) => principal.kind === "human",
+  );
+  const mappedSlackPrincipals = humanPrincipals.filter(
+    (principal) => principal.externalProvider === "slack",
+  );
+  const selectedSlackPrincipalId =
+    slackPrincipalId || humanPrincipals[0]?.id || "";
+  const trimmedSlackUserId = slackUserId.trim();
+  const slackTeamId = setupStatus.slackWorkspaceId;
+  const canLinkSlackIdentity =
+    Boolean(selectedSlackPrincipalId) &&
+    Boolean(slackTeamId) &&
+    trimmedSlackUserId.length > 0 &&
+    !slackIdentityMutation.isPending;
 
   return (
     <div className="page">
@@ -1822,6 +1861,89 @@ export function ConnectorsPage() {
               <small>Encrypted local vault status</small>
             </div>
           </div>
+          <section
+            className="connector-subsection"
+            aria-labelledby="slack-user-mapping-heading"
+          >
+            <h3 id="slack-user-mapping-heading">Slack User Mapping</h3>
+            {slackIdentityMutation.isError ? (
+              <WarningCallout>
+                {errorMessage(
+                  slackIdentityMutation.error,
+                  "Bek could not link that Slack user.",
+                )}
+              </WarningCallout>
+            ) : null}
+            {slackIdentityMutation.isSuccess ? (
+              <SuccessCallout>Slack user linked to principal.</SuccessCallout>
+            ) : null}
+            <form
+              className="settings-grid compact-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!canLinkSlackIdentity || !slackTeamId) return;
+                slackIdentityMutation.mutate({
+                  principalId: selectedSlackPrincipalId,
+                  externalProvider: "slack",
+                  externalId: `${slackTeamId}:${trimmedSlackUserId}`,
+                  metadata: {
+                    teamId: slackTeamId,
+                    slackUserId: trimmedSlackUserId,
+                  },
+                });
+              }}
+            >
+              <label>
+                Bek principal
+                <select
+                  value={selectedSlackPrincipalId}
+                  onChange={(event) => setSlackPrincipalId(event.target.value)}
+                >
+                  {humanPrincipals.map((principal) => (
+                    <option value={principal.id} key={principal.id}>
+                      {principal.displayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Slack user ID
+                <input
+                  value={slackUserId}
+                  placeholder="U0123456789"
+                  onChange={(event) => setSlackUserId(event.target.value)}
+                />
+                <span className="field-hint">
+                  Bek stores this as {slackTeamId ?? "workspace"}:user for
+                  callback approvals and mentions.
+                </span>
+              </label>
+              <div className="form-actions">
+                <button
+                  className="primary"
+                  disabled={!canLinkSlackIdentity}
+                  aria-busy={slackIdentityMutation.isPending}
+                >
+                  {slackIdentityMutation.isPending ? "Linking..." : "Link User"}
+                </button>
+              </div>
+            </form>
+            {mappedSlackPrincipals.length > 0 ? (
+              <div className="bundle-list">
+                {mappedSlackPrincipals.map((principal) => (
+                  <div className="bundle" key={principal.id}>
+                    <strong>{principal.displayName}</strong>
+                    <span>{principal.externalId}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState
+                title="No Slack users mapped"
+                body="Map approvers and requesters before real Slack approvals."
+              />
+            )}
+          </section>
           <div className="form-actions connector-actions">
             <button
               type="button"

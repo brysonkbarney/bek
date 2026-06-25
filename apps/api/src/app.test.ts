@@ -1010,6 +1010,11 @@ describe("Bek API", () => {
     await expect(expectJson(app, "/api/agent")).resolves.toMatchObject({
       handle: "@bek",
     });
+    await expect(expectJson(app, "/api/principals")).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "principal_bryson", kind: "human" }),
+      ]),
+    );
     await expect(expectJson(app, "/api/capabilities")).resolves.toEqual(
       expect.arrayContaining([expect.objectContaining({ id: "cap_answer" })]),
     );
@@ -1141,6 +1146,53 @@ describe("Bek API", () => {
       handle: "@bek",
       status: "paused",
     });
+  });
+
+  it("links external identities to principals for Slack workspace mapping", async () => {
+    const app = createApp();
+
+    const linked = await app.request(
+      "/api/principals/principal_bryson/external-identity",
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          externalProvider: "slack",
+          externalId: "T123:U123",
+          metadata: { teamId: "T123" },
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(linked.status).toBe(200);
+    await expect(linked.json()).resolves.toMatchObject({
+      id: "principal_bryson",
+      externalProvider: "slack",
+      externalId: "T123:U123",
+      metadata: { teamId: "T123" },
+    });
+
+    await expect(expectJson(app, "/api/bootstrap")).resolves.toMatchObject({
+      principals: expect.arrayContaining([
+        expect.objectContaining({
+          id: "principal_bryson",
+          externalProvider: "slack",
+          externalId: "T123:U123",
+        }),
+      ]),
+    });
+
+    const duplicate = await app.request(
+      "/api/principals/principal_admin/external-identity",
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          externalProvider: "slack",
+          externalId: "T123:U123",
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(duplicate.status).toBe(409);
   });
 
   it("rejects invalid agent control-plane mutations", async () => {
@@ -2688,6 +2740,40 @@ describe("Bek API", () => {
     });
   });
 
+  it("maps Slack event users through persisted principal external identities", async () => {
+    delete process.env.BEK_SLACK_USER_PRINCIPAL_MAP;
+    const store = new BekStore();
+    store.linkPrincipalExternalIdentity("principal_bryson", {
+      externalProvider: "slack",
+      externalId: "T123:U123",
+    });
+    const app = createApp(store);
+    const rawBody = JSON.stringify({
+      team_id: "T123",
+      event_id: "EvPersistedPrincipalMap",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek use the persisted Slack identity",
+      },
+    });
+
+    const res = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+    const json = (await res.json()) as { runId: string };
+
+    expect(res.status).toBe(200);
+    expect(
+      store.read().runs.find((candidate) => candidate.id === json.runId),
+    ).toMatchObject({
+      requesterPrincipalId: "principal_bryson",
+    });
+  });
+
   it("prefers team-scoped Slack user mappings over legacy global keys", async () => {
     mapSlackTestUsers({
       U123: "principal_admin",
@@ -3150,7 +3236,13 @@ describe("Bek API", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(json.scopes).toEqual(
-      expect.arrayContaining(["app_mentions:read", "commands", "chat:write"]),
+      expect.arrayContaining([
+        "app_mentions:read",
+        "commands",
+        "chat:write",
+        "channels:read",
+        "groups:read",
+      ]),
     );
     expect(json.redirectUri).toBe(process.env.SLACK_REDIRECT_URI);
     expect(json.exchangeEnabled).toBe(false);
@@ -4245,6 +4337,60 @@ describe("Bek API", () => {
     expect(slackClient.postMessageCalls).toHaveLength(2);
   });
 
+  it("applies Slack approval decisions through persisted principal identities", async () => {
+    delete process.env.BEK_SLACK_USER_PRINCIPAL_MAP;
+    const store = new BekStore();
+    store.linkPrincipalExternalIdentity("principal_admin", {
+      externalProvider: "slack",
+      externalId: "T123:U_APPROVER",
+    });
+    const app = createApp(store);
+    const { run, approval } = await createPrApproval(
+      app,
+      "@bek open a persisted-identity Slack PR",
+    );
+    const rawBody = slackForm({
+      payload: JSON.stringify({
+        type: "block_actions",
+        user: { id: "U_APPROVER" },
+        channel: { id: "C_CHECKOUT" },
+        team: { id: "T123" },
+        actions: [
+          {
+            action_id: "bek.approval.approve",
+            action_ts: "1710000000.000120",
+            value: JSON.stringify({
+              approvalId: approval.id,
+              payloadHash: approval.payloadHash,
+              runId: run.id,
+              action: approval.action,
+            }),
+          },
+        ],
+      }),
+    });
+
+    const res = await app.request("/api/slack/interactivity", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(
+        rawBody,
+        Math.floor(Date.now() / 1000).toString(),
+        "application/x-www-form-urlencoded",
+      ),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: true,
+      approval: {
+        id: approval.id,
+        status: "approved",
+        decidedByPrincipalId: "principal_admin",
+      },
+    });
+  });
+
   it("validates slash commands and dedupes Slack command retries", async () => {
     mapSlackTestUser();
     const app = createApp();
@@ -4373,6 +4519,42 @@ describe("Bek API", () => {
       channel_id: "C_CHECKOUT",
       user_id: "U123",
       text: "summarize the scoped rollout",
+      team_id: "T123",
+    });
+
+    const res = await app.request("/api/slack/commands", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(
+        rawBody,
+        Math.floor(Date.now() / 1000).toString(),
+        "application/x-www-form-urlencoded",
+      ),
+    });
+    const json = (await res.json()) as { runId: string };
+
+    expect(res.status).toBe(200);
+    expect(
+      store.read().runs.find((candidate) => candidate.id === json.runId),
+    ).toMatchObject({
+      requesterPrincipalId: "principal_bryson",
+      trigger: "slash_command",
+    });
+  });
+
+  it("maps Slack slash command users through persisted principal external identities", async () => {
+    delete process.env.BEK_SLACK_USER_PRINCIPAL_MAP;
+    const store = new BekStore();
+    store.linkPrincipalExternalIdentity("principal_bryson", {
+      externalProvider: "slack",
+      externalId: "T123:U123",
+    });
+    const app = createApp(store);
+    const rawBody = slackForm({
+      command: "/bek",
+      channel_id: "C_CHECKOUT",
+      user_id: "U123",
+      text: "summarize the persisted identity rollout",
       team_id: "T123",
     });
 
