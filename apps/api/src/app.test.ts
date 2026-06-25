@@ -912,6 +912,8 @@ describe("Bek API", () => {
       org: { id: "org_demo" },
       agent: { handle: "@bek" },
     });
+    expect(bootstrap).not.toHaveProperty("ingressDeliveries");
+    expect(bootstrap).not.toHaveProperty("outboundDeliveries");
 
     await expect(expectJson(app, "/api/org")).resolves.toMatchObject({
       id: "org_demo",
@@ -969,6 +971,39 @@ describe("Bek API", () => {
     await expect(expectJson(app, "/api/runs/run_demo/events")).resolves.toEqual(
       expect.arrayContaining([expect.objectContaining({ runId: "run_demo" })]),
     );
+  });
+
+  it("does not expose delivery ledgers through bootstrap", async () => {
+    process.env.BEK_SLACK_BACKGROUND_DRAIN = "false";
+    mapSlackTestUser();
+    const store = new BekStore();
+    const app = createApp(store);
+    const rawBody = JSON.stringify({
+      team_id: "T123",
+      event_id: "EvBootstrapLedgerHidden",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek keep delivery ledgers internal",
+        ts: "1710000000.000090",
+      },
+    });
+
+    const slack = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+    expect(slack.status).toBe(200);
+    expect(store.read().ingressDeliveries.length).toBeGreaterThan(0);
+    expect(store.read().outboundDeliveries.length).toBeGreaterThan(0);
+
+    const bootstrap = (await (
+      await app.request("/api/bootstrap")
+    ).json()) as Record<string, unknown>;
+    expect(bootstrap.ingressDeliveries).toBeUndefined();
+    expect(bootstrap.outboundDeliveries).toBeUndefined();
   });
 
   it("prefers model usage repository totals when they are available", async () => {

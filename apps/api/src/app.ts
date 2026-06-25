@@ -83,6 +83,10 @@ export interface CreateAppOptions {
 
 type CreateStoreRunInput = Parameters<BekStore["createRun"]>[0];
 type ApprovalDecisionBody = Parameters<BekStore["decideApproval"]>[2];
+type PublicBekSnapshot = Omit<
+  BekSnapshot,
+  "ingressDeliveries" | "outboundDeliveries"
+>;
 
 export function createApp(
   store = new BekStore(),
@@ -2120,10 +2124,18 @@ function slackPlaceAcceptsTeam(
   );
 }
 
-function publicSnapshot(snapshot: BekSnapshot): BekSnapshot {
+function publicSnapshot(snapshot: BekSnapshot): PublicBekSnapshot {
   return {
-    ...snapshot,
+    org: snapshot.org,
+    principals: snapshot.principals,
+    agent: snapshot.agent,
+    capabilityProfiles: snapshot.capabilityProfiles,
     places: snapshot.places.map(publicPlace),
+    accessBundles: snapshot.accessBundles,
+    modelPolicies: snapshot.modelPolicies,
+    runtimeProfiles: snapshot.runtimeProfiles,
+    budgetPolicies: snapshot.budgetPolicies,
+    approvals: snapshot.approvals,
     runs: snapshot.runs.map(publicRun),
     events: snapshot.events.map(publicRunEvent),
     connectorInstalls: snapshot.connectorInstalls.map(publicConnectorInstall),
