@@ -78,6 +78,10 @@ Bek rejects new `mcp.tool` grants unless the resource uses an explicit
 an MCP connector registration in the workspace. This keeps access bundles from
 claiming governance over unregistered tool servers.
 
+The Access Bundles page uses the registered MCP server list to build new
+`mcp.tool` resources, so admins do not need to hand-type server IDs after
+registration.
+
 Example policy shape:
 
 | Capability | Resource                | Decision | Risk             |

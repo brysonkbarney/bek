@@ -871,6 +871,8 @@ function AccessBundleEditor({
   );
   const [capability, setCapability] = useState("github.read");
   const [resource, setResource] = useState("github:redohq/checkout");
+  const [mcpServerId, setMcpServerId] = useState("");
+  const [mcpToolName, setMcpToolName] = useState("");
   const [decision, setDecision] = useState<"allow" | "ask" | "deny">("allow");
   const [risk, setRisk] = useState("read_internal");
   const [placeId, setPlaceId] = useState("");
@@ -882,6 +884,7 @@ function AccessBundleEditor({
     mutationFn: createGrant,
     onSuccess: () => {
       setResource("");
+      setMcpToolName("");
       return queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
     },
   });
@@ -900,6 +903,14 @@ function AccessBundleEditor({
     setBundleName(bundle.name);
     setBundleDescription(bundle.description);
   }, [bundle.name, bundle.description]);
+  const mcpConnectors = data.connectorInstalls.filter(isMcpConnectorInstall);
+  useEffect(() => {
+    const firstMcpConnector = mcpConnectors[0];
+    if (capability !== "mcp.tool" || mcpServerId || !firstMcpConnector) {
+      return;
+    }
+    setMcpServerId(mcpConnectorServerId(firstMcpConnector));
+  }, [capability, mcpConnectors, mcpServerId]);
   const grouped = grantsByDecision(bundle.grants);
   const attachedPlaces = data.places.filter((place) =>
     bundle.attachedPlaceIds.includes(place.id),
@@ -908,6 +919,14 @@ function AccessBundleEditor({
     (place) => !bundle.attachedPlaceIds.includes(place.id),
   );
   const trimmedResource = resource.trim();
+  const trimmedMcpToolName = mcpToolName.trim();
+  const grantResource =
+    capability === "mcp.tool"
+      ? `mcp:${mcpServerId}/${trimmedMcpToolName}`
+      : trimmedResource;
+  const hasSelectedMcpConnector = mcpConnectors.some(
+    (install) => mcpConnectorServerId(install) === mcpServerId,
+  );
   const trimmedBundleName = bundleName.trim();
   const trimmedBundleDescription = bundleDescription.trim();
   const bundleChanged =
@@ -920,7 +939,10 @@ function AccessBundleEditor({
     !updateBundleMutation.isPending;
   const canAttach = placeId.length > 0 && !attachMutation.isPending;
   const canAddGrant =
-    trimmedResource.length > 0 && !createGrantMutation.isPending;
+    !createGrantMutation.isPending &&
+    (capability === "mcp.tool"
+      ? hasSelectedMcpConnector && /^[A-Za-z0-9_.:-]+$/.test(trimmedMcpToolName)
+      : trimmedResource.length > 0);
 
   return (
     <Panel title={bundle.name}>
@@ -1079,6 +1101,7 @@ function AccessBundleEditor({
         </div>
       </div>
       <form
+        aria-label="Add access grant"
         className="settings-grid compact-form"
         onSubmit={(event) => {
           event.preventDefault();
@@ -1086,7 +1109,7 @@ function AccessBundleEditor({
           createGrantMutation.mutate({
             bundleId: bundle.id,
             capability,
-            resource: trimmedResource,
+            resource: grantResource,
             decision,
             risk,
             requiresApproval: decision === "ask",
@@ -1097,7 +1120,15 @@ function AccessBundleEditor({
           Capability
           <select
             value={capability}
-            onChange={(event) => setCapability(event.target.value)}
+            onChange={(event) => {
+              const nextCapability = event.target.value;
+              setCapability(nextCapability);
+              if (nextCapability === "mcp.tool") {
+                setDecision("ask");
+                setRisk("write_external");
+                setResource("");
+              }
+            }}
           >
             <option value="slack.read">slack.read</option>
             <option value="github.read">github.read</option>
@@ -1107,15 +1138,53 @@ function AccessBundleEditor({
             <option value="model.call">model.call</option>
           </select>
         </label>
-        <label>
-          Resource
-          <input
-            value={resource}
-            required
-            placeholder="github:org/repo"
-            onChange={(event) => setResource(event.target.value)}
-          />
-        </label>
+        {capability === "mcp.tool" ? (
+          <>
+            <label>
+              MCP server
+              <select
+                value={mcpServerId}
+                disabled={mcpConnectors.length === 0}
+                onChange={(event) => setMcpServerId(event.target.value)}
+              >
+                <option value="">Choose MCP server</option>
+                {mcpConnectors.map((install) => {
+                  const serverId = mcpConnectorServerId(install);
+                  return (
+                    <option value={serverId} key={install.id}>
+                      {install.displayName} ({serverId})
+                    </option>
+                  );
+                })}
+              </select>
+              {mcpConnectors.length === 0 ? (
+                <span className="field-hint">
+                  Register an MCP server in Connectors first.
+                </span>
+              ) : null}
+            </label>
+            <label>
+              Tool name
+              <input
+                value={mcpToolName}
+                required
+                placeholder="create_issue"
+                onChange={(event) => setMcpToolName(event.target.value)}
+              />
+              <span className="field-hint">{grantResource}</span>
+            </label>
+          </>
+        ) : (
+          <label>
+            Resource
+            <input
+              value={resource}
+              required
+              placeholder="github:org/repo"
+              onChange={(event) => setResource(event.target.value)}
+            />
+          </label>
+        )}
         <label>
           Decision
           <select
@@ -2072,9 +2141,7 @@ export function ConnectorsPage() {
       connector.id !== "github" &&
       connector.id !== "mcp",
   );
-  const mcpConnectors = data.connectorInstalls.filter(
-    (install) => install.kind === "mcp" && install.provider === "mcp",
-  );
+  const mcpConnectors = data.connectorInstalls.filter(isMcpConnectorInstall);
   const humanPrincipals = (data.principals ?? []).filter(
     (principal) => principal.kind === "human",
   );
@@ -2674,6 +2741,10 @@ function mcpConnectorServerId(install: ConnectorInstall): string {
     return metadataServerId;
   }
   return install.id.replace(/^connector_mcp_/, "");
+}
+
+function isMcpConnectorInstall(install: ConnectorInstall): boolean {
+  return install.kind === "mcp" && install.provider === "mcp";
 }
 
 function GitHubConnectorPanel({

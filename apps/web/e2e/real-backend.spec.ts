@@ -31,6 +31,32 @@ test("creates and approves a demo run against the real API", async ({
   await page.getByRole("button", { name: "Activate" }).click();
   await expect(page.getByText("MCP server status saved.")).toBeVisible();
 
+  const mcpToolName = `lookup_${Date.now()}`;
+  await nav.getByRole("link", { name: "Access", exact: true }).click();
+  await expect(
+    page.getByRole("heading", {
+      name: "Bundle tools, repos, models, and approvals by place.",
+    }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "Details" }).first().click();
+  const addGrantForm = page.getByRole("form", { name: "Add access grant" });
+  await addGrantForm.getByLabel("Capability").selectOption("mcp.tool");
+  await addGrantForm.getByLabel("MCP server").selectOption(mcpServerId);
+  await addGrantForm.getByLabel("Tool name").fill(mcpToolName);
+  await addGrantForm.getByRole("button", { name: "Add Grant" }).click();
+  await expect(page.getByText("Grant added to this bundle.")).toBeVisible();
+  const expectedMcpResource = `mcp:${mcpServerId}/${mcpToolName}`;
+  await expect
+    .poll(() =>
+      page.locator("input").evaluateAll((inputs, expected) => {
+        return inputs.some(
+          (input) =>
+            input instanceof HTMLInputElement && input.value === expected,
+        );
+      }, expectedMcpResource),
+    )
+    .toBe(true);
+
   await nav.getByRole("link", { name: "Overview", exact: true }).click();
   await page.getByRole("button", { name: "Demo PR Run" }).click();
   await expect(page.getByText("Demo run started.")).toBeVisible();
