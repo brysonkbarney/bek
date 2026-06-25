@@ -43,7 +43,9 @@ Bek can be public as an OSS release candidate when the repo has:
   SBOM/provenance attestations.
 - Local quickstart that reliably starts API and web.
 - Browser-verified admin console.
-- Smoke script that creates a run, creates an approval, approves it, and confirms the run state.
+- Smoke script that validates readiness, governance mutations, approval-gated
+  run creation, approval decision, worker state, usage, audit events, and Slack
+  outbox behavior.
 - Docs that state current limits plainly: hosted-grade credential broker/KMS is
   pending, GitHub writes are disabled by default and limited to approved
   hash-bound draft PR workflows, no production sandbox execution yet, and the
@@ -124,7 +126,8 @@ These product items block broad design-partner rollout, not a code-only release 
 - Sandbox egress denies metadata/private/control-plane networks.
 - MCP schema drift is quarantined.
 - Tenant isolation tests pass.
-- Access admin mutations emit durable audit events with their side effects.
+- Access admin mutations emit durable audit events with their side effects, and
+  the smoke script asserts grant create/update/place-attach audit rows.
 - CORS stays allowlisted and admin API auth is mandatory for hosted/prod.
 - Slack unsigned demo mode cannot work in production.
 

@@ -226,6 +226,18 @@ async function postJson(path, body, headers = {}) {
   return jsonRequest(path, postJsonInit(body, headers));
 }
 
+async function patchJson(path, body, headers = {}) {
+  return jsonRequest(path, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+    headers: { "content-type": "application/json", ...headers },
+  });
+}
+
+async function deleteJson(path) {
+  return jsonRequest(path, { method: "DELETE" });
+}
+
 async function tryJsonRequest(path, init = {}) {
   const headers = {
     ...(adminToken ? { authorization: `Bearer ${adminToken}` } : {}),
@@ -303,6 +315,197 @@ try {
   assert(setup.modelPolicies >= 1, "Setup status must include model policies.");
   assert(setup.runtimeProfiles >= 1, "Setup status must include runtime profiles.");
   assert(setup.githubGrantCount >= 1, "Setup status must include GitHub grants.");
+
+  console.log("Verifying admin governance mutations");
+  const smokeSuffix = Date.now();
+  const channelExternalId = `C_SMOKE_${smokeSuffix}`;
+  const updatedChannelExternalId = `${channelExternalId}_AI`;
+  const channel = await postJson("/api/channels", {
+    externalId: channelExternalId,
+    externalTeamId: "T123",
+    name: "#smoke-governance",
+    sensitivity: "internal",
+  });
+  assert(channel.id, "Created smoke channel is missing an id.");
+  assert(channel.externalId === channelExternalId, "Created smoke channel should keep the requested external ID.");
+
+  const createdChannelDetail = await jsonRequest(`/api/channels/${channel.id}`);
+  assert(
+    createdChannelDetail.bundles?.some((bundle) =>
+      bundle.grants?.some(
+        (grant) =>
+          grant.capability === "slack.read" &&
+          grant.resource === `slack:${channelExternalId}` &&
+          grant.decision === "allow" &&
+          grant.requiresApproval === false,
+      ),
+    ),
+    "Creating a Slack channel should provision a safe slack.read bundle.",
+  );
+
+  const duplicateChannel = await jsonRequestExpect(
+    "/api/channels",
+    postJsonInit({
+      externalId: channelExternalId,
+      name: "#smoke-duplicate",
+      sensitivity: "internal",
+    }),
+    409,
+  );
+  assert(/already exists/i.test(duplicateChannel.error ?? ""), "Duplicate channel creation should return a conflict.");
+
+  const updatedChannel = await patchJson(`/api/channels/${channel.id}`, {
+    externalId: updatedChannelExternalId,
+    name: "#smoke-governance-ai",
+    sensitivity: "restricted",
+  });
+  assert(updatedChannel.name === "#smoke-governance-ai", "Channel patch should update the display name.");
+  assert(updatedChannel.sensitivity === "restricted", "Channel patch should update sensitivity.");
+  assert(updatedChannel.externalId === updatedChannelExternalId, "Channel patch should update the external ID.");
+
+  const bundle = await postJson("/api/access-bundles", {
+    name: `Smoke Governance ${smokeSuffix}`,
+    description: "Temporary access bundle created by smoke.",
+  });
+  assert(bundle.id, "Created smoke access bundle is missing an id.");
+
+  const patchedBundle = await patchJson(`/api/access-bundles/${bundle.id}`, {
+    description: "Temporary access bundle updated by smoke.",
+  });
+  assert(
+    patchedBundle.description === "Temporary access bundle updated by smoke.",
+    "Access bundle patch should update description.",
+  );
+
+  const attachedBundle = await postJson(`/api/access-bundles/${bundle.id}/places`, {
+    placeId: channel.id,
+  });
+  assert(
+    attachedBundle.attachedPlaceIds?.includes(channel.id),
+    "Access bundle place attach should include the smoke channel.",
+  );
+
+  const grant = await postJson(`/api/access-bundles/${bundle.id}/grants`, {
+    capability: "mcp.tool",
+    resource: `mcp:smoke/${smokeSuffix}`,
+    decision: "ask",
+    risk: "write_external",
+    requiresApproval: true,
+  });
+  assert(grant.id, "Created smoke grant is missing an id.");
+  assert(grant.decision === "ask", "Smoke grant should start approval-gated.");
+
+  const duplicateGrant = await jsonRequestExpect(
+    `/api/access-bundles/${bundle.id}/grants`,
+    postJsonInit({
+      capability: "mcp.tool",
+      resource: `mcp:smoke/${smokeSuffix}`,
+      decision: "ask",
+      risk: "write_external",
+      requiresApproval: true,
+    }),
+    409,
+  );
+  assert(/duplicate/i.test(duplicateGrant.error ?? ""), "Duplicate grant creation should return a conflict.");
+
+  const invalidGithubGrant = await jsonRequestExpect(
+    `/api/access-bundles/${bundle.id}/grants`,
+    postJsonInit({
+      capability: "github.read",
+      resource: "github:*",
+      decision: "allow",
+      risk: "read_internal",
+      requiresApproval: false,
+    }),
+    400,
+  );
+  assert(
+    /github:owner\/repo/i.test(invalidGithubGrant.error ?? ""),
+    "Wildcard GitHub grants should be rejected with a repo-scoped error.",
+  );
+
+  const patchedGrant = await patchJson(`/api/access-bundles/${bundle.id}/grants/${grant.id}`, {
+    decision: "deny",
+    requiresApproval: false,
+  });
+  assert(patchedGrant.decision === "deny", "Grant patch should update decision.");
+  assert(patchedGrant.requiresApproval === false, "Denied grant should not require approval.");
+
+  const modelPolicies = assertArray(await jsonRequest("/api/model-policies"), "Model policies should be an array.");
+  const modelBefore = modelPolicies.find((policy) => policy.id === "model_auto");
+  assert(modelBefore, "model_auto policy should exist before smoke patch.");
+  const patchedModel = await patchJson("/api/model-policies/model_auto", {
+    defaultModel: "openai/gpt-5.5",
+    fallbackModels: ["openai-compatible/local"],
+    perRunBudgetCents: 500,
+  });
+  assert(patchedModel.defaultModel === "openai/gpt-5.5", "Model policy patch should update the default model.");
+  await patchJson("/api/model-policies/model_auto", {
+    defaultModel: modelBefore.defaultModel,
+    fallbackModels: modelBefore.fallbackModels,
+    perRunBudgetCents: modelBefore.perRunBudgetCents,
+  });
+
+  const runtimeProfiles = assertArray(await jsonRequest("/api/runtime-profiles"), "Runtime profiles should be an array.");
+  const runtimeBefore = runtimeProfiles.find((profile) => profile.id === "runtime_answer");
+  assert(runtimeBefore, "runtime_answer profile should exist before smoke patch.");
+  const patchedRuntime = await patchJson("/api/runtime-profiles/runtime_answer", {
+    runtimeKind: "external",
+    adapter: "customer-runner",
+  });
+  assert(patchedRuntime.runtimeKind === "external", "Runtime patch should update runtime kind.");
+  assert(patchedRuntime.adapter === "customer-runner", "Runtime patch should update adapter.");
+  await patchJson("/api/runtime-profiles/runtime_answer", {
+    runtimeKind: runtimeBefore.runtimeKind,
+    adapter: runtimeBefore.adapter,
+  });
+
+  const linkedPrincipal = await patchJson("/api/principals/principal_bryson/external-identity", {
+    externalProvider: "slack",
+    externalId: `T123:U_SMOKE_${smokeSuffix}`,
+    metadata: { teamId: "T123", slackUserId: `U_SMOKE_${smokeSuffix}` },
+  });
+  assert(
+    linkedPrincipal.externalId === `T123:U_SMOKE_${smokeSuffix}`,
+    "Principal external identity link should persist.",
+  );
+
+  const governanceAuditEvents = assertArray(
+    await jsonRequest("/api/audit-events"),
+    "Governance audit endpoint should return an array.",
+  );
+  assert(
+    governanceAuditEvents.some(
+      (event) => event.action === "access_bundle.place_attached" && event.resourceId === bundle.id,
+    ),
+    "Audit events should include the smoke access bundle place attachment.",
+  );
+  assert(
+    governanceAuditEvents.some((event) => event.action === "access_grant.created" && event.resourceId === grant.id),
+    "Audit events should include the smoke access grant creation.",
+  );
+  assert(
+    governanceAuditEvents.some(
+      (event) =>
+        event.action === "access_grant.updated" &&
+        event.resourceId === grant.id &&
+        event.decision === "deny" &&
+        event.data?.before?.decision === "ask" &&
+        event.data?.after?.decision === "deny",
+    ),
+    "Audit events should include the smoke access grant before/after update.",
+  );
+
+  const deletedGrant = await deleteJson(`/api/access-bundles/${bundle.id}/grants/${grant.id}`);
+  assert(deletedGrant.id === grant.id, "Grant delete should return the deleted grant.");
+  const detachedBundle = await deleteJson(`/api/access-bundles/${bundle.id}/places/${channel.id}`);
+  assert(
+    !detachedBundle.attachedPlaceIds?.includes(channel.id),
+    "Access bundle place detach should remove the smoke channel.",
+  );
+  const deletedChannel = await deleteJson(`/api/channels/${channel.id}`);
+  assert(deletedChannel.id === channel.id, "Channel delete should return the deleted channel.");
+  await jsonRequestExpect(`/api/channels/${channel.id}`, {}, 404);
 
   console.log("Verifying policy evaluation");
   const readPolicy = await postJson("/api/policy/evaluate", {

@@ -35,9 +35,11 @@ pnpm smoke
 ```
 
 The smoke script uses an already-running API when one is healthy. Otherwise it
-starts a temporary memory-backed API, checks bootstrap/setup/policy, creates an
-approval-gated PR run, approves it as the seeded admin principal, confirms the
-completed run state, and prints the run ID.
+starts a temporary memory-backed API, checks bootstrap/setup/policy, exercises
+governance mutations for channels, access bundles, grants, model/runtime
+policies, and principal identity linking, creates an approval-gated PR run,
+approves it as the seeded admin principal, confirms the completed run state, and
+prints the run ID.
 
 ## UI Version
 

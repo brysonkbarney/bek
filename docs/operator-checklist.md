@@ -18,7 +18,9 @@ the current OSS spine.
 - [ ] Confirm `pnpm smoke` only uses `BEK_ALLOW_UNAUTHENTICATED_LOCAL=true`
       for the temporary API it auto-starts. When smoking an already-running API
       with admin auth enabled, export `BEK_ADMIN_API_TOKEN` instead.
-- [ ] Confirm the smoke covers readiness, idempotent API run creation,
+- [ ] Confirm the smoke covers readiness, channel/access-bundle/grant
+      governance mutations, invalid grant rejection, model/runtime policy
+      patch/restore, principal identity linking, idempotent API run creation,
       approval decision, worker drain when enabled, Slack outbox
       summary/drain, model usage, and audit events without Slack or GitHub
       credentials.
