@@ -108,13 +108,15 @@ the script exercises it. If not, it starts `apps/api` with `BEK_STORAGE=memory`,
 `BEK_RUN_ADVANCEMENT=worker_local`, a memory worker queue,
 `BEK_ALLOW_UNAUTHENTICATED_LOCAL=true`, `BEK_DEV_UNSIGNED_SLACK=false`, a
 deterministic `SLACK_SIGNING_SECRET` derived from
-`BEK_SMOKE_SLACK_SIGNING_SECRET`, no `DATABASE_URL`, and no admin token, runs
-the checks, and stops the process. The unauthenticated-local setting and smoke
-signing secret are only applied to this auto-started localhost API. When
-`pnpm smoke` reuses an already-running API, it does not relax auth or override
-that API's Slack signing secret; export `BEK_ADMIN_API_TOKEN` if that API
-requires admin authentication, and set `BEK_SMOKE_SLACK_SIGNING_SECRET` only if
-you want the signed Slack smoke event to match the existing API.
+`BEK_SMOKE_SLACK_SIGNING_SECRET`, a deterministic `GITHUB_APP_WEBHOOK_SECRET`
+derived from `BEK_SMOKE_GITHUB_WEBHOOK_SECRET`, no `DATABASE_URL`, and no admin
+token, runs the checks, and stops the process. The unauthenticated-local setting
+and smoke signing secrets are only applied to this auto-started localhost API.
+When `pnpm smoke` reuses an already-running API, it does not relax auth or
+override that API's Slack/GitHub webhook secrets; export `BEK_ADMIN_API_TOKEN`
+if that API requires admin authentication, and set
+`BEK_SMOKE_SLACK_SIGNING_SECRET` or `BEK_SMOKE_GITHUB_WEBHOOK_SECRET` only if
+you want signed smoke payloads to match the existing API.
 
 The smoke flow verifies:
 
@@ -131,6 +133,8 @@ The smoke flow verifies:
   available, and `/api/worker/queue` worker completion state
 - channel/access-bundle/grant governance mutations, invalid grant rejection,
   model/runtime policy patch and restore, and principal identity linking
+- signed GitHub `ping` and installation webhook ingestion, replay dedupe,
+  connector/repo binding persistence, and setup preview shape
 - signed Slack mention ingestion for the auto-started API, plus
   `/api/outbound/slack` summary and `/api/outbound/slack/drain`
 - `/api/model-usage` totals and `/api/audit-events` run timeline checks

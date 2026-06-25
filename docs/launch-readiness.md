@@ -44,8 +44,8 @@ Bek can be public as an OSS release candidate when the repo has:
 - Local quickstart that reliably starts API and web.
 - Browser-verified admin console.
 - Smoke script that validates readiness, governance mutations, approval-gated
-  run creation, approval decision, worker state, usage, audit events, and Slack
-  outbox behavior.
+  run creation, approval decision, worker state, signed Slack and GitHub
+  webhook ingress, usage, audit events, and Slack outbox behavior.
 - Docs that state current limits plainly: hosted-grade credential broker/KMS is
   pending, GitHub writes are disabled by default and limited to approved
   hash-bound draft PR workflows, no production sandbox execution yet, and the

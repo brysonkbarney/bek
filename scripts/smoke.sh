@@ -11,6 +11,7 @@ API_LOG=""
 STARTED_API="false"
 
 export BEK_SMOKE_SLACK_SIGNING_SECRET="${BEK_SMOKE_SLACK_SIGNING_SECRET:-bek-smoke-slack-secret}"
+export BEK_SMOKE_GITHUB_WEBHOOK_SECRET="${BEK_SMOKE_GITHUB_WEBHOOK_SECRET:-bek-smoke-github-secret}"
 
 case "${START_API}" in
   auto | never) ;;
@@ -91,6 +92,7 @@ start_api() {
     BEK_REQUIRE_ADMIN_AUTH=false \
     BEK_STORAGE="${SMOKE_STORAGE}" \
     BEK_WORKER_QUEUE_BACKEND="${SMOKE_WORKER_QUEUE_BACKEND}" \
+    GITHUB_APP_WEBHOOK_SECRET="${BEK_SMOKE_GITHUB_WEBHOOK_SECRET}" \
     BEK_RUN_ADVANCEMENT=worker_local \
     BEK_DEV_UNSIGNED_SLACK=false \
     BEK_SLACK_BACKGROUND_DRAIN=false \
@@ -250,6 +252,26 @@ function signedSlackJsonInit(body) {
 function createSlackSignature(secret, timestamp, rawBody) {
   return `v0=${createHmac("sha256", secret)
     .update(`v0:${timestamp}:${rawBody}`)
+    .digest("hex")}`;
+}
+
+function signedGitHubJsonInit(body, { eventName, deliveryId }) {
+  const rawBody = JSON.stringify(body);
+  return {
+    method: "POST",
+    body: rawBody,
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": eventName,
+      "x-github-delivery": deliveryId,
+      "x-hub-signature-256": createGitHubWebhookSignature(rawBody),
+    },
+  };
+}
+
+function createGitHubWebhookSignature(rawBody) {
+  return `sha256=${createHmac("sha256", process.env.BEK_SMOKE_GITHUB_WEBHOOK_SECRET ?? "bek-smoke-github-secret")
+    .update(rawBody)
     .digest("hex")}`;
 }
 
@@ -537,6 +559,84 @@ try {
   const deletedChannel = await deleteJson(`/api/channels/${channel.id}`);
   assert(deletedChannel.id === channel.id, "Channel delete should return the deleted channel.");
   await jsonRequestExpect(`/api/channels/${channel.id}`, {}, 404);
+
+  console.log("Verifying signed GitHub webhook ingress");
+  const githubPingBody = { zen: "Bek signed webhook smoke." };
+  const githubPing = await jsonRequest(
+    "/api/github/webhooks",
+    signedGitHubJsonInit(githubPingBody, {
+      eventName: "ping",
+      deliveryId: `delivery-smoke-ping-${smokeSuffix}`,
+    }),
+  );
+  assert(githubPing.ok === true, "GitHub ping webhook should be acknowledged.");
+  assert(githubPing.ignored === true, "GitHub ping webhook should be marked ignored.");
+
+  const githubInstallBody = {
+    action: "created",
+    installation: {
+      id: 12345,
+      account: { login: "RedoHQ" },
+      repository_selection: "selected",
+    },
+    repositories: [{ id: 112233, full_name: "RedoHQ/Checkout" }],
+    sender: { login: "octocat" },
+  };
+  const githubInstallDeliveryId = `delivery-smoke-install-${smokeSuffix}`;
+  const githubInstall = await jsonRequest(
+    "/api/github/webhooks",
+    signedGitHubJsonInit(githubInstallBody, {
+      eventName: "installation",
+      deliveryId: githubInstallDeliveryId,
+    }),
+  );
+  assert(githubInstall.ok === true, "GitHub installation webhook should be processed.");
+  assert(githubInstall.type === "github.installation", "GitHub installation webhook should normalize type.");
+  assert(githubInstall.installationId === "12345", "GitHub installation webhook should normalize installation id.");
+  assert(
+    githubInstall.persistence?.upsertedRepositories === 1,
+    "GitHub installation webhook should upsert the smoke repository.",
+  );
+
+  const githubInstallReplay = await jsonRequest(
+    "/api/github/webhooks",
+    signedGitHubJsonInit(githubInstallBody, {
+      eventName: "installation",
+      deliveryId: githubInstallDeliveryId,
+    }),
+  );
+  assert(githubInstallReplay.deduped === true, "GitHub installation webhook replay should dedupe.");
+
+  const bootstrapAfterGithub = await jsonRequest("/api/bootstrap");
+  assert(
+    bootstrapAfterGithub.connectorInstalls?.some(
+      (install) =>
+        install.id === "connector_github_installation_12345" &&
+        install.kind === "github" &&
+        install.status === "active",
+    ),
+    "GitHub installation webhook should persist an active connector install.",
+  );
+  assert(
+    bootstrapAfterGithub.places?.some(
+      (place) =>
+        place.kind === "github_repo" &&
+        place.name === "redohq/checkout" &&
+        place.metadata?.installationId === "12345" &&
+        place.metadata?.resource === "github:redohq/checkout",
+    ),
+    "GitHub installation webhook should persist the repo binding place.",
+  );
+
+  const githubSetup = await jsonRequest("/api/setup/github?installationId=12345");
+  assert(githubSetup.installation?.configured === true, "GitHub setup preview should accept a query installation id.");
+  assert(githubSetup.installation?.installationId === "12345", "GitHub setup preview should echo the installation id.");
+  assert(githubSetup.githubGrantCount >= 1, "GitHub setup preview should include GitHub grants.");
+  assert(githubSetup.validRepoGrantCount >= 1, "GitHub setup preview should include valid repo-scoped grants.");
+  assert(
+    githubSetup.repositories?.some((repository) => repository.repository?.resource === "github:redohq/checkout"),
+    "GitHub setup preview should include the checkout repo grant.",
+  );
 
   console.log("Verifying policy evaluation");
   const readPolicy = await postJson("/api/policy/evaluate", {

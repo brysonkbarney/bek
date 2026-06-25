@@ -16,15 +16,15 @@ the current OSS spine.
 - [ ] Run `pnpm smoke`; it can reuse a running API or start a temporary
       memory-backed API for the local smoke flow.
 - [ ] Confirm `pnpm smoke` only uses `BEK_ALLOW_UNAUTHENTICATED_LOCAL=true`
-      and the deterministic smoke Slack signing secret for the temporary API it
-      auto-starts. When smoking an already-running API with admin auth enabled,
-      export `BEK_ADMIN_API_TOKEN` instead.
+      and deterministic smoke Slack/GitHub webhook secrets for the temporary
+      API it auto-starts. When smoking an already-running API with admin auth
+      enabled, export `BEK_ADMIN_API_TOKEN` instead.
 - [ ] Confirm the smoke covers readiness, channel/access-bundle/grant
       governance mutations, invalid grant rejection, model/runtime policy
       patch/restore, principal identity linking, idempotent API run creation,
-      approval decision, worker drain when enabled, Slack outbox
-      summary/drain, model usage, and audit events without Slack or GitHub
-      credentials.
+      signed GitHub webhook ingestion, approval decision, worker drain when
+      enabled, signed Slack mention ingestion, Slack outbox summary/drain,
+      model usage, and audit events without Slack or GitHub credentials.
 - [ ] Before approving risky work in the admin console, verify the request is
       still pending and that action, run, place, requester, expiry, and payload
       hash match the work you intend to unblock; expect a second confirmation
