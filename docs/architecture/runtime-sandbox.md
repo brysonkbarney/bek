@@ -155,9 +155,12 @@ tools. It is the safest first runtime because the worker can keep all effects in
 process and pause cleanly for approvals.
 
 The first live implementation is the AI SDK Gateway adapter, selected with
-`BEK_MODEL_GATEWAY=vercel_ai_sdk`. Streaming, tool-call mediation, durable
-usage persistence, and billed-cost reconciliation still need to be layered on
-top of that text-generation path.
+`BEK_MODEL_GATEWAY=vercel_ai_sdk`. The worker wraps run prompts in Bek's
+`bek-untrusted-content-v1` envelope before model calls, preserving the stored
+run prompt for UI/audit display while separating untrusted user content from
+Bek policy instructions. Streaming, tool-call mediation, durable usage
+persistence, and billed-cost reconciliation still need to be layered on top of
+that text-generation path.
 
 ### OpenCode Runtime
 

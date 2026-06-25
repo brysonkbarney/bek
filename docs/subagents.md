@@ -90,6 +90,10 @@ The user asked for 25 subagents. We will run them in batches because the local a
   append-only audit ledger. The DB has an `audit_events` table, but Bek still
   needs a first-class audit repository, exactly-once side-effect audit writes,
   tool-usage persistence, health wiring, exports, and an Audit explorer UI.
+- AI SDK Gateway runs now wrap stored run prompts in a
+  `bek-untrusted-content-v1` envelope before live model calls. Repo/MCP/model
+  output/sandbox chaining still needs richer provenance, quarantine, and
+  red-team tests.
 - Hosted/multi-tenant, admin/RBAC, real runtimes, arbitrary MCP connectors,
   live GitHub execution, and Slack durable inbox/outbox leasing remain explicit
   blockers rather than marketing claims.

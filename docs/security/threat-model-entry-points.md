@@ -120,14 +120,16 @@ Future high-risk entry points:
 9. Model/tool retry loops create uncontrolled provider spend or repeated
    external writes.
 
-## Prompt-Injection Backlog
+## Prompt-Injection Boundary
 
-The highest-risk current path is untrusted Slack text becoming the model prompt
-without a central content envelope. Before live repo/MCP/sandbox chaining, Bek
-needs:
+The first AI SDK Gateway runtime path wraps stored run prompts in a shared
+untrusted-content envelope before model calls. The envelope carries source,
+trust, requester, place, run metadata, explicit instruction hierarchy, delimiter
+escaping, and a length cap. This gives Slack/API-created runs an initial
+instruction/data boundary before they reach live model providers.
 
-- A shared untrusted-content envelope before every model call, carrying source,
-  trust level, delimiters, max length, and instruction hierarchy.
+Before live repo/MCP/sandbox chaining, Bek still needs:
+
 - Tests for Slack text, repo file contents, MCP output, model output, and
   sandbox stdout that contain "ignore previous instructions", fake approvals,
   fake audit lines, log-poisoning strings, and token-exfiltration requests.

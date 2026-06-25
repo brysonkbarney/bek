@@ -78,6 +78,9 @@ These product items block broad design-partner rollout, not a code-only release 
   prompt-injection tests.
 - API has typed errors, bounded request bodies, signed public callback ingress,
   and per-process rate limiting.
+- AI SDK Gateway runs wrap stored run prompts in a
+  `bek-untrusted-content-v1` envelope before live model calls, giving
+  Slack/API-created runs an initial instruction/data boundary.
 - Docker Compose starts local dependencies and an app profile with Postgres
   persistence, local worker advancement, and sandbox execution disabled by
   default.

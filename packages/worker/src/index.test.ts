@@ -4,7 +4,12 @@ import {
   type RuntimeAdapter,
   type RuntimeResult,
 } from "@bek/runtime";
-import { FakeModelGateway } from "@bek/model-router";
+import {
+  FakeModelGateway,
+  type ModelGateway,
+  type ModelGatewayRequest,
+  type ModelGatewayResponse,
+} from "@bek/model-router";
 import { FakeSandboxProvider } from "@bek/sandbox";
 import { describe, expect, it } from "vitest";
 import {
@@ -96,6 +101,24 @@ function failedResult(error = "adapter crashed"): RuntimeResult {
     actualCostCents: 1,
     error,
   };
+}
+
+class CapturingModelGateway implements ModelGateway {
+  requests: ModelGatewayRequest[] = [];
+
+  async complete(request: ModelGatewayRequest): Promise<ModelGatewayResponse> {
+    this.requests.push(request);
+    return {
+      runId: request.runId,
+      provider: request.route.provider,
+      model: request.route.model,
+      content: "Support summary is ready.",
+      inputTokens: 17,
+      outputTokens: 23,
+      costCents: 4,
+      createdAt: baseNow,
+    };
+  }
 }
 
 describe("in-memory worker queue", () => {
@@ -773,8 +796,18 @@ describe("worker runtime service", () => {
         budgetDecision: "over_budget",
         budgetCents: 3,
         remainingBudgetCents: -1,
+        estimatedUsage: {
+          output: expect.any(Number),
+        },
       },
     });
+    const estimatedUsage = budgetChecked?.data?.estimatedUsage as {
+      input: number;
+      output: number;
+    };
+    expect(estimatedUsage.input).toBeGreaterThan(
+      Math.ceil(run.prompt.length / 4),
+    );
     expect(events.map((event) => event.type)).not.toContain("runtime.selected");
     expect(
       events.find((event) => event.type === "tool.requested"),
@@ -889,15 +922,7 @@ describe("worker runtime service", () => {
       }),
       now: baseNow,
     });
-    const gateway = new FakeModelGateway({
-      behaviors: {
-        "openai/gpt-5.4": {
-          content: "Support summary is ready.",
-          inputTokens: 17,
-          outputTokens: 23,
-        },
-      },
-    });
+    const gateway = new CapturingModelGateway();
     const service = new WorkerRuntimeService({
       queue,
       state: snapshot,
@@ -922,6 +947,20 @@ describe("worker runtime service", () => {
       finalText: "Support summary is ready.",
       actualCostCents: 4,
     });
+    expect(gateway.requests).toHaveLength(1);
+    expect(gateway.requests[0]?.prompt).toContain(
+      "Envelope: bek-untrusted-content-v1",
+    );
+    expect(gateway.requests[0]?.prompt).toContain("Trust: untrusted");
+    expect(gateway.requests[0]?.prompt).toContain("Source: mention");
+    expect(gateway.requests[0]?.prompt).toContain("Source ID: C_CHECKOUT");
+    expect(gateway.requests[0]?.prompt).toContain(
+      "Requester: principal_bryson",
+    );
+    expect(gateway.requests[0]?.prompt).toContain("Place: place_checkout");
+    expect(gateway.requests[0]?.prompt).toContain(
+      "-----BEGIN UNTRUSTED USER CONTENT-----\n@bek summarize the incident for support",
+    );
     expect(queue.read().records[0]).toMatchObject({
       status: "completed",
       attemptState: "completed",
@@ -948,6 +987,18 @@ describe("worker runtime service", () => {
           total: 40,
         },
         actualCostCents: 4,
+      },
+    });
+    expect(
+      events.find((event) => event.type === "model.requested"),
+    ).toMatchObject({
+      data: {
+        promptEnvelope: "bek-untrusted-content-v1",
+        promptSource: "mention",
+        estimatedUsage: {
+          input: expect.any(Number),
+          output: expect.any(Number),
+        },
       },
     });
   });

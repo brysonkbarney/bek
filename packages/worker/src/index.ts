@@ -1,5 +1,7 @@
 import {
   adapterMatchesProfile,
+  buildRuntimeRunPrompt,
+  untrustedContentPromptVersion,
   type RuntimeArtifactRef,
   type RunWorkItem,
   type RuntimeAdapter,
@@ -1882,6 +1884,8 @@ export class WorkerRuntimeService {
       modelPolicy,
       runtimeProfile,
       run,
+      requester,
+      place,
     );
 
     return {
@@ -2002,13 +2006,18 @@ export function createAiSdkGatewayRuntimeAdapter(
     await input.emit({
       type: "model.requested",
       message: `AI SDK Gateway route ${input.modelRoute.model} requested.`,
-      data: modelRouteEventData(input.modelRoute),
+      data: {
+        ...modelRouteEventData(input.modelRoute),
+        promptEnvelope: untrustedContentPromptVersion,
+        promptSource: input.run.trigger,
+      },
     });
 
+    const prompt = buildRuntimeRunPrompt(input);
     const result = await runModelWithFailover({
       runId: input.run.id,
       policy: input.modelPolicy,
-      prompt: input.run.prompt,
+      prompt,
       gateway,
       mode: options.modelRoutingMode,
       estimatedInputTokens: input.modelRoute.budget?.estimatedInputTokens,
@@ -2513,6 +2522,8 @@ function withModelRouteBudgetPreflight(
   modelPolicy: ModelPolicy,
   runtimeProfile: RuntimeProfile,
   run: Run,
+  requester: Principal,
+  place: PlaceScope,
 ): RuntimeModelRoute {
   const estimatedCostCents = normalizeEstimatedCostCents(
     route.estimatedCostCents ??
@@ -2528,6 +2539,8 @@ function withModelRouteBudgetPreflight(
         modelPolicy,
         runtimeProfile,
         run,
+        requester,
+        place,
         estimatedCostCents,
       }),
   };
@@ -2537,6 +2550,8 @@ function createRuntimeModelBudgetPreflight(input: {
   modelPolicy: ModelPolicy;
   runtimeProfile: RuntimeProfile;
   run: Run;
+  requester: Principal;
+  place: PlaceScope;
   estimatedCostCents: number;
 }): RuntimeModelBudgetPreflight {
   const remainingBudgetCents =
@@ -2546,13 +2561,21 @@ function createRuntimeModelBudgetPreflight(input: {
     budgetCents: input.modelPolicy.perRunBudgetCents,
     estimatedCostCents: input.estimatedCostCents,
     remainingBudgetCents,
-    estimatedInputTokens: estimateRunInputTokens(input.run),
+    estimatedInputTokens: estimateRunInputTokens({
+      run: input.run,
+      requester: input.requester,
+      place: input.place,
+    }),
     estimatedOutputTokens: estimateRuntimeOutputTokens(input.runtimeProfile),
   };
 }
 
-function estimateRunInputTokens(run: Run): number {
-  const trimmedPrompt = run.prompt.trim();
+function estimateRunInputTokens(input: {
+  run: Run;
+  requester: Principal;
+  place: PlaceScope;
+}): number {
+  const trimmedPrompt = buildRuntimeRunPrompt(input).trim();
   if (trimmedPrompt.length === 0) {
     return 0;
   }
@@ -2642,6 +2665,10 @@ function modelRouteEventData(
     data.budgetDecision = route.budget.decision;
     data.budgetCents = route.budget.budgetCents;
     data.remainingBudgetCents = route.budget.remainingBudgetCents;
+    data.estimatedUsage = {
+      input: route.budget.estimatedInputTokens,
+      output: route.budget.estimatedOutputTokens,
+    };
   }
   return data;
 }

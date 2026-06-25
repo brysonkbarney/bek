@@ -39,6 +39,9 @@ export function WorkerPage() {
   const queryClient = useQueryClient();
   const [maxItems, setMaxItems] = useState(10);
   const [outboxLimit, setOutboxLimit] = useState(25);
+  const [confirmation, setConfirmation] = useState<WorkerConfirmation | null>(
+    null,
+  );
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ["worker-queue"],
     queryFn: fetchWorkerQueue,
@@ -50,7 +53,8 @@ export function WorkerPage() {
     refetchInterval: 5000,
   });
   const drainMutation = useMutation({
-    mutationFn: () => drainWorker({ maxItems }),
+    mutationFn: (input: { maxItems: number }) =>
+      drainWorker({ maxItems: input.maxItems }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["worker-queue"] });
       void queryClient.invalidateQueries({ queryKey: ["slack-outbox"] });
@@ -58,7 +62,8 @@ export function WorkerPage() {
     },
   });
   const drainOutboxMutation = useMutation({
-    mutationFn: () => drainSlackOutbox({ limit: outboxLimit }),
+    mutationFn: (input: { limit: number }) =>
+      drainSlackOutbox({ limit: input.limit }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["slack-outbox"] });
     },
@@ -94,7 +99,30 @@ export function WorkerPage() {
   }
 
   const summary = workerQueueSummary(data.queue);
-  const outboxSummary = slackOutboxSummary(outboxQuery.data?.deliveries ?? []);
+  const outboxDeliveries = outboxQuery.data?.deliveries ?? [];
+  const outboxSummary = slackOutboxSummary(outboxDeliveries);
+  const workerDrainConfirmation =
+    confirmation?.kind === "worker-drain" ? confirmation : undefined;
+  const outboxDrainConfirmation =
+    confirmation?.kind === "slack-outbox-drain" ? confirmation : undefined;
+  const dueOutboxDeliveries = dueSlackOutboxDeliveries(
+    outboxDeliveries,
+    outboxDrainConfirmation?.limit ?? outboxLimit,
+  );
+  const confirmingCancelRecordId =
+    confirmation?.kind === "cancel-record" ? confirmation.recordId : undefined;
+  const confirmingRedriveDeadLetterId =
+    confirmation?.kind === "redrive-dead-letter"
+      ? confirmation.deadLetterId
+      : undefined;
+  const cancellingRecordId =
+    cancelMutation.isPending && cancelMutation.variables
+      ? cancelMutation.variables.id
+      : undefined;
+  const redrivingDeadLetterId =
+    redriveMutation.isPending && redriveMutation.variables
+      ? redriveMutation.variables.id
+      : undefined;
 
   return (
     <div className="page">
@@ -112,26 +140,57 @@ export function WorkerPage() {
               <RefreshCw size={16} aria-hidden="true" />
               Refresh
             </button>
-            <label className="inline-control">
-              <span className="sr-only">Drain max items</span>
-              <input
-                type="number"
-                min={1}
-                max={100}
-                value={maxItems}
-                onChange={(event) => setMaxItems(Number(event.target.value))}
-                aria-label="Drain max items"
+            {workerDrainConfirmation ? (
+              <ConfirmationState
+                title="Confirm worker drain"
+                body={`Drain up to ${workerDrainConfirmation.maxItems} worker item(s).`}
+                details={[
+                  `${summary.queued} queued`,
+                  `${summary.claimed} claimed`,
+                  `${summary.awaitingApproval} awaiting approval`,
+                ]}
+                confirmLabel={
+                  drainMutation.isPending ? "Draining..." : "Confirm"
+                }
+                confirmDisabled={!data.enabled || drainMutation.isPending}
+                cancelDisabled={drainMutation.isPending}
+                isBusy={drainMutation.isPending}
+                onConfirm={() =>
+                  drainMutation.mutate(
+                    { maxItems: workerDrainConfirmation.maxItems },
+                    { onSettled: () => setConfirmation(null) },
+                  )
+                }
+                onCancel={() => setConfirmation(null)}
               />
-            </label>
-            <button
-              className="primary"
-              type="button"
-              disabled={!data.enabled || drainMutation.isPending}
-              onClick={() => drainMutation.mutate()}
-            >
-              <Play size={16} aria-hidden="true" />
-              Drain
-            </button>
+            ) : (
+              <>
+                <label className="inline-control">
+                  <span className="sr-only">Drain max items</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={maxItems}
+                    onChange={(event) =>
+                      setMaxItems(Number(event.target.value))
+                    }
+                    aria-label="Drain max items"
+                  />
+                </label>
+                <button
+                  className="primary"
+                  type="button"
+                  disabled={!data.enabled || drainMutation.isPending}
+                  onClick={() =>
+                    setConfirmation({ kind: "worker-drain", maxItems })
+                  }
+                >
+                  <Play size={16} aria-hidden="true" />
+                  Drain
+                </button>
+              </>
+            )}
           </div>
         }
       />
@@ -212,26 +271,62 @@ export function WorkerPage() {
               <RefreshCw size={16} aria-hidden="true" />
               Refresh
             </button>
-            <label className="inline-control">
-              <span className="sr-only">Slack outbox drain limit</span>
-              <input
-                type="number"
-                min={1}
-                max={100}
-                value={outboxLimit}
-                onChange={(event) => setOutboxLimit(Number(event.target.value))}
-                aria-label="Slack outbox drain limit"
+            {outboxDrainConfirmation ? (
+              <ConfirmationState
+                title="Confirm Slack outbox drain"
+                body={`Drain up to ${outboxDrainConfirmation.limit} ready Slack delivery item(s).`}
+                details={[
+                  `${dueOutboxDeliveries.length} ready`,
+                  `${outboxSummary.queued} queued`,
+                  ...dueOutboxDeliveries
+                    .slice(0, 3)
+                    .map((delivery) => `ID ${delivery.id}`),
+                ]}
+                confirmLabel={
+                  drainOutboxMutation.isPending ? "Draining..." : "Confirm"
+                }
+                confirmDisabled={drainOutboxMutation.isPending}
+                cancelDisabled={drainOutboxMutation.isPending}
+                isBusy={drainOutboxMutation.isPending}
+                onConfirm={() =>
+                  drainOutboxMutation.mutate(
+                    { limit: outboxDrainConfirmation.limit },
+                    { onSettled: () => setConfirmation(null) },
+                  )
+                }
+                onCancel={() => setConfirmation(null)}
               />
-            </label>
-            <button
-              className="primary"
-              type="button"
-              disabled={drainOutboxMutation.isPending}
-              onClick={() => drainOutboxMutation.mutate()}
-            >
-              <Send size={16} aria-hidden="true" />
-              Drain
-            </button>
+            ) : (
+              <>
+                <label className="inline-control">
+                  <span className="sr-only">Slack outbox drain limit</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={outboxLimit}
+                    onChange={(event) =>
+                      setOutboxLimit(Number(event.target.value))
+                    }
+                    aria-label="Slack outbox drain limit"
+                  />
+                </label>
+                <button
+                  className="primary"
+                  type="button"
+                  disabled={drainOutboxMutation.isPending}
+                  onClick={() =>
+                    setConfirmation({
+                      kind: "slack-outbox-drain",
+                      limit: outboxLimit,
+                    })
+                  }
+                >
+                  <Send size={16} aria-hidden="true" />
+                  Drain
+                </button>
+              </>
+            )}
           </div>
         }
       >
@@ -247,8 +342,17 @@ export function WorkerPage() {
       <Panel title="Work Records">
         <WorkerRecordsTable
           records={data.queue.records}
-          cancellingRunId={cancelMutation.variables?.item.runId}
-          onCancel={(record) => cancelMutation.mutate(record)}
+          confirmingCancelRecordId={confirmingCancelRecordId}
+          cancellingRecordId={cancellingRecordId}
+          onRequestCancel={(record) =>
+            setConfirmation({ kind: "cancel-record", recordId: record.id })
+          }
+          onConfirmCancel={(record) =>
+            cancelMutation.mutate(record, {
+              onSettled: () => setConfirmation(null),
+            })
+          }
+          onCancelConfirmation={() => setConfirmation(null)}
         />
       </Panel>
 
@@ -256,14 +360,93 @@ export function WorkerPage() {
         <Panel title="Dead Letters">
           <DeadLettersTable
             deadLetters={data.queue.deadLetters}
-            redrivingDeadLetterId={redriveMutation.variables?.id}
-            onRedrive={(deadLetter) => redriveMutation.mutate(deadLetter)}
+            confirmingRedriveDeadLetterId={confirmingRedriveDeadLetterId}
+            redrivingDeadLetterId={redrivingDeadLetterId}
+            onRequestRedrive={(deadLetter) =>
+              setConfirmation({
+                kind: "redrive-dead-letter",
+                deadLetterId: deadLetter.id,
+              })
+            }
+            onConfirmRedrive={(deadLetter) =>
+              redriveMutation.mutate(deadLetter, {
+                onSettled: () => setConfirmation(null),
+              })
+            }
+            onCancelConfirmation={() => setConfirmation(null)}
           />
         </Panel>
         <Panel title="Recent Worker Events">
           <WorkerEventsList events={data.queue.events.slice(-8).reverse()} />
         </Panel>
       </section>
+    </div>
+  );
+}
+
+type WorkerConfirmation =
+  | { kind: "worker-drain"; maxItems: number }
+  | { kind: "slack-outbox-drain"; limit: number }
+  | { kind: "cancel-record"; recordId: string }
+  | { kind: "redrive-dead-letter"; deadLetterId: string };
+
+function ConfirmationState({
+  title,
+  body,
+  details,
+  confirmLabel,
+  confirmDisabled,
+  cancelDisabled,
+  isBusy,
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  body: string;
+  details: string[];
+  confirmLabel: string;
+  confirmDisabled: boolean;
+  cancelDisabled: boolean;
+  isBusy: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      className="bundle danger-outline confirmation-state"
+      role="group"
+      aria-label={title}
+    >
+      <strong>{title}</strong>
+      <span className="muted">{body}</span>
+      <div className="chips">
+        {details.map((detail) => (
+          <span className="chip" key={detail}>
+            {detail}
+          </span>
+        ))}
+      </div>
+      <div className="row-actions">
+        <button
+          className="secondary"
+          type="button"
+          disabled={confirmDisabled}
+          aria-busy={isBusy}
+          onClick={onConfirm}
+        >
+          <CheckCircle2 size={16} aria-hidden="true" />
+          {confirmLabel}
+        </button>
+        <button
+          className="secondary"
+          type="button"
+          disabled={cancelDisabled}
+          onClick={onCancel}
+        >
+          <Ban size={16} aria-hidden="true" />
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }
@@ -351,12 +534,18 @@ function SlackOutboxTable({
 
 function WorkerRecordsTable({
   records,
-  cancellingRunId,
-  onCancel,
+  confirmingCancelRecordId,
+  cancellingRecordId,
+  onRequestCancel,
+  onConfirmCancel,
+  onCancelConfirmation,
 }: {
   records: WorkerWorkRecord[];
-  cancellingRunId?: string | undefined;
-  onCancel: (record: WorkerWorkRecord) => void;
+  confirmingCancelRecordId?: string | undefined;
+  cancellingRecordId?: string | undefined;
+  onRequestCancel: (record: WorkerWorkRecord) => void;
+  onConfirmCancel: (record: WorkerWorkRecord) => void;
+  onCancelConfirmation: () => void;
 }) {
   if (records.length === 0) {
     return (
@@ -416,13 +605,33 @@ function WorkerRecordsTable({
                 {record.result?.status ?? record.terminalReason ?? "-"}
               </td>
               <td data-label="Action">
-                {canCancel(record) ? (
+                {confirmingCancelRecordId === record.id ? (
+                  <ConfirmationState
+                    title="Confirm queued item cancel"
+                    body={`Cancel run ${record.item.runId} from the worker queue.`}
+                    details={[
+                      `Record ${record.id}`,
+                      `Status ${record.status}`,
+                      `Attempt ${record.item.attempt}`,
+                    ]}
+                    confirmLabel={
+                      cancellingRecordId === record.id
+                        ? "Cancelling..."
+                        : "Confirm"
+                    }
+                    confirmDisabled={cancellingRecordId === record.id}
+                    cancelDisabled={cancellingRecordId === record.id}
+                    isBusy={cancellingRecordId === record.id}
+                    onConfirm={() => onConfirmCancel(record)}
+                    onCancel={onCancelConfirmation}
+                  />
+                ) : canCancel(record) ? (
                   <button
                     className="icon-button danger"
                     type="button"
-                    onClick={() => onCancel(record)}
+                    onClick={() => onRequestCancel(record)}
                     aria-label={`Cancel ${record.item.runId}`}
-                    disabled={cancellingRunId === record.item.runId}
+                    disabled={cancellingRecordId === record.id}
                     title="Cancel run"
                   >
                     <Ban size={15} aria-hidden="true" />
@@ -441,12 +650,18 @@ function WorkerRecordsTable({
 
 function DeadLettersTable({
   deadLetters,
+  confirmingRedriveDeadLetterId,
   redrivingDeadLetterId,
-  onRedrive,
+  onRequestRedrive,
+  onConfirmRedrive,
+  onCancelConfirmation,
 }: {
   deadLetters: WorkerDeadLetterRecord[];
+  confirmingRedriveDeadLetterId?: string | undefined;
   redrivingDeadLetterId?: string | undefined;
-  onRedrive: (deadLetter: WorkerDeadLetterRecord) => void;
+  onRequestRedrive: (deadLetter: WorkerDeadLetterRecord) => void;
+  onConfirmRedrive: (deadLetter: WorkerDeadLetterRecord) => void;
+  onCancelConfirmation: () => void;
 }) {
   if (deadLetters.length === 0) {
     return (
@@ -488,16 +703,38 @@ function DeadLettersTable({
               </td>
               <td data-label="Failed">{formatDateTime(deadLetter.failedAt)}</td>
               <td data-label="Action">
-                <button
-                  className="icon-button"
-                  type="button"
-                  onClick={() => onRedrive(deadLetter)}
-                  aria-label={`Redrive ${deadLetter.item.runId}`}
-                  disabled={redrivingDeadLetterId === deadLetter.id}
-                  title="Redrive dead letter"
-                >
-                  <RotateCcw size={15} aria-hidden="true" />
-                </button>
+                {confirmingRedriveDeadLetterId === deadLetter.id ? (
+                  <ConfirmationState
+                    title="Confirm dead-letter redrive"
+                    body={`Queue a redrive for run ${deadLetter.item.runId}.`}
+                    details={[
+                      `Dead letter ${deadLetter.id}`,
+                      `Work ${deadLetter.workId}`,
+                      `Attempt ${deadLetter.item.attempt}`,
+                    ]}
+                    confirmLabel={
+                      redrivingDeadLetterId === deadLetter.id
+                        ? "Redriving..."
+                        : "Confirm"
+                    }
+                    confirmDisabled={redrivingDeadLetterId === deadLetter.id}
+                    cancelDisabled={redrivingDeadLetterId === deadLetter.id}
+                    isBusy={redrivingDeadLetterId === deadLetter.id}
+                    onConfirm={() => onConfirmRedrive(deadLetter)}
+                    onCancel={onCancelConfirmation}
+                  />
+                ) : (
+                  <button
+                    className="icon-button"
+                    type="button"
+                    onClick={() => onRequestRedrive(deadLetter)}
+                    aria-label={`Redrive ${deadLetter.item.runId}`}
+                    disabled={redrivingDeadLetterId === deadLetter.id}
+                    title="Redrive dead letter"
+                  >
+                    <RotateCcw size={15} aria-hidden="true" />
+                  </button>
+                )}
               </td>
             </tr>
           ))}
@@ -546,6 +783,25 @@ function slackOutboxSummary(deliveries: SlackOutboundDelivery[]) {
     failed: deliveries.filter((delivery) => delivery.status === "failed")
       .length,
   };
+}
+
+function dueSlackOutboxDeliveries(
+  deliveries: SlackOutboundDelivery[],
+  limit: number,
+) {
+  const nowMs = Date.now();
+  return deliveries
+    .filter(
+      (delivery) =>
+        delivery.status === "queued" &&
+        Date.parse(delivery.nextAttemptAt ?? delivery.createdAt) <= nowMs,
+    )
+    .sort((a, b) =>
+      (a.nextAttemptAt ?? a.createdAt).localeCompare(
+        b.nextAttemptAt ?? b.createdAt,
+      ),
+    )
+    .slice(0, Math.max(1, limit));
 }
 
 function optionalDateTime(value?: string): string {

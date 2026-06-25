@@ -476,6 +476,15 @@ h2 {
   background: #fff8f7;
 }
 
+.confirmation-state {
+  max-width: min(100%, 520px);
+}
+
+.confirmation-state strong,
+.confirmation-state span {
+  overflow-wrap: anywhere;
+}
+
 .meta-row,
 .split-row,
 .row-actions {
