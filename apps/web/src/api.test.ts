@@ -3,6 +3,7 @@ import {
   adminAuthHeaders,
   cancelRunPath,
   clearAdminApiToken,
+  decideApproval,
   drainSlackOutbox,
   discoverSlackChannels,
   fetchBootstrap,
@@ -357,6 +358,53 @@ describe("web API helpers", () => {
         metadata: { teamId: "T123" },
       }),
     ).resolves.toEqual(principal);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("lets the API derive approval actors from admin auth", async () => {
+    const storage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveAdminApiToken("runtime-token");
+    const approval = {
+      id: "approval_123",
+      runId: "run_123",
+      requesterPrincipalId: "principal_bryson",
+      action: "github.pr",
+      resource: "github:redohq/checkout",
+      risk: "write_draft",
+      payloadHash: "hash_hash_hash_hash",
+      status: "approved",
+      decidedByPrincipalId: "principal_admin",
+      createdAt: "2026-01-02T03:04:05.000Z",
+      updatedAt: "2026-01-02T03:04:05.000Z",
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(String(input)).toBe(
+        "http://localhost:4317/api/approvals/approval_123/approve",
+      );
+      expect(init?.method).toBe("POST");
+      expect(init?.headers).toEqual({
+        authorization: "Bearer runtime-token",
+        "content-type": "application/json",
+      });
+      expect(init?.body).toBe(
+        JSON.stringify({ payloadHash: "hash_hash_hash_hash" }),
+      );
+      return new Response(JSON.stringify(approval), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      decideApproval({
+        approvalId: "approval_123",
+        decision: "approve",
+        payloadHash: "hash_hash_hash_hash",
+      }),
+    ).resolves.toEqual(approval);
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 

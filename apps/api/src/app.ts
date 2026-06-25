@@ -90,6 +90,10 @@ export interface CreateAppOptions {
 
 type CreateStoreRunInput = Parameters<BekStore["createRun"]>[0];
 type ApprovalDecisionBody = Parameters<BekStore["decideApproval"]>[2];
+interface ApprovalDecisionRequestBody {
+  principalId?: string | undefined;
+  payloadHash: string;
+}
 type PublicBekSnapshot = Omit<
   BekSnapshot,
   "ingressDeliveries" | "outboundDeliveries"
@@ -114,6 +118,19 @@ type ReadinessStepResult =
       error: string;
     };
 type SlackDiscoveryClientSource = "injected" | "stored_oauth" | "env";
+type AdminAuthMethod = "bearer_token" | "local_bypass";
+
+interface AdminAuthContext {
+  orgId: string;
+  principalId: string;
+  method: AdminAuthMethod;
+}
+
+type BekHonoEnv = {
+  Variables: {
+    adminAuth?: AdminAuthContext | undefined;
+  };
+};
 
 interface ResolvedSlackDiscoveryClient {
   client: SlackWebApiClient;
@@ -126,7 +143,7 @@ export function createApp(
   store = new BekStore(),
   options: CreateAppOptions = {},
 ) {
-  const app = new Hono();
+  const app = new Hono<BekHonoEnv>();
   const modelUsageSink = modelUsageSinkFromRepository(
     options.modelUsageRepository,
   );
@@ -215,6 +232,11 @@ export function createApp(
           500,
         );
       }
+      const adminAuth = resolveAdminAuthContext(store.read(), "local_bypass");
+      if (!adminAuth.ok) {
+        return c.json({ error: adminAuth.error }, 500);
+      }
+      c.set("adminAuth", adminAuth.context);
       await next();
       return;
     }
@@ -225,6 +247,11 @@ export function createApp(
     if (!isExpectedBearerToken(c.req.header("authorization"), token)) {
       return c.json({ error: "Unauthorized" }, 401);
     }
+    const adminAuth = resolveAdminAuthContext(store.read(), "bearer_token");
+    if (!adminAuth.ok) {
+      return c.json({ error: adminAuth.error }, 500);
+    }
+    c.set("adminAuth", adminAuth.context);
     await next();
   });
   app.onError((error, c) => {
@@ -252,6 +279,25 @@ export function createApp(
       await workerController.flushChanges();
     }
     return latestRun(store, run.id);
+  }
+
+  function approvalDecisionFromAdminAuth(
+    c: Context<BekHonoEnv>,
+    body: ApprovalDecisionRequestBody,
+  ): ApprovalDecisionBody {
+    const adminAuth = c.get("adminAuth");
+    if (!adminAuth) {
+      throw new Error("Admin auth context is missing.");
+    }
+    if (body.principalId && body.principalId !== adminAuth.principalId) {
+      throw new Error(
+        "Approval principal does not match the authenticated admin.",
+      );
+    }
+    return {
+      principalId: adminAuth.principalId,
+      payloadHash: body.payloadHash,
+    };
   }
 
   function ensureSlackReadAccessForChannel(channel: PlaceScope) {
@@ -1470,10 +1516,11 @@ export function createApp(
 
   app.post("/api/approvals/:approvalId/approve", async (c) => {
     const body = approvalDecisionSchema.parse(await c.req.json());
+    const decisionBody = approvalDecisionFromAdminAuth(c, body);
     const approval = await decideApprovalAndAdvance(
       c.req.param("approvalId"),
       "approved",
-      body,
+      decisionBody,
     );
     await store.flushChanges();
     await workerController.flushModelUsageChanges();
@@ -1482,10 +1529,11 @@ export function createApp(
 
   app.post("/api/approvals/:approvalId/deny", async (c) => {
     const body = approvalDecisionSchema.parse(await c.req.json());
+    const decisionBody = approvalDecisionFromAdminAuth(c, body);
     const approval = await decideApprovalAndAdvance(
       c.req.param("approvalId"),
       "denied",
-      body,
+      decisionBody,
     );
     await store.flushChanges();
     await workerController.flushModelUsageChanges();
@@ -2339,7 +2387,7 @@ const policySchema = z
 
 const approvalDecisionSchema = z
   .object({
-    principalId: z.string().min(1),
+    principalId: z.string().min(1).optional(),
     payloadHash: z.string().min(16),
   })
   .strict();
@@ -3156,6 +3204,39 @@ function isAllowedAdminOrigin(origin: string): boolean {
   } catch {
     return false;
   }
+}
+
+function resolveAdminAuthContext(
+  snapshot: BekSnapshot,
+  method: AdminAuthMethod,
+): { ok: true; context: AdminAuthContext } | { ok: false; error: string } {
+  const principalId =
+    process.env.BEK_ADMIN_PRINCIPAL_ID?.trim() || "principal_admin";
+  const principal = snapshot.principals.find(
+    (candidate) =>
+      candidate.id === principalId && candidate.orgId === snapshot.org.id,
+  );
+  if (!principal) {
+    return {
+      ok: false,
+      error:
+        "BEK_ADMIN_PRINCIPAL_ID must reference a principal in the current org.",
+    };
+  }
+  if (principal.kind !== "human") {
+    return {
+      ok: false,
+      error: "BEK_ADMIN_PRINCIPAL_ID must reference a human principal.",
+    };
+  }
+  return {
+    ok: true,
+    context: {
+      orgId: snapshot.org.id,
+      principalId: principal.id,
+      method,
+    },
+  };
 }
 
 const defaultMaxRequestBodyBytes = 256 * 1024;

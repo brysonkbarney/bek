@@ -21,6 +21,7 @@ const managedEnvKeys = [
   "BEK_ALLOW_UNAUTHENTICATED_LOCAL",
   "BEK_ADMIN_API_TOKEN",
   "BEK_ADMIN_ORIGINS",
+  "BEK_ADMIN_PRINCIPAL_ID",
   "BEK_REQUIRE_ADMIN_AUTH",
   "BEK_CREDENTIAL_KEY_ID",
   "BEK_CREDENTIAL_MASTER_KEY",
@@ -1865,7 +1866,6 @@ describe("Bek API", () => {
       {
         method: "POST",
         body: JSON.stringify({
-          principalId: "principal_admin",
           payloadHash: json.approvals[0]!.payloadHash,
         }),
         headers: { "content-type": "application/json" },
@@ -1875,6 +1875,45 @@ describe("Bek API", () => {
     await expect(approved.json()).resolves.toMatchObject({
       status: "approved",
       decidedByPrincipalId: "principal_admin",
+    });
+  });
+
+  it("derives admin approval actors from BEK_ADMIN_PRINCIPAL_ID", async () => {
+    process.env.BEK_ADMIN_PRINCIPAL_ID = "principal_bryson";
+    const app = createApp();
+    const res = await app.request("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: "@bek open a PR for admin-context validation",
+        placeScopeId: "place_checkout",
+        requesterPrincipalId: "principal_admin",
+        capability: "github.pr",
+        resource: "github:redohq/checkout",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(res.status).toBe(201);
+    const run = (await res.json()) as { id: string };
+    const detail = (await (
+      await app.request(`/api/runs/${run.id}`)
+    ).json()) as {
+      approvals: Array<{ id: string; payloadHash: string }>;
+    };
+    const approval = detail.approvals[0]!;
+
+    const approved = await app.request(
+      `/api/approvals/${approval.id}/approve`,
+      {
+        method: "POST",
+        body: JSON.stringify({ payloadHash: approval.payloadHash }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+
+    expect(approved.status).toBe(200);
+    await expect(approved.json()).resolves.toMatchObject({
+      status: "approved",
+      decidedByPrincipalId: "principal_bryson",
     });
   });
 
@@ -2546,6 +2585,9 @@ describe("Bek API", () => {
       },
     );
     expect(selfApproved.status).toBe(400);
+    await expect(selfApproved.json()).resolves.toMatchObject({
+      error: expect.stringContaining("authenticated admin"),
+    });
   });
 
   it("rejects stale approval hashes, agent approvals, and double approval over HTTP", async () => {

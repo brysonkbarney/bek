@@ -781,7 +781,6 @@ export function redriveDeadLetterPath(deadLetterId: string): string {
 export async function decideApproval(input: {
   approvalId: string;
   decision: "approve" | "deny";
-  principalId: string;
   payloadHash: string;
 }): Promise<ApprovalRequest> {
   const res = await fetch(
@@ -790,7 +789,6 @@ export async function decideApproval(input: {
       method: "POST",
       headers: adminAuthHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({
-        principalId: input.principalId,
         payloadHash: input.payloadHash,
       }),
     },

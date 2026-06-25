@@ -1476,7 +1476,6 @@ export function ApprovalsPage() {
                       decisionMutation.mutate({
                         approvalId: context.approval.id,
                         decision,
-                        principalId: "principal_admin",
                         payloadHash: context.approval.payloadHash,
                       });
                     }}
