@@ -86,6 +86,38 @@ describe("Bek security helpers", () => {
     expect(serializedEvent).toContain("[redacted:private-key]");
   });
 
+  it("redacts audit-flagged credential shapes from public text", () => {
+    const slackAppToken = "xapp-1-A1234567890-b1234567890-c1234567890";
+    const awsTemporaryAccessKey = "ASIAIOSFODNN7EXAMPLE";
+    const apiKey = "abcdefghijklmnopqrstuvwxyz123456";
+    const bearerAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
+
+    const redacted = redactSecrets(
+      `publish ${slackAppToken} ${awsTemporaryAccessKey} api_key=${apiKey} access_token=${bearerAccessToken}`,
+    );
+
+    expect(redacted).not.toContain(slackAppToken);
+    expect(redacted).not.toContain(awsTemporaryAccessKey);
+    expect(redacted).not.toContain(apiKey);
+    expect(redacted).not.toContain(bearerAccessToken);
+    expect(redacted).toContain("[redacted:slack-app-token]");
+    expect(redacted).toContain("[redacted:aws-access-key]");
+    expect(redacted).toContain("api_key=[redacted:api-key]");
+    expect(redacted).toContain("access_token=[redacted:bearer-token]");
+  });
+
+  it("redacts common bearer and api key assignments in public payloads", () => {
+    expect(
+      redactUnknown({
+        publicMessage:
+          'x-api-key: "abcdefghijklmnop12345678" Authorization: Bearer abcdefghijklmnop123456',
+      }),
+    ).toEqual({
+      publicMessage:
+        'x-api-key: "[redacted:api-key]" Authorization: [redacted:bearer-token]',
+    });
+  });
+
   it("hashes approval payloads canonically", () => {
     expect(hashPayload({ b: 2, a: 1 })).toBe(hashPayload({ a: 1, b: 2 }));
   });
