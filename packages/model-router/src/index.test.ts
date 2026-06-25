@@ -5,6 +5,7 @@ import {
   InMemoryModelCostLedger,
   VercelAiGatewayModelGateway,
   calculateModelUsageCostCents,
+  createDefaultModelProviderRegistry,
   createModelProviderRegistry,
   preflightModelBudget,
   runModelWithFailover,
@@ -157,6 +158,33 @@ describe("model router", () => {
         })
         .map((candidate) => candidate.modelId),
     ).not.toContain("offline/model");
+  });
+
+  it("ships a priced default registry for the seed policy", () => {
+    const registry = createDefaultModelProviderRegistry();
+    expect(
+      registry.candidatesForPolicy(policy).map((candidate) => ({
+        provider: candidate.provider.id,
+        model: candidate.modelId,
+        hasBenchmark: candidate.benchmark !== undefined,
+      })),
+    ).toEqual([
+      {
+        provider: "openai",
+        model: "openai/gpt-5.4",
+        hasBenchmark: true,
+      },
+      {
+        provider: "anthropic",
+        model: "anthropic/claude-sonnet-4.8",
+        hasBenchmark: true,
+      },
+      {
+        provider: "openai-compatible",
+        model: "openai-compatible/local",
+        hasBenchmark: true,
+      },
+    ]);
   });
 
   it("fails closed when a supplied registry excludes every configured candidate", () => {

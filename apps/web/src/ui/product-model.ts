@@ -197,10 +197,8 @@ export function setupChecklistFromStatus(status: SetupStatus): Array<{
     {
       id: "model-policy",
       label: "Configure model routing and per-run budget",
-      detail: `${status.modelPolicies} model polic${
-        status.modelPolicies === 1 ? "y" : "ies"
-      } configured`,
-      complete: status.modelPolicies > 0,
+      detail: modelPricingSetupDetail(status),
+      complete: modelPricingReady(status),
       route: "/models",
     },
     {
@@ -252,7 +250,7 @@ export function setupOperationsFromStatus(
   );
   const channelReady = status.slackChannels > 0;
   const accessReady = status.accessBundles > 0;
-  const modelReady = status.modelPolicies > 0;
+  const modelReady = modelPricingReady(status);
   const runtimeReady = status.runtimeProfiles > 0;
   const githubReady = status.githubGrantCount > 0;
   const workspace = status.slackWorkspaceName ?? status.slackWorkspaceId;
@@ -346,7 +344,7 @@ export function setupOperationsFromStatus(
       title: "Choose model and runtime policy",
       detail:
         modelReady && runtimeReady
-          ? "Model routing and runtime execution are configured."
+          ? "Model routing, pricing, and runtime execution are configured."
           : "Configure both model routing and a runtime profile before workspace use.",
       status: modelReady && runtimeReady ? "ready" : "needs action",
       complete: modelReady && runtimeReady,
@@ -357,6 +355,7 @@ export function setupOperationsFromStatus(
         `${status.runtimeProfiles} runtime profile${
           status.runtimeProfiles === 1 ? "" : "s"
         }`,
+        modelPricingFact(status),
       ],
       primaryAction: {
         label: modelReady ? "Review runtime" : "Tune models",
@@ -567,6 +566,41 @@ function slackInstallSetupDetail(status: SetupStatus): string {
     )}.`;
   }
   return `${workspace} is active with a stored bot token.`;
+}
+
+function modelPricingReady(status: SetupStatus): boolean {
+  return Boolean(status.modelPolicies > 0 && status.modelPricingReady);
+}
+
+function modelPricingSetupDetail(status: SetupStatus): string {
+  if (status.modelPolicies === 0) {
+    return "No model policies configured.";
+  }
+  if (status.modelPricingError) {
+    return `Model pricing registry error: ${status.modelPricingError}`;
+  }
+  if (!status.modelPricingReady) {
+    return `Missing pricing for ${formatPricedModels(
+      status.missingPricedModels,
+    )}.`;
+  }
+  const mode = status.modelGatewayMode ?? "local";
+  return `${status.modelPolicies} model polic${
+    status.modelPolicies === 1 ? "y" : "ies"
+  } configured with pricing for ${mode}.`;
+}
+
+function modelPricingFact(status: SetupStatus): string {
+  if (status.modelPricingError) {
+    return "Pricing registry: invalid";
+  }
+  return status.modelPricingReady
+    ? "Pricing registry: ready"
+    : `Missing pricing: ${formatPricedModels(status.missingPricedModels)}`;
+}
+
+function formatPricedModels(models: string[] | undefined): string {
+  return models?.length ? models.join(", ") : "configured models";
 }
 
 function hasMissingSlackScopes(status: SetupStatus): boolean {

@@ -74,6 +74,7 @@ import {
   type RunAdvancementMode,
   type WorkerQueuePersistenceOptions,
 } from "./worker-runtime";
+import { createModelProviderRegistryFromEnv } from "@bek/worker";
 import {
   modelUsageTotalsFromRuns,
   type ModelUsageRepository,
@@ -855,11 +856,13 @@ export function createApp(
       .flatMap((bundle) => bundle.grants)
       .filter((grant) => grant.resource.startsWith("github:")).length;
     const singleVisibleAgent = snapshot.agent.handle === "@bek";
+    const modelPricing = modelPricingReadiness(snapshot);
     const readyForLocalDemo =
       singleVisibleAgent &&
       slackChannels.length > 0 &&
       snapshot.accessBundles.length > 0 &&
-      snapshot.modelPolicies.length > 0;
+      snapshot.modelPolicies.length > 0 &&
+      modelPricing.ready;
     const readyForWorkspace =
       readyForLocalDemo &&
       slackInstall?.status === "active" &&
@@ -885,6 +888,10 @@ export function createApp(
       missingSlackScopes: slackScopeReadiness.missing,
       accessBundles: snapshot.accessBundles.length,
       modelPolicies: snapshot.modelPolicies.length,
+      modelGatewayMode: modelGatewayModeFromEnv(),
+      modelPricingReady: modelPricing.ready,
+      missingPricedModels: modelPricing.missing,
+      modelPricingError: modelPricing.error,
       runtimeProfiles: snapshot.runtimeProfiles.length,
       githubGrantCount,
       pendingApprovals: pendingApprovals.length,
@@ -3079,6 +3086,65 @@ function assignDefined(
   if (value !== undefined) {
     target[key] = value;
   }
+}
+
+function modelPricingReadiness(snapshot: BekSnapshot): {
+  ready: boolean;
+  missing: string[];
+  error: string | null;
+} {
+  const policyModels = modelPolicyIds(snapshot);
+  if (policyModels.length === 0) {
+    return { ready: false, missing: [], error: null };
+  }
+  try {
+    const registry = createModelProviderRegistryFromEnv();
+    const missing = policyModels.filter((model) => {
+      const registered = registry.resolveModel(model);
+      return (
+        !registered?.benchmark ||
+        registered.provider.status === "disabled" ||
+        registered.model.enabled === false
+      );
+    });
+    return {
+      ready: missing.length === 0,
+      missing,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      ready: false,
+      missing: policyModels,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function modelPolicyIds(snapshot: BekSnapshot): string[] {
+  return [
+    ...new Set(
+      snapshot.modelPolicies.flatMap((policy) => [
+        policy.defaultModel,
+        ...policy.fallbackModels,
+      ]),
+    ),
+  ].sort();
+}
+
+function modelGatewayModeFromEnv(): string {
+  const mode = process.env.BEK_MODEL_GATEWAY?.trim().toLowerCase();
+  if (!mode || mode === "local" || mode === "stub" || mode === "none") {
+    return "local";
+  }
+  if (
+    mode === "vercel_ai_sdk" ||
+    mode === "vercel_ai" ||
+    mode === "ai_gateway"
+  ) {
+    return "vercel_ai_sdk";
+  }
+  return mode;
 }
 
 function latestSlackInstall(

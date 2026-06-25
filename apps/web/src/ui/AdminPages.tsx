@@ -41,6 +41,7 @@ import {
   type ModelPolicy,
   type Run,
   type RunEvent,
+  type SetupStatus,
 } from "../api";
 import {
   bundlesForPlace,
@@ -1972,6 +1973,10 @@ export function ModelsPage() {
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
   });
+  const { data: setupStatus } = useQuery({
+    queryKey: ["setupStatus"],
+    queryFn: fetchSetupStatus,
+  });
 
   if (isLoading) return <div className="state">Loading models...</div>;
   if (error || !data)
@@ -1991,7 +1996,11 @@ export function ModelsPage() {
       ) : (
         <section className="bundle-list">
           {data.modelPolicies.map((policy) => (
-            <ModelPolicyPanel policy={policy} key={policy.id} />
+            <ModelPolicyPanel
+              policy={policy}
+              setupStatus={setupStatus}
+              key={policy.id}
+            />
           ))}
         </section>
       )}
@@ -1999,7 +2008,13 @@ export function ModelsPage() {
   );
 }
 
-function ModelPolicyPanel({ policy }: { policy: ModelPolicy }) {
+function ModelPolicyPanel({
+  policy,
+  setupStatus,
+}: {
+  policy: ModelPolicy;
+  setupStatus?: SetupStatus | undefined;
+}) {
   const queryClient = useQueryClient();
   const [defaultModel, setDefaultModel] = useState(policy.defaultModel);
   const [fallbackModels, setFallbackModels] = useState(
@@ -2026,6 +2041,7 @@ function ModelPolicyPanel({ policy }: { policy: ModelPolicy }) {
   const parsedBudget = Number(perRunBudgetCents);
   const defaultModelLooksValid = modelIdLooksValid(defaultModel);
   const fallbackModelsLookValid = parsedFallbacks.every(modelIdLooksValid);
+  const pricingWarning = modelPricingWarning(policy, setupStatus);
   const canSave =
     defaultModel.trim().length > 0 &&
     defaultModelLooksValid &&
@@ -2050,8 +2066,11 @@ function ModelPolicyPanel({ policy }: { policy: ModelPolicy }) {
       {!defaultModelLooksValid || !fallbackModelsLookValid ? (
         <WarningCallout>
           Use Gateway model IDs in provider/model format. Secrets stay in server
-          env; set BEK_MODEL_GATEWAY=vercel_ai_sdk to run live calls.
+          env; live calls also require pricing metadata for each model.
         </WarningCallout>
+      ) : null}
+      {pricingWarning ? (
+        <WarningCallout>{pricingWarning}</WarningCallout>
       ) : null}
       <div className="split-row">
         <div>
@@ -2131,6 +2150,28 @@ function ModelPolicyPanel({ policy }: { policy: ModelPolicy }) {
 
 function modelIdLooksValid(modelId: string): boolean {
   return /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/i.test(modelId.trim());
+}
+
+function modelPricingWarning(
+  policy: ModelPolicy,
+  setupStatus: SetupStatus | undefined,
+): string | undefined {
+  if (!setupStatus) {
+    return undefined;
+  }
+  if (setupStatus.modelPricingError) {
+    return `Model pricing registry error: ${setupStatus.modelPricingError}`;
+  }
+  const policyModels = new Set([policy.defaultModel, ...policy.fallbackModels]);
+  const missing = (setupStatus.missingPricedModels ?? []).filter((model) =>
+    policyModels.has(model),
+  );
+  if (missing.length === 0) {
+    return undefined;
+  }
+  return `Budget-enforced live calls will fail closed until pricing metadata exists for ${missing.join(
+    ", ",
+  )}.`;
 }
 
 export function MemoryPage() {

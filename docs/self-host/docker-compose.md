@@ -128,6 +128,14 @@ worker events persist in Postgres. This is useful for restart-safe self-hosted
 evaluation; production still needs daemonized workers, lease sweepers,
 automated outbox dispatch, redrive UI/operations, and operational metrics.
 
+If you enable `BEK_MODEL_GATEWAY=vercel_ai_sdk`, Compose forwards the model
+registry and benchmark override variables. The built-in registry covers the
+seed model policy; custom/private models need benchmark pricing through
+`BEK_MODEL_PROVIDER_REGISTRY_JSON`, `BEK_MODEL_PROVIDER_REGISTRY_PATH`,
+`BEK_MODEL_BENCHMARKS_JSON`, or `BEK_MODEL_BENCHMARKS_PATH`. Check
+`/api/setup/status` for `modelPricingReady` before attempting paid Gateway
+runs.
+
 The current API process serves one Bek org at a time. In Postgres mode that org
 is selected by `BEK_ORG_ID`; the default template uses `org_demo`. To isolate
 multiple teams before hosted multi-tenant support exists, run separate API/web

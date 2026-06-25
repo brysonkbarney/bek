@@ -297,7 +297,8 @@ pnpm check
 - One visible agent handle: `@bek`.
 - Two Slack places: `#checkout-eng` with external ID `C_CHECKOUT`, and `#general` with external ID `C_GENERAL`.
 - A Checkout Engineering access bundle with Slack read, GitHub read, GitHub PR approval, and sandbox approval grants.
-- An Auto balanced model policy and answer/code runtime profiles.
+- An Auto balanced model policy, priced seed model registry entries, and
+  answer/code runtime profiles.
 
 ## Current Product Limits
 
@@ -313,6 +314,8 @@ pnpm check
   restart-safe self-hosted evaluation. Hosted or multi-instance production still
   needs daemonized workers and transactional claim/lease operations.
 - AI SDK Gateway model calls and the local Docker sandbox-command adapter are
-  opt-in. GitHub writes, hosted sandbox execution, full OpenCode repo
-  orchestration, and MCP tool proxying remain foundations or contracts.
+  opt-in. Gateway calls fail closed unless every policy model has benchmark
+  pricing in Bek's model registry. GitHub writes, hosted sandbox execution, full
+  OpenCode repo orchestration, and MCP tool proxying remain foundations or
+  contracts.
 - Do not use this repo for production workspaces until the launch blockers in `docs/launch-readiness.md` are closed.

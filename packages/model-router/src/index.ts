@@ -238,6 +238,115 @@ export function createModelProviderRegistry(
   return new ModelProviderRegistry(providers);
 }
 
+export function defaultModelProviderRegistrations(): ModelProviderRegistration[] {
+  return [
+    {
+      id: "openai",
+      displayName: "OpenAI",
+      kind: "openai",
+      models: [
+        {
+          id: "openai/gpt-5.4",
+          benchmark: {
+            model: "openai/gpt-5.4",
+            qualityScore: 95,
+            speedScore: 70,
+            inputCostPerMillionTokensCents: 125,
+            outputCostPerMillionTokensCents: 1000,
+            contextWindowTokens: 400_000,
+          },
+        },
+        {
+          id: "openai/gpt-5.5",
+          benchmark: {
+            model: "openai/gpt-5.5",
+            qualityScore: 97,
+            speedScore: 68,
+            inputCostPerMillionTokensCents: 150,
+            outputCostPerMillionTokensCents: 1200,
+            contextWindowTokens: 400_000,
+          },
+        },
+      ],
+    },
+    {
+      id: "anthropic",
+      displayName: "Anthropic",
+      kind: "anthropic",
+      models: [
+        {
+          id: "anthropic/claude-sonnet-4.8",
+          benchmark: {
+            model: "anthropic/claude-sonnet-4.8",
+            qualityScore: 90,
+            speedScore: 82,
+            inputCostPerMillionTokensCents: 300,
+            outputCostPerMillionTokensCents: 1500,
+            contextWindowTokens: 200_000,
+          },
+        },
+      ],
+    },
+    {
+      id: "openai-compatible",
+      displayName: "OpenAI-compatible local",
+      kind: "openai-compatible",
+      models: [
+        {
+          id: "openai-compatible/local",
+          benchmark: {
+            model: "openai-compatible/local",
+            qualityScore: 62,
+            speedScore: 100,
+            inputCostPerMillionTokensCents: 0,
+            outputCostPerMillionTokensCents: 0,
+            contextWindowTokens: 32_000,
+          },
+        },
+      ],
+    },
+  ];
+}
+
+export function createDefaultModelProviderRegistry(): ModelProviderRegistry {
+  return createModelProviderRegistry(defaultModelProviderRegistrations());
+}
+
+export function createModelProviderRegistryFromBenchmarks(
+  benchmarks: ModelBenchmark[],
+  baseProviders: ModelProviderRegistration[] = defaultModelProviderRegistrations(),
+): ModelProviderRegistry {
+  const providers = baseProviders.map((provider) => ({
+    ...provider,
+    models: provider.models.map((model) => ({ ...model })),
+  }));
+  for (const benchmark of benchmarks) {
+    const providerId = parseProvider(benchmark.model);
+    let provider = providers.find((candidate) => candidate.id === providerId);
+    if (!provider) {
+      provider = {
+        id: providerId,
+        displayName: providerDisplayName(providerId),
+        kind: providerKindFromId(providerId),
+        models: [],
+      };
+      providers.push(provider);
+    }
+    const model = provider.models.find(
+      (candidate) => candidate.id === benchmark.model,
+    );
+    if (model) {
+      model.benchmark = { ...benchmark };
+    } else {
+      provider.models.push({
+        id: benchmark.model,
+        benchmark: { ...benchmark },
+      });
+    }
+  }
+  return createModelProviderRegistry(providers);
+}
+
 export function estimateModelCostCents(
   benchmark: ModelBenchmark | undefined,
   estimatedInputTokens: number,
@@ -276,6 +385,39 @@ export function calculateModelUsageCostCents(
 export function parseProvider(model: string): string {
   const provider = model.split("/")[0];
   return provider && provider !== model ? provider : "openai-compatible";
+}
+
+function providerDisplayName(providerId: string): string {
+  if (providerId === "openai") {
+    return "OpenAI";
+  }
+  if (providerId === "anthropic") {
+    return "Anthropic";
+  }
+  if (providerId === "openai-compatible") {
+    return "OpenAI-compatible";
+  }
+  return providerId
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => part[0]?.toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function providerKindFromId(providerId: string): ModelProviderKind {
+  if (providerId === "openai") {
+    return "openai";
+  }
+  if (providerId === "anthropic") {
+    return "anthropic";
+  }
+  if (providerId === "openai-compatible") {
+    return "openai-compatible";
+  }
+  if (providerId === "local") {
+    return "local";
+  }
+  return "custom";
 }
 
 export interface ModelCostLedgerEntry {

@@ -182,6 +182,10 @@ export interface SetupStatus {
   missingSlackScopes?: string[];
   accessBundles: number;
   modelPolicies: number;
+  modelGatewayMode?: string;
+  modelPricingReady?: boolean;
+  missingPricedModels?: string[];
+  modelPricingError?: string | null;
   runtimeProfiles: number;
   githubGrantCount: number;
   pendingApprovals: number;

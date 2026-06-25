@@ -23,7 +23,9 @@ import {
   WorkerRuntimeService,
   canTransitionRunAttemptState,
   createAiSdkGatewayRuntimeAdapter,
+  createLocalRuntimeAdapters,
   createModelGatewayFromEnv,
+  createModelProviderRegistryFromEnv,
   createSandboxRuntimeAdapter,
   createWorkerIdempotencyKey,
   createSequentialIdFactory,
@@ -1399,6 +1401,44 @@ describe("worker runtime service", () => {
     });
   });
 
+  it("attaches the default pricing registry to env-created AI SDK adapters", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_gateway_default_registry",
+      prompt: "@bek summarize with default pricing",
+    });
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_gateway_default_registry",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+    const gateway = new CapturingModelGateway();
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: createLocalRuntimeAdapters({ modelGateway: gateway }),
+      workerId: "worker_gateway_default_registry",
+      now: () => baseNow,
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected default registry gateway processing.");
+    }
+    expect(decision.result.status).toBe("completed");
+    expect(gateway.requests).toHaveLength(1);
+  });
+
   it("fails closed before AI SDK Gateway calls when pricing metadata is missing", async () => {
     const { snapshot, run } = snapshotWithQueuedRun({
       runId: "run_gateway_missing_pricing",
@@ -1477,6 +1517,68 @@ describe("worker runtime service", () => {
     expect(() => modelRouteModeFromEnv("wild")).toThrow(
       /BEK_MODEL_ROUTING_MODE/,
     );
+  });
+
+  it("loads model provider pricing from defaults and env overrides", () => {
+    const defaultRegistry = createModelProviderRegistryFromEnv({});
+    expect(
+      defaultRegistry.resolveModel("openai/gpt-5.4")?.benchmark,
+    ).toMatchObject({
+      model: "openai/gpt-5.4",
+    });
+
+    const benchmarkRegistry = createModelProviderRegistryFromEnv({
+      BEK_MODEL_BENCHMARKS_JSON: JSON.stringify([
+        {
+          model: "openrouter/custom-model",
+          qualityScore: 75,
+          speedScore: 80,
+          inputCostPerMillionTokensCents: 10,
+          outputCostPerMillionTokensCents: 20,
+          contextWindowTokens: 128_000,
+        },
+      ]),
+    });
+    expect(
+      benchmarkRegistry.resolveModel("openrouter/custom-model"),
+    ).toMatchObject({
+      provider: { id: "openrouter", kind: "custom" },
+      benchmark: {
+        outputCostPerMillionTokensCents: 20,
+      },
+    });
+
+    const explicitRegistry = createModelProviderRegistryFromEnv({
+      BEK_MODEL_PROVIDER_REGISTRY_JSON: JSON.stringify([
+        {
+          id: "private",
+          displayName: "Private Gateway",
+          kind: "custom",
+          models: [
+            {
+              id: "private/fast",
+              benchmark: {
+                model: "private/fast",
+                qualityScore: 70,
+                speedScore: 95,
+                inputCostPerMillionTokensCents: 5,
+                outputCostPerMillionTokensCents: 10,
+                contextWindowTokens: 64_000,
+              },
+            },
+          ],
+        },
+      ]),
+    });
+    expect(explicitRegistry.resolveModel("private/fast")?.provider.id).toBe(
+      "private",
+    );
+
+    expect(() =>
+      createModelProviderRegistryFromEnv({
+        BEK_MODEL_BENCHMARKS_JSON: "not-json",
+      }),
+    ).toThrow(/valid JSON/);
   });
 
   it("creates and destroys sandbox leases for sandbox runtime adapters", async () => {

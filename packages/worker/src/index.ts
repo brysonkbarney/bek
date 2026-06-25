@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
   adapterMatchesProfile,
   buildRuntimeRunPrompt,
@@ -24,11 +25,17 @@ import {
 } from "@bek/sandbox";
 import {
   VercelAiGatewayModelGateway,
+  createDefaultModelProviderRegistry,
+  createModelProviderRegistry,
+  createModelProviderRegistryFromBenchmarks,
   runModelWithFailover,
   type ModelBenchmark,
   type ModelGateway,
+  type ModelProviderRegistration,
+  type ModelProviderKind,
   type ModelGatewayRunContext,
   type ModelProviderRegistry,
+  type ModelProviderStatus,
   type ModelRouteMode,
 } from "@bek/model-router";
 import {
@@ -2449,9 +2456,12 @@ export function createLocalRuntimeAdapters(
   options: {
     sandboxProvider?: SandboxProvider | undefined;
     modelGateway?: ModelGateway | undefined;
+    modelProviderRegistry?: ModelProviderRegistry | undefined;
   } = {},
 ): RuntimeAdapter[] {
   const envModelGateway = options.modelGateway ?? createModelGatewayFromEnv();
+  const modelProviderRegistry =
+    options.modelProviderRegistry ?? createModelProviderRegistryFromEnv();
   return [
     envModelGateway
       ? createAiSdkGatewayRuntimeAdapter({
@@ -2459,6 +2469,7 @@ export function createLocalRuntimeAdapters(
           kind: "ai_sdk",
           gateway: envModelGateway,
           modelRoutingMode: modelRouteModeFromEnv(),
+          registry: modelProviderRegistry,
           gatewayTags: parseCsvEnv(process.env.BEK_AI_GATEWAY_TAGS),
         })
       : createDeterministicLocalRuntimeAdapter({
@@ -2480,6 +2491,37 @@ export function createLocalRuntimeAdapters(
       kind: "external",
     }),
   ];
+}
+
+export function createModelProviderRegistryFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): ModelProviderRegistry {
+  const registryConfig = readJsonConfig(
+    env.BEK_MODEL_PROVIDER_REGISTRY_JSON,
+    env.BEK_MODEL_PROVIDER_REGISTRY_PATH,
+    "BEK_MODEL_PROVIDER_REGISTRY",
+  );
+  if (registryConfig !== undefined) {
+    return createModelProviderRegistry(
+      parseModelProviderRegistrations(
+        registryConfig,
+        "BEK_MODEL_PROVIDER_REGISTRY",
+      ),
+    );
+  }
+
+  const benchmarkConfig = readJsonConfig(
+    env.BEK_MODEL_BENCHMARKS_JSON,
+    env.BEK_MODEL_BENCHMARKS_PATH,
+    "BEK_MODEL_BENCHMARKS",
+  );
+  if (benchmarkConfig !== undefined) {
+    return createModelProviderRegistryFromBenchmarks(
+      parseModelBenchmarks(benchmarkConfig, "BEK_MODEL_BENCHMARKS"),
+    );
+  }
+
+  return createDefaultModelProviderRegistry();
 }
 
 export function createModelGatewayFromEnv(
@@ -2757,6 +2799,207 @@ function parseIntegerEnv(value: string | undefined, fallback: number): number {
     throw new Error(`Expected a non-negative integer, received ${value}.`);
   }
   return parsed;
+}
+
+function readJsonConfig(
+  inlineJson: string | undefined,
+  filePath: string | undefined,
+  label: string,
+): unknown {
+  const inline = inlineJson?.trim();
+  const path = filePath?.trim();
+  if (inline && path) {
+    throw new Error(`${label}_JSON and ${label}_PATH cannot both be set.`);
+  }
+  if (inline) {
+    return parseJsonConfig(inline, `${label}_JSON`);
+  }
+  if (path) {
+    return parseJsonConfig(readFileSync(path, "utf8"), `${label}_PATH`);
+  }
+  return undefined;
+}
+
+function parseJsonConfig(raw: string, label: string): unknown {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${label} must contain valid JSON: ${message}`);
+  }
+}
+
+function parseModelProviderRegistrations(
+  value: unknown,
+  label: string,
+): ModelProviderRegistration[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be a JSON array of provider registrations.`);
+  }
+  return value.map((entry, index) =>
+    parseModelProviderRegistration(entry, `${label}[${index}]`),
+  );
+}
+
+function parseModelProviderRegistration(
+  value: unknown,
+  label: string,
+): ModelProviderRegistration {
+  const record = requireRecord(value, label);
+  const id = requireString(record.id, `${label}.id`);
+  const displayName = requireString(record.displayName, `${label}.displayName`);
+  const kind = parseProviderKind(record.kind, `${label}.kind`);
+  const models = parseProviderModels(record.models, `${label}.models`);
+  return {
+    id,
+    displayName,
+    kind,
+    models,
+    ...(record.status !== undefined
+      ? { status: parseProviderStatus(record.status, `${label}.status`) }
+      : {}),
+    ...(record.tags !== undefined
+      ? { tags: parseStringArray(record.tags, `${label}.tags`) }
+      : {}),
+  };
+}
+
+function parseProviderModels(
+  value: unknown,
+  label: string,
+): ModelProviderRegistration["models"] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${label} must be a non-empty JSON array.`);
+  }
+  return value.map((entry, index) => {
+    const model = requireRecord(entry, `${label}[${index}]`);
+    return {
+      id: requireString(model.id, `${label}[${index}].id`),
+      ...(model.benchmark !== undefined
+        ? {
+            benchmark: parseModelBenchmark(
+              model.benchmark,
+              `${label}[${index}].benchmark`,
+            ),
+          }
+        : {}),
+      ...(model.enabled !== undefined
+        ? {
+            enabled: requireBoolean(
+              model.enabled,
+              `${label}[${index}].enabled`,
+            ),
+          }
+        : {}),
+      ...(model.aliases !== undefined
+        ? {
+            aliases: parseStringArray(
+              model.aliases,
+              `${label}[${index}].aliases`,
+            ),
+          }
+        : {}),
+    };
+  });
+}
+
+function parseModelBenchmarks(value: unknown, label: string): ModelBenchmark[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${label} must be a non-empty JSON array.`);
+  }
+  return value.map((entry, index) =>
+    parseModelBenchmark(entry, `${label}[${index}]`),
+  );
+}
+
+function parseModelBenchmark(value: unknown, label: string): ModelBenchmark {
+  const record = requireRecord(value, label);
+  return {
+    model: requireString(record.model, `${label}.model`),
+    qualityScore: requireNonNegativeNumber(
+      record.qualityScore,
+      `${label}.qualityScore`,
+    ),
+    speedScore: requireNonNegativeNumber(
+      record.speedScore,
+      `${label}.speedScore`,
+    ),
+    inputCostPerMillionTokensCents: requireNonNegativeNumber(
+      record.inputCostPerMillionTokensCents,
+      `${label}.inputCostPerMillionTokensCents`,
+    ),
+    outputCostPerMillionTokensCents: requireNonNegativeNumber(
+      record.outputCostPerMillionTokensCents,
+      `${label}.outputCostPerMillionTokensCents`,
+    ),
+    contextWindowTokens: requireNonNegativeNumber(
+      record.contextWindowTokens,
+      `${label}.contextWindowTokens`,
+    ),
+  };
+}
+
+function parseProviderKind(value: unknown, label: string): ModelProviderKind {
+  const kind = requireString(value, label);
+  if (
+    kind === "openai" ||
+    kind === "anthropic" ||
+    kind === "openai-compatible" ||
+    kind === "local" ||
+    kind === "fake" ||
+    kind === "custom"
+  ) {
+    return kind;
+  }
+  throw new Error(`${label} must be a supported provider kind.`);
+}
+
+function parseProviderStatus(
+  value: unknown,
+  label: string,
+): ModelProviderStatus {
+  const status = requireString(value, label);
+  if (status === "active" || status === "degraded" || status === "disabled") {
+    return status;
+  }
+  throw new Error(`${label} must be active, degraded, or disabled.`);
+}
+
+function parseStringArray(value: unknown, label: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be a JSON array of strings.`);
+  }
+  return value.map((entry, index) =>
+    requireString(entry, `${label}[${index}]`),
+  );
+}
+
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be a JSON object.`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireString(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`${label} must be a non-empty string.`);
+  }
+  return value.trim();
+}
+
+function requireBoolean(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error(`${label} must be a boolean.`);
+  }
+  return value;
+}
+
+function requireNonNegativeNumber(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative number.`);
+  }
+  return value;
 }
 
 function parseCsvEnv(value: string | undefined): string[] {

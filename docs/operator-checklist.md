@@ -130,6 +130,10 @@ the current OSS spine.
 - [ ] Confirm every model policy string uses the live provider catalog's
       `provider/model` format before a pilot; seed strings are metadata until a
       live adapter consumes them.
+- [ ] Confirm `/api/setup/status` reports `modelPricingReady: true`. Custom or
+      private Gateway models must be present in Bek's pricing registry through
+      `BEK_MODEL_PROVIDER_REGISTRY_*` or `BEK_MODEL_BENCHMARKS_*`; otherwise
+      budget-enforced routes fail closed before a provider call.
 - [ ] Set per-run budgets low for pilots.
 - [ ] Decide which channels or bundles can call expensive models.
 - [ ] For Vercel AI Gateway execution, set

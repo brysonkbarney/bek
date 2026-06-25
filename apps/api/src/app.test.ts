@@ -26,6 +26,11 @@ const managedEnvKeys = [
   "BEK_CREDENTIAL_KEY_ID",
   "BEK_CREDENTIAL_MASTER_KEY",
   "BEK_MAX_REQUEST_BODY_BYTES",
+  "BEK_MODEL_BENCHMARKS_JSON",
+  "BEK_MODEL_BENCHMARKS_PATH",
+  "BEK_MODEL_GATEWAY",
+  "BEK_MODEL_PROVIDER_REGISTRY_JSON",
+  "BEK_MODEL_PROVIDER_REGISTRY_PATH",
   "BEK_RATE_LIMIT_MAX_REQUESTS",
   "BEK_RATE_LIMIT_WINDOW_MS",
   "BEK_RUN_ADVANCEMENT",
@@ -840,8 +845,36 @@ describe("Bek API", () => {
     await expect(res.json()).resolves.toMatchObject({
       visibleHandle: "@bek",
       singleVisibleAgent: true,
+      modelGatewayMode: "local",
+      modelPricingReady: true,
+      missingPricedModels: [],
+      modelPricingError: null,
       readyForLocalDemo: true,
       readyForWorkspace: false,
+    });
+  });
+
+  it("reports unpriced model policies in setup status", async () => {
+    process.env.BEK_MODEL_PROVIDER_REGISTRY_JSON = JSON.stringify([
+      {
+        id: "openai",
+        displayName: "OpenAI",
+        kind: "openai",
+        models: [{ id: "openai/gpt-5.4" }],
+      },
+    ]);
+
+    const res = await createApp().request("/api/setup/status");
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      modelPricingReady: false,
+      missingPricedModels: [
+        "anthropic/claude-sonnet-4.8",
+        "openai-compatible/local",
+        "openai/gpt-5.4",
+      ],
+      readyForLocalDemo: false,
     });
   });
 
