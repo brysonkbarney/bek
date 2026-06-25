@@ -21,14 +21,18 @@ The current foundation provides signed ingress and local workflow helpers:
 - A fetch-based GitHub REST workflow client for creating branches, writing git
   trees/commits, updating refs, opening draft pull requests, and applying
   requested labels/reviewers with installation tokens.
+- An opt-in approved worker execution path. `BEK_GITHUB_EXECUTION=fake`
+  exercises the full approval/token/client flow without network calls, while
+  `BEK_GITHUB_EXECUTION=real` uses the GitHub App token provider and REST
+  client only after a hash-bound `github.pr` approval.
 - An admin setup preview route that validates GitHub App env, parses repo grants, and previews repo-scoped installation token requests without calling GitHub.
 - Signed webhook ingress at `POST /api/github/webhooks` with delivery dedupe, `ping` acknowledgement, ignored unsupported events, and normalized `installation`, `installation_repositories`, `pull_request`, and `check_run` persistence.
 
-The setup route and worker runtime still do not call GitHub, clone repositories,
-push branches, open pull requests from Slack runs, or create runs from GitHub
-webhooks yet. Real GitHub network execution exists as package-level primitives
-that still need approved worker wiring, durable credential custody, and audit
-coverage before paid production use.
+The setup route still does not call GitHub, clone repositories, or create runs
+from GitHub webhooks. Real worker execution is disabled by default and currently
+opens a deterministic Bek run manifest PR after approval; richer AI-generated
+repo diffs, hosted credential custody, and GitHub webhook-to-run routing remain
+launch work.
 
 ## GitHub App Settings
 
@@ -50,10 +54,12 @@ Recommended webhook events:
 ## Environment Variables
 
 Use these variables for the app runtime or worker that validates webhooks,
-previews setup, and will perform approved GitHub operations once the worker
-execution path is wired:
+previews setup, and can perform approved GitHub operations when explicitly
+enabled:
 
 ```bash
+BEK_GITHUB_EXECUTION=disabled # disabled | fake | real
+GITHUB_API_BASE_URL= # optional, defaults to https://api.github.com
 GITHUB_APP_ID=12345
 GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
 GITHUB_APP_WEBHOOK_SECRET=...
@@ -167,18 +173,19 @@ to a real provider:
 5. Create a draft PR proposal and PR approval hash input.
 6. Execute the plan through the draft PR workflow execution contract after bundle policy and human approval have passed. The execution result should keep only redacted token lease metadata, not the token secret.
 
-The fake provider and fake client remain useful for local deterministic flows.
-The real token provider and REST client are available in `@bek/github`, but API
-and worker code should only consume them once the approved execution path can
-provide repo-scoped credentials, isolated runtime context, and audit events.
+The worker stores a no-token workflow approval payload and verifies its hash
+before leasing a token. Generic `github.pr` approvals are not enough for real
+execution. `BEK_GITHUB_EXECUTION=fake` uses the fake provider/client for local
+end-to-end validation. `BEK_GITHUB_EXECUTION=real` validates GitHub App config
+at readiness time and performs GitHub network calls only inside an approved
+worker run.
 
 ## Launch Blockers
 
 - GitHub App installation persistence and secret broker integration.
-- Wire the real installation token provider and REST workflow client into the
-  approved worker execution path.
 - Hosted repo-scoped token brokering with revocation, rotation, and audit.
 - GitHub webhook-to-policy routing for repo-specific run creation.
-- Real branch push workflow in an isolated runtime.
-- PR creation/update worker that consumes approved proposal payloads and hash inputs.
-- Audit events for token minting, branch writes, PR writes, and webhook handling.
+- AI-generated repo diffs and branch update workflows inside isolated runtimes.
+- Per-repo installation selection instead of a default installation id.
+- Expanded audit events and hosted operations for token minting, branch writes,
+  PR writes, and webhook handling.

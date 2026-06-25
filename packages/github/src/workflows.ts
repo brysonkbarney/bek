@@ -127,6 +127,37 @@ export interface GitHubDraftPullRequestWorkflowPlan {
   requesterPrincipalId?: string | undefined;
 }
 
+export interface GitHubDraftPullRequestWorkflowApprovalPayload {
+  type: "github.draft_pull_request_workflow_approval_payload";
+  version: 1;
+  visibleAgentHandle: typeof BEK_VISIBLE_AGENT_HANDLE;
+  resource: string;
+  repository: GitHubRepoResource;
+  installationId: string;
+  branch: {
+    baseBranch: string;
+    headBranch: string;
+  };
+  commit: {
+    message: string;
+    changes: GitHubCommitFileChange[];
+  };
+  pullRequest: {
+    title: string;
+    body: string;
+    baseBranch: string;
+    headBranch: string;
+    draft: boolean;
+    maintainerCanModify: boolean;
+    labels: string[];
+    reviewers: string[];
+  };
+  approvalHashInput: GitHubPullRequestWriteApprovalHashInput;
+  steps: GitHubDraftPullRequestWorkflowStep[];
+  runId?: string | undefined;
+  requesterPrincipalId?: string | undefined;
+}
+
 export function createGitHubBranchWorkflowPlan(
   input: CreateGitHubBranchWorkflowPlanInput,
 ): GitHubBranchWorkflowPlan {
@@ -270,6 +301,62 @@ export function createGitHubDraftPullRequestWorkflowPlan(
   return plan;
 }
 
+export function createGitHubDraftPullRequestWorkflowApprovalPayload(
+  plan: GitHubDraftPullRequestWorkflowPlan,
+): GitHubDraftPullRequestWorkflowApprovalPayload {
+  const payload: GitHubDraftPullRequestWorkflowApprovalPayload = {
+    type: "github.draft_pull_request_workflow_approval_payload",
+    version: 1,
+    visibleAgentHandle: plan.visibleAgentHandle,
+    resource: plan.resource,
+    repository: { ...plan.repository },
+    installationId: plan.installationId,
+    branch: {
+      baseBranch: plan.branch.baseBranch,
+      headBranch: plan.branch.headBranch,
+    },
+    commit: {
+      message: plan.commit.message,
+      changes: plan.commit.changes.map((change) => ({ ...change })),
+    },
+    pullRequest: {
+      title: plan.pullRequest.title,
+      body: plan.pullRequest.body,
+      baseBranch: plan.pullRequest.baseBranch,
+      headBranch: plan.pullRequest.headBranch,
+      draft: plan.pullRequest.draft,
+      maintainerCanModify: plan.pullRequest.maintainerCanModify,
+      labels: [...plan.pullRequest.labels],
+      reviewers: [...plan.pullRequest.reviewers],
+    },
+    approvalHashInput: structuredClone(plan.approvalHashInput),
+    steps: [...plan.steps],
+  };
+  addRunMetadata(payload, plan);
+  return payload;
+}
+
+export function createGitHubDraftPullRequestWorkflowPlanFromApprovalPayload(
+  payload: GitHubDraftPullRequestWorkflowApprovalPayload,
+): GitHubDraftPullRequestWorkflowPlan {
+  return createGitHubDraftPullRequestWorkflowPlan({
+    repository: payload.repository,
+    installationId: payload.installationId,
+    title: payload.pullRequest.title,
+    body: payload.pullRequest.body,
+    baseBranch: payload.branch.baseBranch,
+    headBranch: payload.branch.headBranch,
+    commitMessage: payload.commit.message,
+    changes: payload.commit.changes,
+    draft: payload.pullRequest.draft,
+    maintainerCanModify: payload.pullRequest.maintainerCanModify,
+    labels: payload.pullRequest.labels,
+    reviewers: payload.pullRequest.reviewers,
+    runId: payload.runId,
+    requesterPrincipalId: payload.requesterPrincipalId,
+  });
+}
+
 export function normalizeCommitChanges(
   changes: GitHubCommitFileChange[],
 ): GitHubCommitFileChange[] {
@@ -347,7 +434,8 @@ function addRunMetadata(
   plan:
     | GitHubBranchWorkflowPlan
     | GitHubCommitWorkflowPlan
-    | GitHubDraftPullRequestWorkflowPlan,
+    | GitHubDraftPullRequestWorkflowPlan
+    | GitHubDraftPullRequestWorkflowApprovalPayload,
   input: {
     runId?: string | undefined;
     requesterPrincipalId?: string | undefined;

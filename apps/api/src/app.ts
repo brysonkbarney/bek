@@ -20,6 +20,7 @@ import type {
 } from "@bek/core";
 import {
   createGitHubDraftPullRequestWorkflowPlan,
+  createGitHubDraftPullRequestWorkflowApprovalPayload,
   createGitHubInstallationTokenRequest,
   createGitHubWebhookDeliveryDedupeKey,
   normalizeGitHubWebhookEvent,
@@ -70,6 +71,7 @@ import {
 } from "./slack-outbound";
 import {
   LocalWorkerController,
+  resolveGitHubExecutionFromEnv,
   runAdvancementModeFromEnv,
   type RunAdvancementMode,
   type WorkerQueuePersistenceOptions,
@@ -148,12 +150,14 @@ export function createApp(
   const modelUsageSink = modelUsageSinkFromRepository(
     options.modelUsageRepository,
   );
+  const githubExecution = resolveGitHubExecutionFromEnv();
   const workerController = new LocalWorkerController(
     store,
     options.runAdvancement ?? runAdvancementModeFromEnv(),
     {
       persistence: options.workerQueuePersistence,
       modelUsageSink,
+      githubDraftPullRequest: githubExecution.executor,
     },
   );
   const slackOutbound = createSlackOutboundDelivery(store, {
@@ -263,10 +267,21 @@ export function createApp(
   });
 
   function createRunAndQueue(input: CreateStoreRunInput) {
-    const run = store.createRun({
+    const githubApprovalPayload =
+      githubExecution.installationId && input.capability === "github.pr"
+        ? githubDraftPullRequestApprovalPayloadFactory(
+            input,
+            githubExecution.installationId,
+          )
+        : undefined;
+    const runInput: CreateStoreRunInput = {
       ...input,
       advanceMode: workerController.enabled ? "worker" : "inline_stub",
-    });
+    };
+    if (githubApprovalPayload) {
+      runInput.approvalPayload = githubApprovalPayload;
+    }
+    const run = store.createRun(runInput);
     if (workerController.enabled && run.status === "queued") {
       workerController.enqueueRun(run);
     }
@@ -780,6 +795,9 @@ export function createApp(
       workerController.flushModelUsageChanges(),
     );
     await recordReadinessStep(checks, "adminAuth", checkAdminAuthReadiness);
+    checks.githubExecution = githubExecutionReadinessStep(
+      githubExecution.status,
+    );
     if (options.readinessCheck) {
       await recordReadinessStep(checks, "persistence", options.readinessCheck);
     } else {
@@ -894,6 +912,11 @@ export function createApp(
       modelPricingError: modelPricing.error,
       runtimeProfiles: snapshot.runtimeProfiles.length,
       githubGrantCount,
+      githubExecutionMode: githubExecution.status.mode,
+      githubExecutionEnabled: githubExecution.status.enabled,
+      githubExecutionReady: githubExecution.status.ready,
+      githubExecutionNetworkCalls: githubExecution.status.networkCalls,
+      githubExecutionErrors: githubExecution.status.errors,
       pendingApprovals: pendingApprovals.length,
       readyForLocalDemo,
       readyForWorkspace,
@@ -2937,6 +2960,53 @@ function githubDraftPullRequestWorkflowPreview(
   };
 }
 
+function githubDraftPullRequestApprovalPayloadFactory(
+  input: CreateStoreRunInput,
+  installationId: string,
+): (
+  run: Run,
+) => ReturnType<typeof createGitHubDraftPullRequestWorkflowApprovalPayload> {
+  const repositoryResource = input.resource;
+  if (!repositoryResource) {
+    throw new Error("GitHub PR execution requires a repo resource.");
+  }
+  const repository = parseGitHubRepoResource(repositoryResource);
+  return (run) => {
+    const safeRunId = safeIdPart(run.id).toLowerCase();
+    const plan = createGitHubDraftPullRequestWorkflowPlan({
+      repository,
+      installationId,
+      title: `Bek run ${run.id}`,
+      body: [
+        "Approved Bek GitHub workflow.",
+        "",
+        `Run: ${run.id}`,
+        `Requester: ${run.requesterPrincipalId}`,
+        `Resource: ${repository.resource}`,
+      ].join("\n"),
+      headBranch: `bek/${safeRunId}`,
+      commitMessage: `Bek run ${run.id}`,
+      changes: [
+        {
+          path: `.bek/runs/${safeRunId}.md`,
+          content: [
+            "# Bek GitHub Workflow",
+            "",
+            `Run: ${run.id}`,
+            `Requester: ${run.requesterPrincipalId}`,
+            `Resource: ${repository.resource}`,
+            "",
+          ].join("\n"),
+        },
+      ],
+      labels: ["bek"],
+      runId: run.id,
+      requesterPrincipalId: run.requesterPrincipalId,
+    });
+    return createGitHubDraftPullRequestWorkflowApprovalPayload(plan);
+  };
+}
+
 function requiredGitHubPermissionsForGrants(
   group: GitHubRepoGrantGroup,
 ): GitHubInstallationTokenPermissions {
@@ -3954,6 +4024,39 @@ function readinessSkipped(reason: string): ReadinessStepResult {
     skipped: true,
     latencyMs: 0,
     details: { reason },
+  };
+}
+
+function githubExecutionReadinessStep(
+  status: ReturnType<typeof resolveGitHubExecutionFromEnv>["status"],
+): ReadinessStepResult {
+  if (!status.enabled) {
+    return {
+      ok: true,
+      skipped: true,
+      latencyMs: 0,
+      details: {
+        mode: status.mode,
+        networkCalls: status.networkCalls,
+      },
+    };
+  }
+  if (!status.ready) {
+    return {
+      ok: false,
+      latencyMs: 0,
+      error: redactSecrets(
+        status.errors.join(" ") || "GitHub execution is not ready.",
+      ),
+    };
+  }
+  return {
+    ok: true,
+    latencyMs: 0,
+    details: {
+      mode: status.mode,
+      networkCalls: status.networkCalls,
+    },
   };
 }
 

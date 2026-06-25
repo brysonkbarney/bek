@@ -27,7 +27,7 @@ This repository is a working OSS product spine for Bek. It runs locally without 
 - React + TanStack admin app with setup, channels, access bundles, runs, approvals, connectors, model policy, memory stance, audit, and settings.
 - Core TypeScript domain package with policy, approval, redaction, run, and security tests.
 - Slack helpers with fail-closed signature verification, OAuth state, OAuth code exchange, local encrypted install-token storage, slash-command parsing, approval interactions, message rendering, and Web API posting through vaulted OAuth tokens or `SLACK_BOT_TOKEN`.
-- Signed GitHub webhook ingress with delivery dedupe and normalized installation, pull request, and check-run metadata; GitHub writes remain approval-gated future work.
+- Signed GitHub webhook ingress with delivery dedupe and normalized installation, pull request, and check-run metadata; approved GitHub worker execution is opt-in with fake and real modes.
 - `worker_local` run advancement for local/API/Slack flows, including runtime events, policy approvals, runtime-requested approvals, resume after approval, and final run cost/status. The worker queue can run memory-backed for zero-config demos or Postgres-backed for restart-safe self-hosting.
 - Model-router and MCP-gateway packages with provider-neutral routing/tool-manifest tests.
 - Runtime and sandbox contract packages for AI SDK, OpenCode, Docker, Vercel Sandbox, and E2B style adapters.
@@ -152,10 +152,10 @@ use stored OAuth tokens or `SLACK_BOT_TOKEN`. Set
 `BEK_SLACK_OAUTH_EXCHANGE=true` when you want Bek to exchange Slack OAuth codes
 and store bot tokens; otherwise provide `SLACK_BOT_TOKEN` as the manual
 fallback. Hosted production still needs daemonized worker fleets, managed
-credential brokering/KMS, side-effect outbox dispatchers, and real repo/sandbox
-adapters. Signed GitHub webhook ingress is wired for normalized delivery
-persistence, but GitHub writes and installation token exchange remain future
-work. See
+credential brokering/KMS, side-effect outbox dispatchers, AI-generated repo
+diffs, and hosted sandbox adapters. Signed GitHub webhook ingress is wired for
+normalized delivery persistence; opt-in GitHub execution can validate locally in
+fake mode or open a deterministic draft PR in real mode after approval. See
 [Launch Readiness](./docs/launch-readiness.md) before using Bek in a real
 workspace.
 

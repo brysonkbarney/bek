@@ -261,6 +261,9 @@ importers:
       "@bek/core":
         specifier: workspace:*
         version: link:../core
+      "@bek/github":
+        specifier: workspace:*
+        version: link:../github
       "@bek/model-router":
         specifier: workspace:*
         version: link:../model-router

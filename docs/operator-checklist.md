@@ -119,12 +119,14 @@ the current OSS spine.
 - [ ] Grant repos with canonical resources such as `github:owner/repo`.
 - [ ] Require approval for `github.branch` and `github.pr` until the workflow is
       proven safe.
-- [ ] Blocked: wire the real installation token provider and REST workflow
-      client into approved worker execution.
-- [ ] Blocked: implement isolated branch push and draft PR creation from Slack
-      runs.
-- [ ] Blocked: persist audit events for token minting, branch writes, PR writes,
-      and webhook handling.
+- [ ] Keep `BEK_GITHUB_EXECUTION=disabled` until the workspace is ready for
+      approved repo writes; use `fake` first, then `real`.
+- [ ] For real execution, set `GITHUB_APP_INSTALLATION_ID` for the repos being
+      piloted and verify `/ready` reports `githubExecution` as ready.
+- [ ] Blocked: replace the deterministic Bek run manifest PR with
+      AI-generated repo diffs produced inside an isolated runtime.
+- [ ] Blocked: persist expanded audit events and hosted token-broker records for
+      token minting, branch writes, PR writes, and webhook handling.
 
 ## Models, Budgets, And Cost
 

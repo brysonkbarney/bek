@@ -45,7 +45,8 @@ Bek can be public as an OSS release candidate when the repo has:
 - Browser-verified admin console.
 - Smoke script that creates a run, creates an approval, approves it, and confirms the run state.
 - Docs that state current limits plainly: hosted-grade credential broker/KMS is
-  pending, no real GitHub writes, no production sandbox execution yet, and the
+  pending, GitHub writes are disabled by default and limited to approved
+  hash-bound draft PR workflows, no production sandbox execution yet, and the
   local worker queue is not a durable multi-instance queue.
 - Node 24 LTS setup is documented for demos and contributors. The repo ships
   `.nvmrc` with `24`, and demo hosts should run `nvm use` or an equivalent
@@ -84,7 +85,7 @@ These product items block broad design-partner rollout, not a code-only release 
 - Docker Compose starts local dependencies and an app profile with Postgres
   persistence, local worker advancement, and sandbox execution disabled by
   default.
-- GitHub App package can validate config, verify webhooks, parse repo resources, ingest signed webhook deliveries, and generate PR proposals without network calls.
+- GitHub App package can validate config, verify webhooks, parse repo resources, ingest signed webhook deliveries, generate PR proposals without network calls, and run opt-in approved fake/real draft PR workflows.
 - Compose self-host backup/restore notes cover Postgres dumps and local
   credential-vault key custody; managed backups and restore drills remain a
   hosted/shared-operations requirement.

@@ -632,6 +632,7 @@ export class BekStore {
     capability?: CapabilityKind | undefined;
     resource?: string | undefined;
     advanceMode?: RunAdvanceMode | undefined;
+    approvalPayload?: unknown | ((run: Run) => unknown);
   }): Run {
     const advanceMode = input.advanceMode ?? "inline_stub";
     const { modelPolicy, runtimeProfile } = this.resolveRunProfiles(
@@ -704,16 +705,20 @@ export class BekStore {
           ),
         );
       } else if (decision.requiresApproval) {
+        const approvalPayload =
+          typeof input.approvalPayload === "function"
+            ? input.approvalPayload(run)
+            : (input.approvalPayload ?? {
+                prompt: input.prompt,
+                capability: input.capability,
+                resource: input.resource,
+              });
         const approval = createApprovalRequest(
           this.snapshot.org.id,
           run.id,
           run.requesterPrincipalId,
           input.capability,
-          {
-            prompt: input.prompt,
-            capability: input.capability,
-            resource: input.resource,
-          },
+          approvalPayload,
           decision.risk,
         );
         run.status = "awaiting_approval";

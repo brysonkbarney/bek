@@ -42,6 +42,7 @@ import {
   bundlesForPlace,
   createApprovalRequest,
   evaluatePolicy,
+  hashPayload,
   redactSecrets,
   redactUnknown,
   type AccessBundle,
@@ -55,6 +56,13 @@ import {
   type Run,
   type RuntimeProfile,
 } from "@bek/core";
+import {
+  createGitHubDraftPullRequestWorkflowApprovalPayload,
+  executeGitHubDraftPullRequestWorkflowPlan,
+  type GitHubDraftPullRequestWorkflowExecutionClient,
+  type GitHubDraftPullRequestWorkflowPlan,
+  type GitHubInstallationTokenProvider,
+} from "@bek/github";
 
 export type WorkerLifecycleEventType =
   | "worker.enqueued"
@@ -1342,6 +1350,19 @@ interface SandboxPreparation {
   approval?: ApprovalRequest | undefined;
 }
 
+export interface WorkerGitHubDraftPullRequestExecutionOptions {
+  tokenProvider: GitHubInstallationTokenProvider;
+  client: GitHubDraftPullRequestWorkflowExecutionClient;
+  planProvider: (input: {
+    record: WorkerWorkRecord;
+    context: WorkerRuntimeContext;
+    approval: ApprovalRequest;
+  }) =>
+    | GitHubDraftPullRequestWorkflowPlan
+    | Promise<GitHubDraftPullRequestWorkflowPlan>;
+  minTokenTtlMs?: number | undefined;
+}
+
 export interface WorkerRuntimeServiceOptions {
   queue: WorkerQueueContract;
   state: WorkerRuntimeStateSource;
@@ -1371,6 +1392,9 @@ export interface WorkerRuntimeServiceOptions {
         runtimeProfile: RuntimeProfile;
         run: Run;
       }) => RuntimeModelRoute)
+    | undefined;
+  githubDraftPullRequest?:
+    | WorkerGitHubDraftPullRequestExecutionOptions
     | undefined;
 }
 
@@ -1437,6 +1461,9 @@ export class WorkerRuntimeService {
         run: Run;
       }) => RuntimeModelRoute)
     | undefined;
+  private readonly githubDraftPullRequest:
+    | WorkerGitHubDraftPullRequestExecutionOptions
+    | undefined;
 
   constructor(options: WorkerRuntimeServiceOptions) {
     this.queue = options.queue;
@@ -1452,6 +1479,7 @@ export class WorkerRuntimeService {
     this.approvalExpiresInMs = options.approvalExpiresInMs ?? 30 * 60 * 1000;
     this.approvalProvider = options.approvalProvider;
     this.modelRouteProvider = options.modelRouteProvider;
+    this.githubDraftPullRequest = options.githubDraftPullRequest;
   }
 
   async processNext(
@@ -1551,6 +1579,16 @@ export class WorkerRuntimeService {
     approval?: ApprovalRequest | undefined;
   }> {
     let requestedApproval: ApprovalRequest | undefined;
+    const githubPullRequestResult =
+      await this.executeApprovedGitHubPullRequestIfConfigured(
+        claim.lease.id,
+        claim.record,
+        context,
+      );
+    if (githubPullRequestResult) {
+      return { result: githubPullRequestResult };
+    }
+
     this.emitBudgetCheckedEvent(claim.lease.id, context.modelRoute);
     const budgetApproval = this.createBudgetApprovalIfOverLimit(
       claim.lease.id,
@@ -1621,6 +1659,126 @@ export class WorkerRuntimeService {
       if (sandbox?.lease && this.sandboxProvider) {
         await this.sandboxProvider.destroy(sandbox.lease);
       }
+    }
+  }
+
+  private async executeApprovedGitHubPullRequestIfConfigured(
+    leaseId: string,
+    record: WorkerWorkRecord,
+    context: WorkerRuntimeContext,
+  ): Promise<RuntimeResult | undefined> {
+    if (record.item.reason !== "approval_granted") {
+      return undefined;
+    }
+    const approval = await this.resolveResumeApproval(record, context);
+    if (approval.action !== "github.pr" || approval.status !== "approved") {
+      return undefined;
+    }
+    const executor = this.githubDraftPullRequest;
+    if (!executor) {
+      return undefined;
+    }
+
+    const plan = await executor.planProvider({
+      record: clone(record),
+      context: clone(context),
+      approval: clone(approval),
+    });
+    validateApprovedGitHubDraftPullRequestPlan(plan, approval, context);
+
+    const decision = evaluatePolicy(context.accessBundles, {
+      placeScopeId: context.place.id,
+      capability: "github.pr",
+      resource: plan.resource,
+    });
+    if (decision.decision === "deny") {
+      throw new Error(`GitHub PR execution denied: ${decision.reason}`);
+    }
+
+    this.queue.emitRuntimeEvent({
+      leaseId,
+      event: {
+        type: "tool.approved",
+        message: `Approval ${approval.id} accepted for GitHub draft PR execution.`,
+        data: {
+          approvalId: approval.id,
+          action: approval.action,
+          resource: plan.resource,
+          installationId: plan.installationId,
+        },
+      },
+      now: this.time(),
+    });
+
+    try {
+      const execution = await executeGitHubDraftPullRequestWorkflowPlan({
+        plan,
+        tokenProvider: executor.tokenProvider,
+        client: executor.client,
+        now: () => new Date(this.time()),
+        minTokenTtlMs: executor.minTokenTtlMs,
+      });
+      this.queue.emitRuntimeEvent({
+        leaseId,
+        event: {
+          type: "credential.leased",
+          message: "GitHub installation token lease validated.",
+          data: {
+            provider: "github",
+            installationId: execution.installationId,
+            repository: execution.resource,
+            expiresAt: execution.tokenLease.expiresAt,
+          },
+        },
+        now: this.time(),
+      });
+      this.queue.emitRuntimeEvent({
+        leaseId,
+        event: {
+          type: "tool.completed",
+          message: `GitHub draft pull request #${execution.pullRequest.number} is ready.`,
+          data: {
+            status: "succeeded",
+            action: approval.action,
+            repository: execution.resource,
+            branch: execution.branch.branch,
+            commitSha: execution.commit.commitSha,
+            pullRequestNumber: execution.pullRequest.number,
+            pullRequestUrl: execution.pullRequest.htmlUrl,
+          },
+        },
+        now: this.time(),
+      });
+      return {
+        status: "completed",
+        finalText: `GitHub draft pull request #${execution.pullRequest.number} is ready: ${execution.pullRequest.htmlUrl}`,
+        artifactRefs: [
+          {
+            id: `github_pr_${context.run.id}`,
+            kind: "summary",
+            contentHash: execution.commit.commitSha,
+            sizeBytes: 0,
+            uri: execution.pullRequest.htmlUrl,
+          },
+        ],
+        actualCostCents: 1,
+      };
+    } catch (error) {
+      this.queue.emitRuntimeEvent({
+        leaseId,
+        event: {
+          type: "tool.completed",
+          message: "GitHub draft pull request workflow failed.",
+          data: {
+            status: "failed",
+            action: approval.action,
+            repository: plan.resource,
+            error: redactSecrets(errorMessage(error)),
+          },
+        },
+        now: this.time(),
+      });
+      throw error;
     }
   }
 
@@ -3292,6 +3450,52 @@ function localFinalText(input: RuntimeStartInput): string {
   return `Bek local worker completed ${input.run.id} with ${input.runtimeProfile.adapter}.`;
 }
 
+function validateApprovedGitHubDraftPullRequestPlan(
+  plan: GitHubDraftPullRequestWorkflowPlan,
+  approval: ApprovalRequest,
+  context: WorkerRuntimeContext,
+): void {
+  if (plan.type !== "github.draft_pull_request_workflow_plan") {
+    throw new Error("GitHub PR execution requires a draft PR workflow plan.");
+  }
+  if (approval.action !== "github.pr" || approval.status !== "approved") {
+    throw new Error("GitHub PR execution requires an approved github.pr gate.");
+  }
+  if (plan.runId !== context.run.id) {
+    throw new Error("GitHub PR workflow plan run does not match the run.");
+  }
+  if (plan.requesterPrincipalId !== context.run.requesterPrincipalId) {
+    throw new Error(
+      "GitHub PR workflow plan requester does not match the run requester.",
+    );
+  }
+  if (
+    plan.resource !== plan.repository.resource ||
+    plan.resource !== plan.pullRequest.resource ||
+    plan.resource !== plan.approvalHashInput.resource ||
+    plan.branch.resource !== plan.resource ||
+    plan.commit.resource !== plan.resource
+  ) {
+    throw new Error("GitHub PR workflow plan resource is inconsistent.");
+  }
+  if (plan.approvalHashInput.action !== "github.pr") {
+    throw new Error("GitHub PR approval hash input has the wrong action.");
+  }
+  if (plan.approvalHashInput.installationId !== plan.installationId) {
+    throw new Error(
+      "GitHub PR approval hash input installation does not match the workflow plan.",
+    );
+  }
+  if (
+    hashPayload(createGitHubDraftPullRequestWorkflowApprovalPayload(plan)) !==
+    approval.payloadHash
+  ) {
+    throw new Error(
+      "GitHub PR workflow plan hash does not match the approved payload.",
+    );
+  }
+}
+
 function runtimeFailureResult(error: unknown): RuntimeResult {
   return {
     status: "failed",
@@ -3299,6 +3503,10 @@ function runtimeFailureResult(error: unknown): RuntimeResult {
     actualCostCents: 0,
     error: error instanceof Error ? error.message : String(error),
   };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function isWorkerRuntimeStateReader(

@@ -22,7 +22,18 @@ import {
   type WorkerEvent,
   type WorkerSnapshot,
   type WorkerWorkRecord,
+  type WorkerGitHubDraftPullRequestExecutionOptions,
 } from "@bek/worker";
+import {
+  FakeGitHubClient,
+  FakeGitHubInstallationTokenProvider,
+  GitHubRestClient,
+  createGitHubDraftPullRequestWorkflowPlanFromApprovalPayload,
+  createGitHubInstallationTokenProviderFromEnv,
+  validateGitHubAppConfig,
+  type GitHubDraftPullRequestWorkflowApprovalPayload,
+  type GitHubDraftPullRequestWorkflowPlan,
+} from "@bek/github";
 import {
   modelUsageWriteFromRunEvent,
   type ModelUsageSink,
@@ -45,6 +56,25 @@ export interface WorkerQueuePersistenceOptions {
 export interface LocalWorkerControllerOptions {
   persistence?: WorkerQueuePersistenceOptions | undefined;
   modelUsageSink?: ModelUsageSink | undefined;
+  githubDraftPullRequest?:
+    | WorkerGitHubDraftPullRequestExecutionOptions
+    | undefined;
+}
+
+export type GitHubExecutionMode = "disabled" | "fake" | "real";
+
+export interface GitHubExecutionStatus {
+  mode: GitHubExecutionMode;
+  enabled: boolean;
+  ready: boolean;
+  networkCalls: "none" | "github_on_approved_worker_run";
+  errors: string[];
+}
+
+export interface ResolvedGitHubExecution {
+  status: GitHubExecutionStatus;
+  executor?: WorkerGitHubDraftPullRequestExecutionOptions | undefined;
+  installationId?: string | undefined;
 }
 
 export class LocalWorkerController {
@@ -86,6 +116,7 @@ export class LocalWorkerController {
       sandboxProvider,
       workerId: "worker_api_local",
       approvalProvider: ({ record }) => this.findApprovalForRecord(record),
+      githubDraftPullRequest: options.githubDraftPullRequest,
     });
   }
 
@@ -403,6 +434,155 @@ export function runAdvancementModeFromEnv(
     return "worker_local";
   }
   return "inline_stub";
+}
+
+export function resolveGitHubExecutionFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): ResolvedGitHubExecution {
+  const mode = githubExecutionModeFromEnv(env.BEK_GITHUB_EXECUTION);
+  if (mode === "disabled") {
+    return {
+      status: {
+        mode,
+        enabled: false,
+        ready: true,
+        networkCalls: "none",
+        errors: [],
+      },
+    };
+  }
+
+  const installationId = env.GITHUB_APP_INSTALLATION_ID?.trim();
+  if (mode === "fake") {
+    const fakeInstallationId = installationId || "1";
+    return {
+      status: {
+        mode,
+        enabled: true,
+        ready: true,
+        networkCalls: "none",
+        errors: [],
+      },
+      installationId: fakeInstallationId,
+      executor: {
+        tokenProvider: new FakeGitHubInstallationTokenProvider(),
+        client: new AutoSeedingFakeGitHubClient(),
+        planProvider: approvedGitHubDraftPullRequestPlanFromApproval,
+      },
+    };
+  }
+
+  const validation = validateGitHubAppConfig(env);
+  const errors = [
+    ...validation.errors,
+    ...(installationId
+      ? []
+      : ["GITHUB_APP_INSTALLATION_ID is required for real GitHub execution."]),
+  ];
+  if (errors.length > 0 || !validation.config || !installationId) {
+    return {
+      status: {
+        mode,
+        enabled: true,
+        ready: false,
+        networkCalls: "github_on_approved_worker_run",
+        errors,
+      },
+    };
+  }
+
+  return {
+    status: {
+      mode,
+      enabled: true,
+      ready: true,
+      networkCalls: "github_on_approved_worker_run",
+      errors: [],
+    },
+    installationId,
+    executor: {
+      tokenProvider: createGitHubInstallationTokenProviderFromEnv(env, {
+        userAgent: "bek-api-worker",
+      }),
+      client: new GitHubRestClient({
+        apiBaseUrl: env.GITHUB_API_BASE_URL,
+        userAgent: "bek-api-worker",
+      }),
+      planProvider: approvedGitHubDraftPullRequestPlanFromApproval,
+    },
+  };
+}
+
+export function githubExecutionModeFromEnv(
+  value = process.env.BEK_GITHUB_EXECUTION,
+): GitHubExecutionMode {
+  const normalized = value?.trim().toLowerCase().replace(/-/g, "_") ?? "";
+  if (!normalized || normalized === "disabled" || normalized === "none") {
+    return "disabled";
+  }
+  if (normalized === "noop" || normalized === "off") {
+    return "disabled";
+  }
+  if (normalized === "fake" || normalized === "local") {
+    return "fake";
+  }
+  if (normalized === "real" || normalized === "github") {
+    return "real";
+  }
+  throw new Error(`Unsupported BEK_GITHUB_EXECUTION ${value}.`);
+}
+
+function approvedGitHubDraftPullRequestPlanFromApproval(input: {
+  approval: ApprovalRequest;
+}): GitHubDraftPullRequestWorkflowPlan {
+  const metadata = input.approval.payloadMetadata;
+  if (
+    !metadata ||
+    metadata.type !== "github.draft_pull_request_workflow_approval_payload"
+  ) {
+    throw new Error(
+      "GitHub PR execution requires an approved draft PR workflow plan payload.",
+    );
+  }
+  return createGitHubDraftPullRequestWorkflowPlanFromApprovalPayload(
+    structuredClone(
+      metadata,
+    ) as unknown as GitHubDraftPullRequestWorkflowApprovalPayload,
+  );
+}
+
+class AutoSeedingFakeGitHubClient extends FakeGitHubClient {
+  override async createBranch(
+    plan: Parameters<FakeGitHubClient["createBranch"]>[0],
+  ) {
+    this.ensureRepository(plan.repository);
+    return super.createBranch(plan);
+  }
+
+  override async commitFiles(
+    plan: Parameters<FakeGitHubClient["commitFiles"]>[0],
+  ) {
+    this.ensureRepository(plan.repository);
+    return super.commitFiles(plan);
+  }
+
+  override async createDraftPullRequest(
+    input: Parameters<FakeGitHubClient["createDraftPullRequest"]>[0],
+  ) {
+    const proposal = "pullRequest" in input ? input.pullRequest : input;
+    this.ensureRepository(proposal.repository);
+    return super.createDraftPullRequest(input);
+  }
+
+  private ensureRepository(
+    repository: Parameters<FakeGitHubClient["readRepositoryState"]>[0],
+  ): void {
+    try {
+      this.readRepositoryState(repository);
+    } catch {
+      this.seedRepository({ repository });
+    }
+  }
 }
 
 function runEventTypeForWorkerEvent(event: WorkerEvent): RunEvent["type"] {

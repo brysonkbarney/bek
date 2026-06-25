@@ -80,4 +80,13 @@ describe("environment templates", () => {
       readEnvTemplate(".env.docker.example").get("BEK_SANDBOX_PROVIDER"),
     ).toBe("none");
   });
+
+  it("keeps real GitHub worker execution disabled in first-run templates", () => {
+    expect(readEnvTemplate(".env.example").get("BEK_GITHUB_EXECUTION")).toBe(
+      "disabled",
+    );
+    expect(
+      readEnvTemplate(".env.docker.example").get("BEK_GITHUB_EXECUTION"),
+    ).toBe("disabled");
+  });
 });

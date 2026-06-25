@@ -315,9 +315,9 @@ pnpm check
   needs daemonized workers and transactional claim/lease operations.
 - AI SDK Gateway model calls and the local Docker sandbox-command adapter are
   opt-in. Gateway calls fail closed unless every policy model has benchmark
-  pricing in Bek's model registry. GitHub package primitives now cover
-  installation-token exchange and REST branch/commit/draft-PR execution, but
-  API/worker runtime wiring for approved Slack-run GitHub writes is still a
-  launch blocker. Hosted sandbox execution, full OpenCode repo orchestration,
-  and MCP tool proxying remain foundations or contracts.
+  pricing in Bek's model registry. GitHub approved worker execution is opt-in:
+  `BEK_GITHUB_EXECUTION=fake` validates the flow locally, and `real` can open a
+  hash-bound deterministic Bek run manifest PR after approval. AI-generated repo
+  diffs, hosted sandbox execution, full OpenCode repo orchestration, and MCP
+  tool proxying remain foundations or contracts.
 - Do not use this repo for production workspaces until the launch blockers in `docs/launch-readiness.md` are closed.

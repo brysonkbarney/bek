@@ -35,9 +35,11 @@ const managedEnvKeys = [
   "BEK_RATE_LIMIT_WINDOW_MS",
   "BEK_RUN_ADVANCEMENT",
   "BEK_SANDBOX_PROVIDER",
+  "BEK_GITHUB_EXECUTION",
   "BEK_SLACK_BACKGROUND_DRAIN",
   "BEK_SLACK_OAUTH_EXCHANGE",
   "BEK_SLACK_USER_PRINCIPAL_MAP",
+  "GITHUB_API_BASE_URL",
   "GITHUB_APP_CLIENT_ID",
   "GITHUB_APP_CLIENT_SECRET",
   "GITHUB_APP_ID",
@@ -190,6 +192,8 @@ function mapSlackTestUsers(map: Record<string, unknown>) {
 }
 
 function clearGitHubEnv() {
+  delete process.env.BEK_GITHUB_EXECUTION;
+  delete process.env.GITHUB_API_BASE_URL;
   delete process.env.GITHUB_APP_CLIENT_ID;
   delete process.env.GITHUB_APP_CLIENT_SECRET;
   delete process.env.GITHUB_APP_ID;
@@ -849,9 +853,93 @@ describe("Bek API", () => {
       modelPricingReady: true,
       missingPricedModels: [],
       modelPricingError: null,
+      githubExecutionMode: "disabled",
+      githubExecutionReady: true,
+      githubExecutionNetworkCalls: "none",
       readyForLocalDemo: true,
       readyForWorkspace: false,
     });
+  });
+
+  it("skips GitHub execution readiness by default", async () => {
+    clearGitHubEnv();
+
+    const res = await createApp().request("/ready");
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: true,
+      checks: {
+        githubExecution: {
+          ok: true,
+          skipped: true,
+          details: {
+            mode: "disabled",
+            networkCalls: "none",
+          },
+        },
+      },
+    });
+  });
+
+  it("fails GitHub execution readiness only when real execution is explicitly enabled with invalid config", async () => {
+    clearGitHubEnv();
+    process.env.BEK_GITHUB_EXECUTION = "real";
+    process.env.GITHUB_APP_PRIVATE_KEY = "definitely-secret";
+
+    const res = await createApp().request("/ready");
+
+    expect(res.status).toBe(503);
+    const json = (await res.json()) as {
+      ok: boolean;
+      checks: { githubExecution: { ok: boolean; error: string } };
+    };
+    expect(json.ok).toBe(false);
+    expect(json.checks.githubExecution.ok).toBe(false);
+    expect(json.checks.githubExecution.error).toContain(
+      "GITHUB_APP_ID is required.",
+    );
+    expect(json.checks.githubExecution.error).toContain(
+      "GITHUB_APP_INSTALLATION_ID is required for real GitHub execution.",
+    );
+    expect(JSON.stringify(json)).not.toContain("definitely-secret");
+  });
+
+  it("reports real GitHub execution readiness without minting tokens", async () => {
+    clearGitHubEnv();
+    process.env.BEK_GITHUB_EXECUTION = "real";
+    process.env.GITHUB_APP_ID = "12345";
+    process.env.GITHUB_APP_INSTALLATION_ID = "999";
+    process.env.GITHUB_APP_PRIVATE_KEY = testGitHubPrivateKey;
+    process.env.GITHUB_APP_WEBHOOK_SECRET = "a-webhook-secret-with-length";
+    process.env.GITHUB_API_BASE_URL = "https://api.github.test";
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("fetch should not be called"));
+    const app = createApp();
+
+    const ready = await app.request("/ready");
+    const status = await app.request("/api/setup/status");
+
+    expect(ready.status).toBe(200);
+    await expect(ready.json()).resolves.toMatchObject({
+      checks: {
+        githubExecution: {
+          ok: true,
+          details: {
+            mode: "real",
+            networkCalls: "github_on_approved_worker_run",
+          },
+        },
+      },
+    });
+    expect(status.status).toBe(200);
+    await expect(status.json()).resolves.toMatchObject({
+      githubExecutionMode: "real",
+      githubExecutionReady: true,
+      githubExecutionNetworkCalls: "github_on_approved_worker_run",
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("reports unpriced model policies in setup status", async () => {
@@ -1039,10 +1127,12 @@ describe("Bek API", () => {
 
   it("previews GitHub repo grants and installation token requests without network calls", async () => {
     clearGitHubEnv();
+    process.env.BEK_GITHUB_EXECUTION = "real";
     process.env.GITHUB_APP_ID = "12345";
     process.env.GITHUB_APP_INSTALLATION_ID = "999";
     process.env.GITHUB_APP_PRIVATE_KEY = testGitHubPrivateKey;
     process.env.GITHUB_APP_WEBHOOK_SECRET = "a-webhook-secret-with-length";
+    process.env.GITHUB_API_BASE_URL = "https://api.github.test";
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
     const res = await createApp().request(
@@ -2479,6 +2569,58 @@ describe("Bek API", () => {
         },
       },
     );
+  });
+
+  it("executes hash-bound GitHub PR approvals through fake worker execution", async () => {
+    clearGitHubEnv();
+    process.env.BEK_GITHUB_EXECUTION = "fake";
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const app = createApp(new BekStore(), {
+      runAdvancement: "worker_local",
+    });
+    const { run, approval } = await createPrApproval(
+      app,
+      "@bek open a fake GitHub PR",
+    );
+    expect(run.status).toBe("awaiting_approval");
+
+    const approved = await app.request(
+      `/api/approvals/${approval.id}/approve`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          principalId: "principal_admin",
+          payloadHash: approval.payloadHash,
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+
+    expect(approved.status).toBe(200);
+    await expect(expectJson(app, `/api/runs/${run.id}`)).resolves.toMatchObject(
+      {
+        run: {
+          status: "completed",
+        },
+        approvals: [
+          expect.objectContaining({
+            payloadMetadata: expect.objectContaining({
+              type: "github.draft_pull_request_workflow_approval_payload",
+              resource: "github:redohq/checkout",
+            }),
+          }),
+        ],
+        events: expect.arrayContaining([
+          expect.objectContaining({
+            data: expect.objectContaining({
+              workerEventType: "tool.completed",
+              pullRequestUrl: "https://github.com/redohq/checkout/pull/1",
+            }),
+          }),
+        ]),
+      },
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("persists and resumes runtime-requested local worker approvals", async () => {

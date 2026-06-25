@@ -1,8 +1,15 @@
 import {
   createSeedSnapshot,
+  hashPayload,
   type ApprovalRequest,
   type CapabilityGrant,
 } from "@bek/core";
+import {
+  FakeGitHubClient,
+  FakeGitHubInstallationTokenProvider,
+  createGitHubDraftPullRequestWorkflowApprovalPayload,
+  createGitHubDraftPullRequestWorkflowPlan,
+} from "@bek/github";
 import {
   createRunWorkItem,
   type RuntimeAdapter,
@@ -121,6 +128,24 @@ function completedResult(): RuntimeResult {
     finalText: "done",
     artifactRefs: [],
     actualCostCents: 2,
+  };
+}
+
+function resumeTrackingAdapter(onResume?: () => void): RuntimeAdapter {
+  return {
+    id: "ai-sdk-local-stub",
+    kind: "ai_sdk",
+    canRun: () => true,
+    async start() {
+      return completedResult();
+    },
+    async resume() {
+      onResume?.();
+      return completedResult();
+    },
+    async cancel() {
+      return;
+    },
   };
 }
 
@@ -1912,6 +1937,251 @@ describe("worker runtime service", () => {
       status: "completed",
       attemptState: "completed",
     });
+  });
+
+  it("executes an approved hash-bound GitHub draft PR workflow", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_github_execution",
+    });
+    const plan = createGitHubDraftPullRequestWorkflowPlan({
+      repository: "github:redohq/checkout",
+      installationId: 99,
+      title: "Bek run run_github_execution",
+      body: "Approved Bek GitHub workflow.",
+      headBranch: "bek/run-github-execution",
+      commitMessage: "Bek run run_github_execution",
+      changes: [{ path: ".bek/run_github_execution.txt", content: "ok\n" }],
+      labels: ["bek"],
+      runId: run.id,
+      requesterPrincipalId: run.requesterPrincipalId,
+    });
+    const approved = approval({
+      id: "approval_github_execution",
+      runId: run.id,
+      status: "approved",
+      payloadHash: hashPayload(
+        createGitHubDraftPullRequestWorkflowApprovalPayload(plan),
+      ),
+      payloadMetadata: createGitHubDraftPullRequestWorkflowApprovalPayload(
+        plan,
+      ) as unknown as Record<string, unknown>,
+      decidedByPrincipalId: "principal_admin",
+      decidedAt: "2026-06-24T18:00:01.000Z",
+    });
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: workItem({
+        runId: run.id,
+        reason: "approval_granted",
+        traceId: "trace_github_execution",
+      }),
+      now: baseNow,
+    });
+    const fakeGitHub = new FakeGitHubClient([
+      { repository: "github:redohq/checkout" },
+    ]);
+    let adapterResumed = false;
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [resumeTrackingAdapter(() => (adapterResumed = true))],
+      workerId: "worker_service",
+      now: () => baseNow,
+      approvalProvider: () => approved,
+      githubDraftPullRequest: {
+        tokenProvider: new FakeGitHubInstallationTokenProvider({
+          now: () => new Date(baseNow),
+        }),
+        client: fakeGitHub,
+        planProvider: () => plan,
+      },
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected GitHub workflow processing.");
+    }
+    expect(decision.settlement.decision).toBe("completed");
+    expect(decision.result.finalText).toContain(
+      "https://github.com/redohq/checkout/pull/1",
+    );
+    expect(adapterResumed).toBe(false);
+    expect(
+      fakeGitHub.readRepositoryState("github:redohq/checkout"),
+    ).toMatchObject({
+      pullRequests: [
+        {
+          number: 1,
+          headBranch: "bek/run-github-execution",
+          labels: ["bek"],
+        },
+      ],
+    });
+    const events = queue.read().events;
+    expect(events.map((event) => event.type)).toEqual(
+      expect.arrayContaining([
+        "tool.approved",
+        "credential.leased",
+        "tool.completed",
+        "worker.completed",
+      ]),
+    );
+    expect(JSON.stringify(events)).not.toContain("fake-gh-installation-token");
+  });
+
+  it("fails GitHub execution before token leasing when the approved hash differs", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_github_hash_mismatch",
+    });
+    const plan = createGitHubDraftPullRequestWorkflowPlan({
+      repository: "github:redohq/checkout",
+      installationId: 99,
+      title: "Bek run run_github_hash_mismatch",
+      body: "Approved Bek GitHub workflow.",
+      headBranch: "bek/run-github-hash-mismatch",
+      commitMessage: "Bek run run_github_hash_mismatch",
+      changes: [{ path: ".bek/run_github_hash_mismatch.txt", content: "ok\n" }],
+      runId: run.id,
+      requesterPrincipalId: run.requesterPrincipalId,
+    });
+    let tokenCalls = 0;
+    let clientCalls = 0;
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: workItem({ runId: run.id, reason: "approval_granted" }),
+      now: baseNow,
+    });
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [resumeTrackingAdapter()],
+      workerId: "worker_service",
+      now: () => baseNow,
+      approvalProvider: () =>
+        approval({
+          runId: run.id,
+          status: "approved",
+          payloadHash: "different-approved-hash",
+        }),
+      githubDraftPullRequest: {
+        tokenProvider: {
+          async getInstallationToken() {
+            tokenCalls += 1;
+            throw new Error("Token provider should not be called.");
+          },
+        },
+        client: {
+          async createBranch() {
+            clientCalls += 1;
+            throw new Error("GitHub client should not be called.");
+          },
+          async commitFiles() {
+            clientCalls += 1;
+            throw new Error("GitHub client should not be called.");
+          },
+          async createDraftPullRequest() {
+            clientCalls += 1;
+            throw new Error("GitHub client should not be called.");
+          },
+        },
+        planProvider: () => plan,
+      },
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected failed GitHub processing.");
+    }
+    expect(decision.result).toMatchObject({
+      status: "failed",
+      error:
+        "GitHub PR workflow plan hash does not match the approved payload.",
+    });
+    expect(tokenCalls).toBe(0);
+    expect(clientCalls).toBe(0);
+  });
+
+  it("fails GitHub execution before token leasing when policy drifts to deny", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_github_policy_drift",
+    });
+    const grant = snapshot.accessBundles
+      .flatMap((bundle) => bundle.grants)
+      .find((candidate) => candidate.id === "grant_github_pr");
+    if (!grant) {
+      throw new Error("Expected seeded GitHub PR grant.");
+    }
+    grant.decision = "deny";
+    grant.requiresApproval = false;
+    const plan = createGitHubDraftPullRequestWorkflowPlan({
+      repository: "github:redohq/checkout",
+      installationId: 99,
+      title: "Bek run run_github_policy_drift",
+      body: "Approved Bek GitHub workflow.",
+      headBranch: "bek/run-github-policy-drift",
+      commitMessage: "Bek run run_github_policy_drift",
+      changes: [{ path: ".bek/run_github_policy_drift.txt", content: "ok\n" }],
+      runId: run.id,
+      requesterPrincipalId: run.requesterPrincipalId,
+    });
+    let tokenCalls = 0;
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: workItem({ runId: run.id, reason: "approval_granted" }),
+      now: baseNow,
+    });
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [resumeTrackingAdapter()],
+      workerId: "worker_service",
+      now: () => baseNow,
+      approvalProvider: () =>
+        approval({
+          runId: run.id,
+          status: "approved",
+          payloadHash: hashPayload(
+            createGitHubDraftPullRequestWorkflowApprovalPayload(plan),
+          ),
+        }),
+      githubDraftPullRequest: {
+        tokenProvider: {
+          async getInstallationToken() {
+            tokenCalls += 1;
+            throw new Error("Token provider should not be called.");
+          },
+        },
+        client: new FakeGitHubClient([
+          { repository: "github:redohq/checkout" },
+        ]),
+        planProvider: () => plan,
+      },
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected failed GitHub processing.");
+    }
+    expect(decision.result).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("GitHub PR execution denied"),
+    });
+    expect(tokenCalls).toBe(0);
   });
 
   it("cooperatively cancels claimed work before settlement", async () => {
