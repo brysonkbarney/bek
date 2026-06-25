@@ -232,6 +232,22 @@ The outbox `GET` route returns delivery summaries by default. Use
 `/api/outbound/slack?include=details` only for deliberate debugging of redacted
 Slack target and payload records.
 
+Export audit review evidence:
+
+```bash
+curl -s 'http://localhost:4317/api/audit-events/export?source=audit&format=csv&limit=500' \
+  -H "authorization: Bearer $BEK_ADMIN_API_TOKEN" \
+  -o bek-audit.csv
+
+curl -s 'http://localhost:4317/api/audit-events/export?format=ndjson&limit=500' \
+  -H "authorization: Bearer $BEK_ADMIN_API_TOKEN" \
+  -o bek-audit.ndjson
+```
+
+These exports are redaction-safe review evidence for current run/admin events.
+They are not a complete compliance ledger until every Slack, GitHub, worker,
+model, credential, tool, and sandbox side effect emits durable audit rows.
+
 Redrive a dead letter after inspecting `GET /api/worker/queue`:
 
 ```bash

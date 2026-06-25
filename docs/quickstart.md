@@ -195,6 +195,25 @@ curl -s 'http://localhost:4317/api/audit-events?source=audit&limit=50'
 curl -s 'http://localhost:4317/api/audit-events/export?format=ndjson&limit=50'
 ```
 
+### Audit Export
+
+When admin auth is enabled, include the bearer token for both review and export
+requests:
+
+```bash
+curl -s 'http://localhost:4317/api/audit-events/export?source=audit&format=csv&limit=50' \
+  -H "authorization: Bearer $BEK_ADMIN_API_TOKEN"
+
+curl -s 'http://localhost:4317/api/audit-events/export?format=ndjson&limit=50' \
+  -H "authorization: Bearer $BEK_ADMIN_API_TOKEN"
+```
+
+NDJSON exports start with an `audit_export` header record that includes event
+counts, action summaries, and `redaction.safe`; later rows are individual
+`audit_event` records with event hashes. CSV export is easier for spreadsheet
+review. Both are review evidence for currently emitted audit/run events, not a
+complete compliance ledger.
+
 The scripted smoke test performs the approval-gated version end to end and
 approves it as the seeded `principal_admin` principal.
 

@@ -212,6 +212,9 @@ the current OSS spine.
       [security entry points](./security/threat-model-entry-points.md).
 - [ ] Confirm audit events, ingress/outbound delivery records, and run
       timelines are sufficient for incident review.
+- [ ] Export audit NDJSON and CSV from `/api/audit-events/export`, verify the
+      NDJSON header reports `redaction.safe: true`, and record remaining audit
+      blind spots before a pilot.
 - [ ] Back up Postgres once persistent mode is enabled; include object storage
       backups if artifacts are written there.
 - [ ] Store `BEK_CREDENTIAL_MASTER_KEY` separately from database backups and

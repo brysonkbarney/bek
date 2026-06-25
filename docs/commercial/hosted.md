@@ -4,16 +4,16 @@ Hosted Bek is the planned managed version of the same product: one visible Slack
 
 ## OSS And Hosted Boundary
 
-| Area                             | Open source core | Hosted Bek |
-| -------------------------------- | ---------------- | ---------- |
-| One visible Slack teammate       | Yes              | Yes        |
-| Access bundles and approvals     | Yes              | Yes        |
-| Audit trail primitives           | Yes              | Yes        |
-| Self-hosted adapters             | Yes              | Optional   |
-| Managed Slack/GitHub/model setup | Self-managed     | Managed    |
-| Operations, upgrades, backups    | Self-managed     | Managed    |
-| Usage ledger and hosted billing  | Basic primitives | Managed    |
-| Enterprise support               | Community        | Commercial |
+| Area                             | Open source core | Hosted Bek                    |
+| -------------------------------- | ---------------- | ----------------------------- |
+| One visible Slack teammate       | Yes              | Yes                           |
+| Access bundles and approvals     | Yes              | Yes                           |
+| Audit trail primitives           | Yes              | Planned; OSS primitives exist |
+| Self-hosted adapters             | Yes              | Optional                      |
+| Managed Slack/GitHub/model setup | Self-managed     | Managed                       |
+| Operations, upgrades, backups    | Self-managed     | Managed                       |
+| Usage ledger and hosted billing  | Basic primitives | Managed                       |
+| Enterprise support               | Community        | Commercial                    |
 
 ## Hosted Value
 

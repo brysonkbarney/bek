@@ -18,7 +18,7 @@ The control plane underneath is explicit and inspectable:
 - model/runtime/sandbox routing,
 - MCP/tool governance,
 - approvals before risky writes,
-- run timeline, audit trail, and cost ledger.
+- run timeline, audit trail, and cost estimate/usage primitives.
 
 ## Current Status
 

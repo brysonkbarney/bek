@@ -89,7 +89,9 @@ true:
 ## Product
 
 - One visible `@bek` handle works in a real Slack workspace.
-- Admin can connect Slack, GitHub, one model provider, and one channel.
+- Admin can connect a Slack workspace/channel for a guided pilot; GitHub
+  execution is opt-in and deterministic, live model calls require explicit
+  Gateway/provider config, and MCP/sandbox production execution remains gated.
 - `@bek what can you access here?` returns channel-scoped grants.
 - A fake write action creates an approval and resumes after approval through the local worker bridge.
 - Run timeline shows context, tools, approvals, model/cost, and final output.
@@ -134,13 +136,14 @@ These product items block broad design-partner rollout, not a code-only release 
   tested decrypt/re-encrypt flow.
 - Sandbox egress denies metadata/private/control-plane networks.
 - MCP schema drift is quarantined.
-- Tenant isolation tests pass.
+- Single-tenant wrong-workspace guards are tested where implemented; full
+  hosted tenant-isolation coverage is a paid-beta gate.
 - Access admin mutations emit durable audit events with their side effects, and
   the smoke script asserts grant create/update/place-attach and MCP server
   registration/update audit rows. Filtered audit/run review plus redaction-safe
-  NDJSON/CSV export are active; hosted beta still needs durable audit emitters
-  for every Slack, GitHub, worker, model, credential, tool, and sandbox side
-  effect.
+  NDJSON/CSV export are active, and high-impact admin mutations now emit
+  durable audit rows; hosted beta still needs durable audit emitters for every
+  Slack, GitHub, worker, model, credential, tool, and sandbox side effect.
 - CORS stays allowlisted and admin API auth is mandatory for hosted/prod.
 - Slack unsigned demo mode cannot work in production.
 
@@ -184,5 +187,6 @@ These product items block broad design-partner rollout, not a code-only release 
 - GitHub App install, repo permissions, branch creation, and draft PR flow work through approval gates.
 - Docker sandbox is implemented for local/self-hosted; hosted deploy uses Vercel Sandbox or E2B microVM adapter.
 - Credential broker leases short-lived capabilities; no runtime receives durable provider secrets.
-- Usage ledger tracks model/tool/runtime cost by org, channel, run, and model.
+- Usage ledger tracks model estimate primitives by org/run/provider/model/status;
+  tool/runtime/channel cost and invoice reconciliation remain paid-beta gates.
 - Tenant isolation tests and external security review are complete.

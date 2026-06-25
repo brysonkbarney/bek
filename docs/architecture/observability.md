@@ -26,8 +26,10 @@ or displayed.
 - `createStructuredAuditEvent` and `normalizeAuditEvent` turn core run events,
   worker events, and future durable audit rows into a single structured shape.
 - `exportAuditEvents` and `formatAuditEventExportNdjson` emit redaction-safe JSON
-  or NDJSON exports. Raw `data` is omitted by default; when included, values are
-  recursively redacted and each payload has a hash of the redacted form.
+  or NDJSON package exports. Raw `data` is omitted by default; when included,
+  values are recursively redacted and each payload has a hash of the redacted
+  form. The API wraps the same records with authenticated NDJSON and CSV export
+  routes for admin review.
 - `summarizeRunTrace` produces operator-friendly run timelines: event count,
   trace IDs, attempts, duration, terminal status, and model/tool/approval/error
   counts.

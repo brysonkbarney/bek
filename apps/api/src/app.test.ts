@@ -1985,6 +1985,126 @@ describe("Bek API", () => {
     expect(missingPolicy.status).toBe(404);
   });
 
+  it("audits high-impact admin control-plane mutations", async () => {
+    const app = createApp();
+
+    const principal = await app.request(
+      "/api/principals/principal_admin/external-identity",
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          externalProvider: "slack",
+          externalId: "T123:U_ADMIN",
+          metadata: { slackToken: "xoxb-secret-admin-token" },
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(principal.status).toBe(200);
+
+    const agent = await app.request("/api/agent", {
+      method: "PATCH",
+      body: JSON.stringify({
+        description: "One governed teammate for the workspace.",
+        status: "paused",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(agent.status).toBe(200);
+
+    const bundle = await app.request("/api/access-bundles", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Product Ops",
+        description: "Operational read access for product ops.",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(bundle.status).toBe(201);
+
+    const model = await app.request("/api/model-policies/model_auto", {
+      method: "PATCH",
+      body: JSON.stringify({
+        defaultModel: "openai/gpt-5.5",
+        perRunBudgetCents: 600,
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(model.status).toBe(200);
+
+    const runtime = await app.request("/api/runtime-profiles/runtime_answer", {
+      method: "PATCH",
+      body: JSON.stringify({
+        runtimeKind: "external",
+        adapter: "customer-runner",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(runtime.status).toBe(200);
+
+    const events = await expectJson<
+      Array<{
+        action?: string;
+        actorPrincipalId?: string;
+        resourceId?: string;
+        data?: Record<string, unknown>;
+      }>
+    >(app, "/api/audit-events?source=audit&limit=1000");
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "principal.external_identity_linked",
+          actorPrincipalId: "principal_admin",
+          resourceId: "principal_admin",
+          data: expect.objectContaining({
+            externalProvider: "slack",
+            adminAuthMethod: "local_bypass",
+            before: expect.objectContaining({ id: "principal_admin" }),
+            after: expect.objectContaining({
+              externalProvider: "slack",
+              externalId: "T123:U_ADMIN",
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          action: "agent.updated",
+          resourceId: "agent_bek",
+          data: expect.objectContaining({
+            changedFields: ["description", "status"],
+            before: expect.objectContaining({ status: "active" }),
+            after: expect.objectContaining({ status: "paused" }),
+          }),
+        }),
+        expect.objectContaining({
+          action: "access_bundle.created",
+          data: expect.objectContaining({
+            after: expect.objectContaining({ name: "Product Ops" }),
+          }),
+        }),
+        expect.objectContaining({
+          action: "model_policy.updated",
+          resourceId: "model_auto",
+          data: expect.objectContaining({
+            changedFields: ["defaultModel", "perRunBudgetCents"],
+            before: expect.objectContaining({
+              defaultModel: "openai/gpt-5.4",
+            }),
+            after: expect.objectContaining({ defaultModel: "openai/gpt-5.5" }),
+          }),
+        }),
+        expect.objectContaining({
+          action: "runtime_profile.updated",
+          resourceId: "runtime_answer",
+          data: expect.objectContaining({
+            changedFields: ["adapter", "runtimeKind"],
+            after: expect.objectContaining({ adapter: "customer-runner" }),
+          }),
+        }),
+      ]),
+    );
+    expect(JSON.stringify(events)).not.toContain("xoxb-secret-admin-token");
+  });
+
   it("creates, updates, and protects channel scopes", async () => {
     const app = createApp();
     const created = await app.request("/api/channels", {
@@ -2085,6 +2205,32 @@ describe("Bek API", () => {
           ),
       ),
     ).toBeDefined();
+    await expect(
+      expectJson(app, "/api/audit-events?source=audit&resourceType=place"),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "slack_channel.created",
+          resourceId: channel.id,
+          data: expect.objectContaining({
+            after: expect.objectContaining({ externalId: "C_PRODUCT" }),
+            implicitAccess: expect.objectContaining({
+              resource: "slack:C_PRODUCT",
+              createdGrantIds: expect.any(Array),
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          action: "slack_channel.updated",
+          resourceId: channel.id,
+          data: expect.objectContaining({
+            before: expect.objectContaining({ externalId: "C_PRODUCT" }),
+            after: expect.objectContaining({ externalId: "C_PRODUCT_AI" }),
+            changedFields: ["externalId"],
+          }),
+        }),
+      ]),
+    );
   });
 
   it("rejects invalid channel payloads and protects channel deletion edges", async () => {
@@ -2137,6 +2283,20 @@ describe("Bek API", () => {
     });
     expect(deleted.status).toBe(200);
     await expect(deleted.json()).resolves.toMatchObject({ id: channel.id });
+    await expect(
+      expectJson(
+        app,
+        "/api/audit-events?source=audit&action=slack_channel.deleted",
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        resourceId: channel.id,
+        data: expect.objectContaining({
+          before: expect.objectContaining({ id: channel.id }),
+          detachedBundleIds: expect.any(Array),
+        }),
+      }),
+    ]);
 
     const deletedAgain = await app.request(`/api/channels/${channel.id}`, {
       method: "DELETE",
@@ -2872,6 +3032,27 @@ describe("Bek API", () => {
       status: "approved",
       decidedByPrincipalId: "principal_admin",
     });
+    await expect(
+      expectJson(app, `/api/audit-events?source=audit&runId=${run.id}`),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "run.created",
+          resourceId: run.id,
+          runId: run.id,
+        }),
+        expect.objectContaining({
+          action: "approval.approved",
+          runId: run.id,
+          decision: "allow",
+          risk: "write_external",
+          data: expect.objectContaining({
+            action: "github.pr",
+            decidedByPrincipalId: "principal_admin",
+          }),
+        }),
+      ]),
+    );
   });
 
   it("derives admin approval actors from BEK_ADMIN_PRINCIPAL_ID", async () => {
@@ -2950,6 +3131,22 @@ describe("Bek API", () => {
       key: "api:runs:run-create-123",
       runId: firstJson.id,
       status: "processed",
+    });
+    const auditEvents = await expectJson<
+      Array<{
+        action?: string;
+        runId?: string;
+        data?: Record<string, unknown>;
+      }>
+    >(app, "/api/audit-events?source=audit&action=run.created");
+    expect(auditEvents).toHaveLength(1);
+    expect(auditEvents[0]).toMatchObject({
+      action: "run.created",
+      runId: firstJson.id,
+      data: expect.objectContaining({
+        idempotencyKeyPresent: true,
+        requestHash: expect.any(String),
+      }),
     });
   });
 
@@ -3221,6 +3418,20 @@ describe("Bek API", () => {
         ]),
       },
     );
+    await expect(
+      expectJson(app, `/api/audit-events?source=audit&runId=${run.id}`),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "run.cancelled",
+          resourceId: run.id,
+          data: expect.objectContaining({
+            reason: "No longer needed.",
+            workerCancelDecision: "not_found",
+          }),
+        }),
+      ]),
+    );
   });
 
   it("does not cancel worker runs when local worker mode is disabled", async () => {
@@ -3397,6 +3608,20 @@ describe("Bek API", () => {
         }),
       ]),
     });
+    await expect(
+      expectJson(app, "/api/audit-events?source=audit&runId=run_dead"),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "worker.dead_letter_redriven",
+          resourceId: "dead_1",
+          data: expect.objectContaining({
+            reason: "Retry after dependency fix.",
+            workerDecision: "redrive_enqueued",
+          }),
+        }),
+      ]),
+    );
 
     const duplicate = await app.request(
       "/api/worker/dead-letters/dead_1/redrive",
@@ -3854,6 +4079,21 @@ describe("Bek API", () => {
       status: "denied",
       decidedByPrincipalId: "principal_admin",
     });
+    await expect(
+      expectJson(app, `/api/audit-events?source=audit&runId=${run.id}`),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "approval.denied",
+          decision: "deny",
+          runId: run.id,
+          data: expect.objectContaining({
+            action: "github.pr",
+            decidedByPrincipalId: "principal_admin",
+          }),
+        }),
+      ]),
+    );
 
     await expect(expectJson(app, `/api/runs/${run.id}`)).resolves.toMatchObject(
       {

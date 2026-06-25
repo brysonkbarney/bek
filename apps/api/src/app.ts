@@ -157,6 +157,7 @@ interface RecordAdminAuditEventInput {
   action: string;
   resourceType: string;
   resourceId?: string | undefined;
+  runId?: string | undefined;
   decision?: CapabilityGrant["decision"] | undefined;
   risk?: CapabilityGrant["risk"] | undefined;
   message: string;
@@ -383,6 +384,31 @@ export function createApp(
       data: {
         ...(input.data ?? {}),
         adminAuthMethod: adminAuth.method,
+      },
+    });
+  }
+
+  function recordApprovalAuditEvent(
+    c: Context<BekHonoEnv>,
+    decision: "approved" | "denied",
+    before: ApprovalRequest | undefined,
+    approval: ApprovalRequest,
+  ) {
+    recordAdminAuditEvent(c, {
+      action: decision === "approved" ? "approval.approved" : "approval.denied",
+      resourceType: "approval",
+      resourceId: approval.id,
+      runId: approval.runId,
+      decision: decision === "approved" ? "allow" : "deny",
+      risk: approval.risk,
+      message: `${decision === "approved" ? "Approved" : "Denied"} ${approval.action} approval for run ${approval.runId}.`,
+      data: {
+        before,
+        after: approval,
+        action: approval.action,
+        payloadHash: approval.payloadHash,
+        decidedByPrincipalId: approval.decidedByPrincipalId,
+        requestedByPrincipalId: approval.requestedByPrincipalId,
       },
     });
   }
@@ -1603,10 +1629,26 @@ export function createApp(
   app.patch("/api/principals/:principalId/external-identity", async (c) => {
     const body = linkPrincipalExternalIdentitySchema.parse(await c.req.json());
     try {
+      const before = store
+        .read()
+        .principals.find(
+          (principal) => principal.id === c.req.param("principalId"),
+        );
       const principal = store.linkPrincipalExternalIdentity(
         c.req.param("principalId"),
         body,
       );
+      recordAdminAuditEvent(c, {
+        action: "principal.external_identity_linked",
+        resourceType: "principal",
+        resourceId: principal.id,
+        message: `Linked ${body.externalProvider} identity for ${principal.displayName}.`,
+        data: {
+          before,
+          after: principal,
+          externalProvider: body.externalProvider,
+        },
+      });
       await store.flushChanges();
       return c.json(publicPrincipal(principal));
     } catch (error) {
@@ -1620,7 +1662,15 @@ export function createApp(
   app.get("/api/agent", (c) => c.json(store.read().agent));
   app.patch("/api/agent", async (c) => {
     const body = updateAgentSchema.parse(await c.req.json());
+    const before = store.read().agent;
     const agent = store.updateAgent(body);
+    recordAdminAuditEvent(c, {
+      action: "agent.updated",
+      resourceType: "agent",
+      resourceId: agent.id,
+      message: `Updated agent ${agent.name}.`,
+      data: { before, after: agent, changedFields: changedFieldNames(body) },
+    });
     await store.flushChanges();
     return c.json(agent);
   });
@@ -2041,6 +2091,7 @@ export function createApp(
   app.post("/api/channels", async (c) => {
     const body = createChannelSchema.parse(await c.req.json());
     const { externalTeamId, ...placeInput } = body;
+    const beforeSnapshot = store.read();
     const channel = store.createPlace({
       kind: "slack_channel",
       provider: "slack",
@@ -2048,6 +2099,20 @@ export function createApp(
       ...(externalTeamId ? { metadata: { teamId: externalTeamId } } : {}),
     });
     ensureSlackReadAccessForChannel(channel);
+    recordAdminAuditEvent(c, {
+      action: "slack_channel.created",
+      resourceType: "place",
+      resourceId: channel.id,
+      message: `Created Slack channel scope ${channel.name}.`,
+      data: {
+        after: channel,
+        implicitAccess: slackReadAccessDelta(
+          beforeSnapshot,
+          store.read(),
+          channel,
+        ),
+      },
+    });
     await store.flushChanges();
     return c.json(channel, 201);
   });
@@ -2072,16 +2137,54 @@ export function createApp(
   app.patch("/api/channels/:channelId", async (c) => {
     const body = updateChannelSchema.parse(await c.req.json());
     const { externalTeamId, ...placeInput } = body;
+    const beforeSnapshot = store.read();
+    const before = findPlaceForAdminRoute(
+      beforeSnapshot,
+      c.req.param("channelId"),
+    );
     const channel = store.updatePlace(c.req.param("channelId"), {
       ...placeInput,
       ...(externalTeamId ? { metadata: { teamId: externalTeamId } } : {}),
     });
     ensureSlackReadAccessForChannel(channel);
+    recordAdminAuditEvent(c, {
+      action: "slack_channel.updated",
+      resourceType: "place",
+      resourceId: channel.id,
+      message: `Updated Slack channel scope ${channel.name}.`,
+      data: {
+        before,
+        after: channel,
+        changedFields: changedFieldNames(body),
+        implicitAccess: slackReadAccessDelta(
+          beforeSnapshot,
+          store.read(),
+          channel,
+        ),
+      },
+    });
     await store.flushChanges();
     return c.json(channel);
   });
   app.delete("/api/channels/:channelId", async (c) => {
+    const beforeSnapshot = store.read();
+    const before = findPlaceForAdminRoute(
+      beforeSnapshot,
+      c.req.param("channelId"),
+    );
+    const detachedBundleIds = before
+      ? beforeSnapshot.accessBundles
+          .filter((bundle) => bundle.attachedPlaceIds.includes(before.id))
+          .map((bundle) => bundle.id)
+      : [];
     const channel = store.deletePlace(c.req.param("channelId"));
+    recordAdminAuditEvent(c, {
+      action: "slack_channel.deleted",
+      resourceType: "place",
+      resourceId: channel.id,
+      message: `Deleted Slack channel scope ${channel.name}.`,
+      data: { before: before ?? channel, detachedBundleIds },
+    });
     await store.flushChanges();
     return c.json(channel);
   });
@@ -2089,6 +2192,13 @@ export function createApp(
   app.post("/api/access-bundles", async (c) => {
     const body = createAccessBundleSchema.parse(await c.req.json());
     const bundle = store.createAccessBundle(body);
+    recordAdminAuditEvent(c, {
+      action: "access_bundle.created",
+      resourceType: "access_bundle",
+      resourceId: bundle.id,
+      message: `Created access bundle ${bundle.name}.`,
+      data: { after: bundle },
+    });
     await store.flushChanges();
     return c.json(bundle, 201);
   });
@@ -2212,17 +2322,41 @@ export function createApp(
   app.get("/api/model-policies", (c) => c.json(store.read().modelPolicies));
   app.patch("/api/model-policies/:modelPolicyId", async (c) => {
     const body = updateModelPolicySchema.parse(await c.req.json());
+    const before = store
+      .read()
+      .modelPolicies.find(
+        (policy) => policy.id === c.req.param("modelPolicyId"),
+      );
     const policy = store.updateModelPolicy(c.req.param("modelPolicyId"), body);
+    recordAdminAuditEvent(c, {
+      action: "model_policy.updated",
+      resourceType: "model_policy",
+      resourceId: policy.id,
+      message: `Updated model policy ${policy.name}.`,
+      data: { before, after: policy, changedFields: changedFieldNames(body) },
+    });
     await store.flushChanges();
     return c.json(policy);
   });
   app.get("/api/runtime-profiles", (c) => c.json(store.read().runtimeProfiles));
   app.patch("/api/runtime-profiles/:runtimeProfileId", async (c) => {
     const body = updateRuntimeProfileSchema.parse(await c.req.json());
+    const before = store
+      .read()
+      .runtimeProfiles.find(
+        (profile) => profile.id === c.req.param("runtimeProfileId"),
+      );
     const profile = store.updateRuntimeProfile(
       c.req.param("runtimeProfileId"),
       body,
     );
+    recordAdminAuditEvent(c, {
+      action: "runtime_profile.updated",
+      resourceType: "runtime_profile",
+      resourceId: profile.id,
+      message: `Updated runtime profile ${profile.name}.`,
+      data: { before, after: profile, changedFields: changedFieldNames(body) },
+    });
     await store.flushChanges();
     return c.json(profile);
   });
@@ -2410,6 +2544,18 @@ export function createApp(
         workerRecordId: decision.record.id,
       },
     });
+    recordAdminAuditEvent(c, {
+      action: "worker.dead_letter_redriven",
+      resourceType: "worker_dead_letter",
+      resourceId: deadLetterId,
+      runId: run.id,
+      message: `Redrove dead-lettered run ${run.id}.`,
+      data: {
+        reason: body.reason ?? "Queued dead-letter redrive from Bek admin.",
+        workerDecision: decision.decision,
+        workerRecordId: decision.record.id,
+      },
+    });
     await workerController.flushChanges();
     await store.flushChanges();
     await workerController.flushModelUsageChanges();
@@ -2464,6 +2610,22 @@ export function createApp(
         data: { workerCancelDecision: decision.decision },
       });
     }
+    recordAdminAuditEvent(c, {
+      action: "run.cancelled",
+      resourceType: "run",
+      resourceId: run.id,
+      runId: run.id,
+      message: `Cancelled run ${run.id}.`,
+      data: {
+        reason: body.reason ?? "Cancelled from Bek admin.",
+        workerCancelDecision: decision.decision,
+        affectedRecords: decision.affectedRecords.map((record) => ({
+          id: record.id,
+          status: record.status,
+          attemptState: record.attemptState,
+        })),
+      },
+    });
     await workerController.flushChanges();
     await store.flushChanges();
     await workerController.flushModelUsageChanges();
@@ -2502,6 +2664,22 @@ export function createApp(
 
     const body = createRunSchema.parse(JSON.parse(rawBody) as unknown);
     const run = await createRunAndAdvance(body);
+    recordAdminAuditEvent(c, {
+      action: "run.created",
+      resourceType: "run",
+      resourceId: run.id,
+      runId: run.id,
+      message: `Created run ${run.id} from the admin API.`,
+      data: {
+        trigger: run.trigger,
+        placeScopeId: run.placeScopeId,
+        requesterPrincipalId: run.requesterPrincipalId,
+        capability: body.capability,
+        resource: body.resource,
+        idempotencyKeyPresent: Boolean(idempotency.key),
+        requestHash: idempotency.requestHash,
+      },
+    });
     if (idempotency.key) {
       store.recordIngressDelivery({
         provider: "api",
@@ -2523,11 +2701,15 @@ export function createApp(
   app.post("/api/approvals/:approvalId/approve", async (c) => {
     const body = approvalDecisionSchema.parse(await c.req.json());
     const decisionBody = approvalDecisionFromAdminAuth(c, body);
+    const before = store
+      .read()
+      .approvals.find((approval) => approval.id === c.req.param("approvalId"));
     const approval = await decideApprovalAndAdvance(
       c.req.param("approvalId"),
       "approved",
       decisionBody,
     );
+    recordApprovalAuditEvent(c, "approved", before, approval);
     await store.flushChanges();
     await workerController.flushModelUsageChanges();
     return c.json(approval);
@@ -2536,11 +2718,15 @@ export function createApp(
   app.post("/api/approvals/:approvalId/deny", async (c) => {
     const body = approvalDecisionSchema.parse(await c.req.json());
     const decisionBody = approvalDecisionFromAdminAuth(c, body);
+    const before = store
+      .read()
+      .approvals.find((approval) => approval.id === c.req.param("approvalId"));
     const approval = await decideApprovalAndAdvance(
       c.req.param("approvalId"),
       "denied",
       decisionBody,
     );
+    recordApprovalAuditEvent(c, "denied", before, approval);
     await store.flushChanges();
     await workerController.flushModelUsageChanges();
     return c.json(approval);
@@ -3690,6 +3876,57 @@ function isTerminalRunStatus(status: Run["status"]): boolean {
   return (
     status === "completed" || status === "failed" || status === "cancelled"
   );
+}
+
+function changedFieldNames(input: Record<string, unknown>): string[] {
+  return Object.keys(input).sort();
+}
+
+function findPlaceForAdminRoute(
+  snapshot: BekSnapshot,
+  placeIdOrExternalId: string,
+): PlaceScope | undefined {
+  return snapshot.places.find(
+    (place) =>
+      place.id === placeIdOrExternalId ||
+      place.externalId === placeIdOrExternalId,
+  );
+}
+
+function slackReadAccessDelta(
+  before: BekSnapshot,
+  after: BekSnapshot,
+  channel: PlaceScope,
+) {
+  const resource = `slack:${channel.externalId}`;
+  const beforeBundleIds = new Set(
+    before.accessBundles.map((bundle) => bundle.id),
+  );
+  const beforeGrantIds = new Set(
+    before.accessBundles.flatMap((bundle) =>
+      bundle.grants.map((grant) => grant.id),
+    ),
+  );
+  return {
+    resource,
+    createdBundleIds: after.accessBundles
+      .filter(
+        (bundle) =>
+          !beforeBundleIds.has(bundle.id) &&
+          bundle.attachedPlaceIds.includes(channel.id),
+      )
+      .map((bundle) => bundle.id),
+    createdGrantIds: after.accessBundles.flatMap((bundle) =>
+      bundle.grants
+        .filter(
+          (grant) =>
+            !beforeGrantIds.has(grant.id) &&
+            grant.capability === "slack.read" &&
+            grant.resource === resource,
+        )
+        .map((grant) => grant.id),
+    ),
+  };
 }
 
 function resolveSlackPlace(
