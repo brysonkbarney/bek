@@ -49,6 +49,12 @@ REDIS_URL=redis://redis:6379
 S3_ENDPOINT=http://minio:9000
 ```
 
+`BEK_WEB_API_URL` is the browser-facing API URL emitted by the web container at
+runtime as `/bek-config.js`. Set it to the public URL the admin browser can
+reach, such as `https://bek-api.example.com` or `http://localhost:4317` for the
+local Compose template. You can change it by restarting the web container; the
+published web image does not need to be rebuilt for each API URL.
+
 The regular `.env.example` keeps host-machine URLs for local Node development.
 The Docker template sets `BEK_SLACK_OAUTH_EXCHANGE=false` so Slack callbacks
 validate state without exchanging codes until you opt in. Set it to `true` when
@@ -88,8 +94,9 @@ unless `BEK_DB_AUTO_SEED=false`.
 The API and worker runtime images run the compiled JavaScript deploy output as a
 non-root user. The migration image keeps the full workspace toolchain because
 Drizzle migrations are still invoked through the workspace package scripts. The
-web runtime does not use `vite preview`; it serves the built `dist` directory
-with a small Node static server and SPA fallback.
+web runtime does not use `vite preview`; it serves the built `dist` directory,
+generates `/bek-config.js` from runtime environment variables, and uses an SPA
+fallback.
 
 The API container healthcheck uses `/ready`, which flushes pending in-process
 state and verifies configured persistence dependencies before Compose marks the
@@ -118,8 +125,9 @@ docker compose --env-file .env.docker --profile app run --rm --build migrate
 docker compose --env-file .env.docker --profile app up -d --build
 ```
 
-When you change `VITE_BEK_API_URL`, rebuild the web image because Vite embeds
-the API URL at build time. Do not embed admin tokens in the web image.
+When you change `BEK_WEB_API_URL`, restart the web container so `/bek-config.js`
+reflects the new browser-facing API URL. Do not rebuild or embed admin tokens in
+the web image.
 
 `BEK_SANDBOX_PROVIDER` defaults to `none` in the Docker template. Set it to
 `docker-local` only for trusted single-tenant installs where the API or worker

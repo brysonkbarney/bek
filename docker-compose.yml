@@ -2,8 +2,6 @@ name: bek
 
 x-bek-build: &bek-build
   context: .
-  args:
-    VITE_BEK_API_URL: ${VITE_BEK_API_URL:-http://localhost:4317}
 
 x-bek-app-env: &bek-app-env
   NODE_ENV: ${NODE_ENV:-production}
@@ -165,6 +163,8 @@ services:
         condition: service_healthy
     environment:
       BEK_WEB_PORT: ${BEK_WEB_PORT:-5173}
+      BEK_WEB_API_URL: ${BEK_WEB_API_URL:-}
+      VITE_BEK_API_URL: ${VITE_BEK_API_URL:-http://localhost:4317}
     ports:
       - "${BEK_WEB_PORT:-5173}:${BEK_WEB_PORT:-5173}"
     healthcheck:

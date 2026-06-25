@@ -1,5 +1,15 @@
-const API_URL = import.meta.env.VITE_BEK_API_URL ?? "http://localhost:4317";
+const DEFAULT_API_URL = "http://localhost:4317";
 const ADMIN_TOKEN_STORAGE_KEY = "bek.adminApiToken";
+
+interface BekBrowserConfig {
+  apiUrl?: string | undefined;
+}
+
+declare global {
+  interface Window {
+    __BEK_CONFIG__?: BekBrowserConfig | undefined;
+  }
+}
 
 export class BekApiError extends Error {
   readonly status: number;
@@ -27,6 +37,14 @@ export function hasStoredAdminToken(): boolean {
 
 export function readAdminApiToken(): string | undefined {
   return readBrowserAdminToken() || readBuildTimeAdminToken();
+}
+
+export function readBekApiUrl(): string {
+  return (
+    normalizeApiUrl(readRuntimeConfig()?.apiUrl) ??
+    normalizeApiUrl(import.meta.env.VITE_BEK_API_URL) ??
+    DEFAULT_API_URL
+  );
 }
 
 export function saveAdminApiToken(
@@ -78,6 +96,25 @@ function readBuildTimeAdminToken(): string | undefined {
   }
   const token = import.meta.env.VITE_BEK_ADMIN_API_TOKEN?.trim();
   return token || undefined;
+}
+
+function readRuntimeConfig(): BekBrowserConfig | undefined {
+  try {
+    return typeof window === "undefined" ? undefined : window.__BEK_CONFIG__;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeApiUrl(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (trimmed === "/") {
+    return "";
+  }
+  return trimmed.replace(/\/+$/, "");
 }
 
 function readStorageToken(storage: Storage | undefined): string | undefined {
@@ -445,7 +482,7 @@ export async function fetchBootstrap(): Promise<Bootstrap> {
 }
 
 async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetch(`${readBekApiUrl()}${path}`, {
     ...init,
     headers: adminAuthHeaders(init?.headers),
   });
@@ -644,7 +681,7 @@ export async function createRun(input: {
   capability?: string;
   resource?: string;
 }) {
-  const res = await fetch(`${API_URL}/api/runs`, {
+  const res = await fetch(`${readBekApiUrl()}/api/runs`, {
     method: "POST",
     headers: adminAuthHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(input),
@@ -656,7 +693,7 @@ export async function createRun(input: {
 }
 
 export async function fetchRunDetail(runId: string): Promise<RunDetail> {
-  const res = await fetch(`${API_URL}/api/runs/${runId}`, {
+  const res = await fetch(`${readBekApiUrl()}/api/runs/${runId}`, {
     headers: adminAuthHeaders(),
   });
   if (!res.ok) {
@@ -745,7 +782,7 @@ export async function decideApproval(input: {
   payloadHash: string;
 }): Promise<ApprovalRequest> {
   const res = await fetch(
-    `${API_URL}/api/approvals/${input.approvalId}/${input.decision}`,
+    `${readBekApiUrl()}/api/approvals/${input.approvalId}/${input.decision}`,
     {
       method: "POST",
       headers: adminAuthHeaders({ "content-type": "application/json" }),

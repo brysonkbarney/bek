@@ -5,12 +5,14 @@ import {
   clearAdminApiToken,
   drainSlackOutbox,
   discoverSlackChannels,
+  fetchBootstrap,
   fetchModelUsage,
   fetchSlackOutbox,
   hasStoredAdminToken,
   linkPrincipalExternalIdentity,
   redriveDeadLetterPath,
   readAdminApiToken,
+  readBekApiUrl,
   saveAdminApiToken,
   slackChannelDiscoveryPath,
   slackInstallStartPath,
@@ -20,6 +22,60 @@ import {
 describe("web API helpers", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("uses runtime browser config for the API URL when provided", () => {
+    vi.stubGlobal("window", {
+      __BEK_CONFIG__: { apiUrl: " https://api.example.test/// " },
+    });
+
+    expect(readBekApiUrl()).toBe("https://api.example.test");
+  });
+
+  it("supports same-origin runtime API URLs", () => {
+    vi.stubGlobal("window", {
+      __BEK_CONFIG__: { apiUrl: "/" },
+    });
+
+    expect(readBekApiUrl()).toBe("");
+  });
+
+  it("fetches admin data from the runtime API URL", async () => {
+    vi.stubGlobal("window", {
+      __BEK_CONFIG__: { apiUrl: "https://api.example.test/" },
+    });
+    const bootstrap = {
+      org: { name: "Acme", plan: "oss" },
+      agent: {
+        name: "Bek",
+        handle: "@bek",
+        description: "Open teammate",
+        status: "active",
+      },
+      capabilityProfiles: [],
+      places: [],
+      accessBundles: [],
+      modelPolicies: [],
+      runtimeProfiles: [],
+      budgetPolicies: [],
+      connectorInstalls: [],
+      credentials: [],
+      runs: [],
+      events: [],
+      approvals: [],
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input] = args;
+      expect(String(input)).toBe("https://api.example.test/api/bootstrap");
+      return new Response(JSON.stringify(bootstrap), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchBootstrap()).resolves.toEqual(bootstrap);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("stores admin tokens at runtime for protected admin consoles", () => {

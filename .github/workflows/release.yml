@@ -78,7 +78,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [api, web, worker]
+        target: [api, web, worker, migrate]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
