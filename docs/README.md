@@ -75,8 +75,9 @@ checklist when moving beyond the seeded demo.
 Bek's current model includes per-run budget fields, seeded budget policies,
 model route estimates, run cost totals, and `/api/model-usage`. Postgres mode
 uses a durable model-usage ledger, while memory mode falls back to run totals.
-Production cost control still requires daily/workspace ceilings, provider-billed
-reconciliation, and alerting.
+Worker execution enforces per-run ceilings and same-day budget-policy ceilings
+before adapters start. Production cost control still requires workspace-wide
+ceilings, provider-billed reconciliation, and alerting.
 
 ## Before A Real Workspace
 

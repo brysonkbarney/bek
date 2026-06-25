@@ -962,6 +962,104 @@ describe("worker runtime service", () => {
     });
   });
 
+  it("pauses when the daily budget policy would be exceeded", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_service_daily_budget_policy",
+    });
+    const modelPolicy = snapshot.modelPolicies.find(
+      (policy) => policy.id === run.modelPolicyId,
+    );
+    if (!modelPolicy) {
+      throw new Error("Expected model policy.");
+    }
+    modelPolicy.perRunBudgetCents = 2000;
+    const budgetPolicy = snapshot.budgetPolicies[0];
+    if (!budgetPolicy) {
+      throw new Error("Expected budget policy.");
+    }
+    budgetPolicy.perRunCents = 2000;
+    budgetPolicy.perDayCents = 6;
+
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_service_daily_budget_policy",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+
+    let started = false;
+    const adapter: RuntimeAdapter = {
+      id: "ai-sdk-local-stub",
+      kind: "ai_sdk",
+      canRun: () => true,
+      async start() {
+        started = true;
+        return completedResult();
+      },
+      async resume() {
+        throw new Error("Unexpected resume.");
+      },
+      async cancel() {
+        throw new Error("Unexpected cancel.");
+      },
+    };
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [adapter],
+      workerId: "worker_service_daily_budget_policy",
+      now: () => baseNow,
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected daily budget policy block.");
+    }
+    expect(started).toBe(false);
+    expect(decision.settlement.decision).toBe("paused_for_approval");
+    expect(
+      queue.read().events.find((event) => event.type === "budget.checked"),
+    ).toMatchObject({
+      message:
+        "Daily budget preflight blocked openai/gpt-5.4: committed 7 cents would exceed daily budget 6 cents.",
+      data: {
+        budgetDecision: "over_budget",
+        budgetCents: 6,
+        budgetSource: "budget_policy",
+        budgetScope: "per_day",
+        budgetPolicyId: budgetPolicy.id,
+        dailySpentCents: 3,
+        dailyCommittedCents: 7,
+        dailyWindowStart: "2026-06-24T00:00:00.000Z",
+        dailyWindowEnd: "2026-06-25T00:00:00.000Z",
+      },
+    });
+    expect(
+      queue.read().events.find((event) => event.type === "tool.requested"),
+    ).toMatchObject({
+      data: {
+        action: "budget.increase",
+        estimatedCostCents: 4,
+        budgetCents: 6,
+        budgetSource: "budget_policy",
+        budgetScope: "per_day",
+        budgetPolicyId: budgetPolicy.id,
+        dailySpentCents: 3,
+        dailyCommittedCents: 7,
+      },
+    });
+  });
+
   it("recomputes stale route budget metadata before starting adapters", async () => {
     const { snapshot, run } = snapshotWithQueuedRun({
       runId: "run_service_stale_route_budget",
@@ -1154,6 +1252,141 @@ describe("worker runtime service", () => {
       payloadMetadata: expect.objectContaining({
         estimatedCostCents: 4,
         budgetCents: 1,
+      }),
+    });
+  });
+
+  it("requires a new daily budget approval when same-day spend changes", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_service_daily_budget_approval_drift",
+    });
+    const modelPolicy = snapshot.modelPolicies.find(
+      (policy) => policy.id === run.modelPolicyId,
+    );
+    if (!modelPolicy) {
+      throw new Error("Expected model policy.");
+    }
+    modelPolicy.perRunBudgetCents = 2000;
+    const budgetPolicy = snapshot.budgetPolicies[0];
+    if (!budgetPolicy) {
+      throw new Error("Expected budget policy.");
+    }
+    budgetPolicy.perRunCents = 2000;
+    budgetPolicy.perDayCents = 6;
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_service_daily_budget_approval_drift",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+
+    let started = false;
+    const adapter: RuntimeAdapter = {
+      id: "ai-sdk-local-stub",
+      kind: "ai_sdk",
+      canRun: () => true,
+      async start() {
+        started = true;
+        return completedResult();
+      },
+      async resume() {
+        started = true;
+        return completedResult();
+      },
+      async cancel() {
+        throw new Error("Unexpected cancel.");
+      },
+    };
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [adapter],
+      workerId: "worker_service_daily_budget_approval_drift",
+      now: () => baseNow,
+    });
+
+    const paused = await service.processNext({ now: baseNow });
+    expect(paused.decision).toBe("processed");
+    if (paused.decision !== "processed") {
+      throw new Error("Expected daily budget pause.");
+    }
+    const firstGate = queue
+      .read()
+      .records.find((record) => record.item.runId === run.id)?.approval;
+    if (!firstGate) {
+      throw new Error("Expected first daily approval gate.");
+    }
+    expect(firstGate.payloadMetadata).toMatchObject({
+      provider: "openai",
+      model: "openai/gpt-5.4",
+      estimatedCostCents: 4,
+      budgetCents: 6,
+      budgetSource: "budget_policy",
+      budgetScope: "per_day",
+      budgetPolicyId: budgetPolicy.id,
+      dailySpentCents: 3,
+      dailyCommittedCents: 7,
+      dailyWindowStart: "2026-06-24T00:00:00.000Z",
+      dailyWindowEnd: "2026-06-25T00:00:00.000Z",
+    });
+
+    const resume = queue.resumeAfterApproval({
+      approval: {
+        id: firstGate.approvalId,
+        orgId: run.orgId,
+        runId: run.id,
+        action: firstGate.action,
+        risk: firstGate.risk,
+        status: "approved",
+        payloadHash: firstGate.payloadHash,
+        payloadMetadata: firstGate.payloadMetadata,
+        requestedByPrincipalId: run.requesterPrincipalId,
+        decidedByPrincipalId: "principal_admin",
+        createdAt: firstGate.createdAt,
+        expiresAt: firstGate.expiresAt,
+        decidedAt: "2026-06-24T18:00:01.000Z",
+      },
+      now: "2026-06-24T18:00:01.000Z",
+    });
+    expect(resume.decision).toBe("resume_enqueued");
+    snapshot.runs.push({
+      ...run,
+      id: "run_service_extra_daily_spend",
+      status: "completed",
+      estimatedCostCents: 1,
+      actualCostCents: 1,
+      createdAt: "2026-06-24T17:00:00.000Z",
+      updatedAt: "2026-06-24T17:00:00.000Z",
+    });
+
+    const drifted = await service.processNext({
+      now: "2026-06-24T18:00:02.000Z",
+    });
+
+    expect(drifted.decision).toBe("processed");
+    if (drifted.decision !== "processed") {
+      throw new Error("Expected drifted daily budget work to pause again.");
+    }
+    expect(started).toBe(false);
+    expect(drifted.result.status).toBe("awaiting_approval");
+    expect(drifted.settlement.decision).toBe("paused_for_approval");
+    const secondGate = queue
+      .read()
+      .records.find((record) => record.item.runId === run.id)?.approval;
+    expect(secondGate).toMatchObject({
+      status: "pending",
+      payloadMetadata: expect.objectContaining({
+        budgetScope: "per_day",
+        dailySpentCents: 4,
+        dailyCommittedCents: 8,
       }),
     });
   });

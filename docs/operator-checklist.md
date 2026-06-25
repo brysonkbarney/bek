@@ -168,9 +168,12 @@ the current OSS spine.
 - [ ] Verify `/api/model-usage` still reports
       `trust.providerReconciled: false`; do not present these totals as
       invoice-grade spend.
+- [ ] Keep budget policies' `perDayCents` low for pilots; the worker enforces
+      same-day policy ceilings before adapters start and asks for
+      `budget.increase` approval when a run would exceed them.
 - [ ] Blocked: add billed-cost reconciliation against Gateway/provider
       dashboards before issuing invoices or making finance reports.
-- [ ] Blocked: add daily/workspace ceilings and alerting before hosted beta.
+- [ ] Blocked: add workspace-wide ceilings and alerting before hosted beta.
 
 ## MCP And Tools
 

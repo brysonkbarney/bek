@@ -1606,11 +1606,17 @@ export class WorkerRuntimeService {
       return githubPullRequestApproval;
     }
 
-    this.emitBudgetCheckedEvent(claim.lease.id, context.modelRoute);
+    const budgetDecision = runtimeBudgetGuardDecision(context);
+    this.emitBudgetCheckedEvent(
+      claim.lease.id,
+      context.modelRoute,
+      budgetDecision,
+    );
     const budgetApproval = this.createBudgetApprovalIfOverLimit(
       claim.lease.id,
       claim.record,
       context,
+      budgetDecision,
     );
     if (budgetApproval) {
       return {
@@ -1961,6 +1967,7 @@ export class WorkerRuntimeService {
   private emitBudgetCheckedEvent(
     leaseId: string,
     modelRoute: RuntimeModelRoute,
+    decision: RuntimeBudgetGuardDecision,
   ): void {
     if (!modelRoute.budget) {
       return;
@@ -1969,8 +1976,11 @@ export class WorkerRuntimeService {
       leaseId,
       event: {
         type: "budget.checked",
-        message: `Budget preflight for ${modelRoute.model} is ${modelRoute.budget.decision}.`,
-        data: modelRouteEventData(modelRoute),
+        message: decision.reason,
+        data: {
+          ...modelRouteEventData(modelRoute),
+          ...runtimeBudgetGuardEventData(decision),
+        },
       },
       now: this.time(),
     });
@@ -1980,8 +1990,8 @@ export class WorkerRuntimeService {
     leaseId: string,
     record: WorkerWorkRecord,
     context: WorkerRuntimeContext,
+    decision: RuntimeBudgetGuardDecision,
   ): ApprovalRequest | undefined {
-    const decision = runtimeBudgetGuardDecision(context);
     if (decision.decision === "within_budget") {
       return undefined;
     }
@@ -2001,7 +2011,12 @@ export class WorkerRuntimeService {
         estimatedCostCents: decision.estimatedCostCents,
         budgetCents: decision.budgetCents,
         budgetSource: decision.budgetSource,
+        budgetScope: decision.budgetScope,
         budgetPolicyId: decision.budgetPolicyId,
+        dailySpentCents: decision.dailySpentCents,
+        dailyCommittedCents: decision.dailyCommittedCents,
+        dailyWindowStart: decision.dailyWindowStart,
+        dailyWindowEnd: decision.dailyWindowEnd,
       },
       "privileged",
       now,
@@ -2026,8 +2041,21 @@ export class WorkerRuntimeService {
           budgetCents: decision.budgetCents,
           remainingBudgetCents: decision.remainingBudgetCents,
           budgetSource: decision.budgetSource,
+          budgetScope: decision.budgetScope,
           ...(decision.budgetPolicyId
             ? { budgetPolicyId: decision.budgetPolicyId }
+            : {}),
+          ...(decision.dailySpentCents !== undefined
+            ? { dailySpentCents: decision.dailySpentCents }
+            : {}),
+          ...(decision.dailyCommittedCents !== undefined
+            ? { dailyCommittedCents: decision.dailyCommittedCents }
+            : {}),
+          ...(decision.dailyWindowStart
+            ? { dailyWindowStart: decision.dailyWindowStart }
+            : {}),
+          ...(decision.dailyWindowEnd
+            ? { dailyWindowEnd: decision.dailyWindowEnd }
             : {}),
         },
       },
@@ -3407,13 +3435,51 @@ function modelRouteEventData(
   return data;
 }
 
+function runtimeBudgetGuardEventData(
+  decision: RuntimeBudgetGuardDecision,
+): Record<string, unknown> {
+  const data: Record<string, unknown> = {
+    budgetDecision: decision.decision,
+    budgetCents: decision.budgetCents,
+    remainingBudgetCents: decision.remainingBudgetCents,
+    budgetSource: decision.budgetSource,
+    budgetScope: decision.budgetScope,
+  };
+  if (decision.budgetPolicyId) {
+    data.budgetPolicyId = decision.budgetPolicyId;
+  }
+  if (decision.dailySpentCents !== undefined) {
+    data.dailySpentCents = decision.dailySpentCents;
+  }
+  if (decision.dailyCommittedCents !== undefined) {
+    data.dailyCommittedCents = decision.dailyCommittedCents;
+  }
+  if (decision.dailyWindowStart) {
+    data.dailyWindowStart = decision.dailyWindowStart;
+  }
+  if (decision.dailyWindowEnd) {
+    data.dailyWindowEnd = decision.dailyWindowEnd;
+  }
+  return data;
+}
+
+type RuntimeBudgetSource = "model_policy" | "budget_policy";
+type RuntimeBudgetScope = "per_run" | "per_day";
+
 interface RuntimeBudgetGuardDecision {
   decision: RuntimeModelBudgetPreflight["decision"];
+  provider: string;
+  model: string;
   estimatedCostCents: number;
   budgetCents: number;
   remainingBudgetCents: number;
-  budgetSource: "model_policy" | "budget_policy";
+  budgetSource: RuntimeBudgetSource;
+  budgetScope: RuntimeBudgetScope;
   budgetPolicyId?: string | undefined;
+  dailySpentCents?: number | undefined;
+  dailyCommittedCents?: number | undefined;
+  dailyWindowStart?: string | undefined;
+  dailyWindowEnd?: string | undefined;
   reason: string;
 }
 
@@ -3428,27 +3494,84 @@ function runtimeBudgetGuardDecision(
   const budgetCeiling = strictestRuntimeBudgetCeiling(context);
   const remainingBudgetCents = budgetCeiling.budgetCents - estimatedCostCents;
   const decision = remainingBudgetCents >= 0 ? "within_budget" : "over_budget";
-  const reason =
-    decision === "within_budget"
-      ? `Budget preflight for ${context.modelRoute.model} is within budget.`
-      : `Budget preflight blocked ${context.modelRoute.model}: estimated ${estimatedCostCents} cents exceeds ${budgetCeiling.budgetCents} cents.`;
+  if (decision === "over_budget") {
+    return {
+      decision,
+      provider: context.modelRoute.provider,
+      model: context.modelRoute.model,
+      estimatedCostCents,
+      budgetCents: budgetCeiling.budgetCents,
+      remainingBudgetCents,
+      budgetSource: budgetCeiling.source,
+      budgetScope: "per_run",
+      reason: `Budget preflight blocked ${context.modelRoute.model}: estimated ${estimatedCostCents} cents exceeds ${budgetCeiling.budgetCents} cents.`,
+      ...(budgetCeiling.budgetPolicyId
+        ? { budgetPolicyId: budgetCeiling.budgetPolicyId }
+        : {}),
+    };
+  }
 
+  const dailyDecision = runtimeDailyBudgetGuardDecision(
+    context,
+    estimatedCostCents,
+  );
+  if (dailyDecision?.decision === "over_budget") {
+    return dailyDecision;
+  }
   return {
     decision,
+    provider: context.modelRoute.provider,
+    model: context.modelRoute.model,
     estimatedCostCents,
     budgetCents: budgetCeiling.budgetCents,
     remainingBudgetCents,
     budgetSource: budgetCeiling.source,
-    reason,
+    budgetScope: "per_run",
+    reason: `Budget preflight for ${context.modelRoute.model} is within budget.`,
     ...(budgetCeiling.budgetPolicyId
       ? { budgetPolicyId: budgetCeiling.budgetPolicyId }
       : {}),
   };
 }
 
+function runtimeDailyBudgetGuardDecision(
+  context: WorkerRuntimeContext,
+  estimatedCostCents: number,
+): RuntimeBudgetGuardDecision | undefined {
+  const policy = strictestDailyBudgetPolicy(context);
+  if (!policy) {
+    return undefined;
+  }
+  const window = utcDayWindow(context.run.createdAt);
+  const dailySpentCents = dailyBudgetSpentCents(context, policy.id, window);
+  const dailyCommittedCents = dailySpentCents + estimatedCostCents;
+  const remainingBudgetCents = policy.perDayCents - dailyCommittedCents;
+  const decision = remainingBudgetCents >= 0 ? "within_budget" : "over_budget";
+  const reason =
+    decision === "within_budget"
+      ? `Daily budget preflight for ${context.modelRoute.model} is within budget.`
+      : `Daily budget preflight blocked ${context.modelRoute.model}: committed ${dailyCommittedCents} cents would exceed daily budget ${policy.perDayCents} cents.`;
+  return {
+    decision,
+    provider: context.modelRoute.provider,
+    model: context.modelRoute.model,
+    estimatedCostCents,
+    budgetCents: policy.perDayCents,
+    remainingBudgetCents,
+    budgetSource: "budget_policy",
+    budgetScope: "per_day",
+    budgetPolicyId: policy.id,
+    dailySpentCents,
+    dailyCommittedCents,
+    dailyWindowStart: window.start,
+    dailyWindowEnd: window.end,
+    reason,
+  };
+}
+
 function strictestRuntimeBudgetCeiling(context: WorkerRuntimeContext): {
   budgetCents: number;
-  source: "model_policy" | "budget_policy";
+  source: RuntimeBudgetSource;
   budgetPolicyId?: string | undefined;
 } {
   const applicableBudgetPolicies = budgetPoliciesForAccessBundles(
@@ -3477,16 +3600,86 @@ function strictestRuntimeBudgetCeiling(context: WorkerRuntimeContext): {
   };
 }
 
+function strictestDailyBudgetPolicy(
+  context: WorkerRuntimeContext,
+): BudgetPolicy | undefined {
+  return budgetPoliciesForAccessBundles(
+    context.snapshot.budgetPolicies,
+    context.accessBundles,
+    context.run.orgId,
+  ).sort((left, right) => left.perDayCents - right.perDayCents)[0];
+}
+
+interface DailyBudgetWindow {
+  start: string;
+  end: string;
+}
+
+function dailyBudgetSpentCents(
+  context: WorkerRuntimeContext,
+  budgetPolicyId: string,
+  window: DailyBudgetWindow,
+): number {
+  const governedPlaceIds = new Set(
+    context.snapshot.accessBundles
+      .filter(
+        (bundle) =>
+          bundle.orgId === context.run.orgId &&
+          bundle.budgetPolicyId === budgetPolicyId,
+      )
+      .flatMap((bundle) => bundle.attachedPlaceIds),
+  );
+  return context.snapshot.runs
+    .filter(
+      (run) =>
+        run.orgId === context.run.orgId &&
+        run.id !== context.run.id &&
+        governedPlaceIds.has(run.placeScopeId) &&
+        runCountsAgainstDailyBudget(run) &&
+        isoTimeInWindow(run.createdAt, window),
+    )
+    .reduce((sum, run) => sum + committedRunCostCents(run), 0);
+}
+
+function runCountsAgainstDailyBudget(run: Run): boolean {
+  return run.status !== "cancelled" && run.status !== "failed";
+}
+
+function committedRunCostCents(run: Run): number {
+  return normalizeEstimatedCostCents(
+    run.actualCostCents > 0 ? run.actualCostCents : run.estimatedCostCents,
+  );
+}
+
+function isoTimeInWindow(value: string, window: DailyBudgetWindow): boolean {
+  const timestamp = Date.parse(value);
+  return (
+    Number.isFinite(timestamp) &&
+    timestamp >= Date.parse(window.start) &&
+    timestamp < Date.parse(window.end)
+  );
+}
+
+function utcDayWindow(value: string): DailyBudgetWindow {
+  const timestamp = Date.parse(value);
+  const date = new Date(Number.isFinite(timestamp) ? timestamp : 0);
+  const start = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+  );
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  return {
+    start: start.toISOString(),
+    end: end.toISOString(),
+  };
+}
+
 function createRuntimeEffectiveModelBudget(
   record: WorkerWorkRecord,
   context: WorkerRuntimeContext,
 ): RuntimeEffectiveModelBudget {
   const budgetCeiling = strictestRuntimeBudgetCeiling(context);
-  const approvedRoute = approvedBudgetRouteForCurrentContext(
-    record,
-    context,
-    budgetCeiling,
-  );
+  const decision = runtimeBudgetGuardDecision(context);
+  const approvedRoute = approvedBudgetRouteForCurrentContext(record, decision);
 
   return {
     budgetCents: budgetCeiling.budgetCents,
@@ -3503,8 +3696,12 @@ interface ApprovedBudgetRoute {
   model: string;
   estimatedCostCents: number;
   budgetCents: number;
-  budgetSource: "model_policy" | "budget_policy";
+  budgetSource: RuntimeBudgetSource;
+  budgetScope: RuntimeBudgetScope;
   budgetPolicyId?: string | undefined;
+  dailySpentCents?: number | undefined;
+  dailyWindowStart?: string | undefined;
+  dailyWindowEnd?: string | undefined;
 }
 
 function hasApprovedBudgetIncreaseForDecision(
@@ -3512,25 +3709,12 @@ function hasApprovedBudgetIncreaseForDecision(
   context: WorkerRuntimeContext,
   decision: RuntimeBudgetGuardDecision,
 ): boolean {
-  return (
-    approvedBudgetRouteForCurrentContext(record, context, {
-      budgetCents: decision.budgetCents,
-      source: decision.budgetSource,
-      ...(decision.budgetPolicyId
-        ? { budgetPolicyId: decision.budgetPolicyId }
-        : {}),
-    }) !== undefined
-  );
+  return approvedBudgetRouteForCurrentContext(record, decision) !== undefined;
 }
 
 function approvedBudgetRouteForCurrentContext(
   record: WorkerWorkRecord,
-  context: WorkerRuntimeContext,
-  budgetCeiling: {
-    budgetCents: number;
-    source: "model_policy" | "budget_policy";
-    budgetPolicyId?: string | undefined;
-  },
+  decision: RuntimeBudgetGuardDecision,
 ):
   | Pick<ApprovedBudgetRoute, "provider" | "model" | "estimatedCostCents">
   | undefined {
@@ -3538,20 +3722,17 @@ function approvedBudgetRouteForCurrentContext(
   if (!approvedRoute) {
     return undefined;
   }
-  const currentEstimatedCostCents = normalizeEstimatedCostCents(
-    context.modelRoute.budget?.estimatedCostCents ??
-      context.modelRoute.estimatedCostCents ??
-      context.run.estimatedCostCents,
-  );
-  const currentBudgetPolicyId = budgetCeiling.budgetPolicyId ?? "";
+  const currentBudgetPolicyId = decision.budgetPolicyId ?? "";
   const approvedBudgetPolicyId = approvedRoute.budgetPolicyId ?? "";
   if (
-    approvedRoute.provider !== context.modelRoute.provider ||
-    approvedRoute.model !== context.modelRoute.model ||
-    currentEstimatedCostCents > approvedRoute.estimatedCostCents ||
-    approvedRoute.budgetCents !== budgetCeiling.budgetCents ||
-    approvedRoute.budgetSource !== budgetCeiling.source ||
-    approvedBudgetPolicyId !== currentBudgetPolicyId
+    approvedRoute.provider !== decision.provider ||
+    approvedRoute.model !== decision.model ||
+    decision.estimatedCostCents > approvedRoute.estimatedCostCents ||
+    approvedRoute.budgetCents !== decision.budgetCents ||
+    approvedRoute.budgetSource !== decision.budgetSource ||
+    approvedRoute.budgetScope !== decision.budgetScope ||
+    approvedBudgetPolicyId !== currentBudgetPolicyId ||
+    !approvedDailyBudgetContextMatches(approvedRoute, decision)
   ) {
     return undefined;
   }
@@ -3560,6 +3741,20 @@ function approvedBudgetRouteForCurrentContext(
     model: approvedRoute.model,
     estimatedCostCents: approvedRoute.estimatedCostCents,
   };
+}
+
+function approvedDailyBudgetContextMatches(
+  approvedRoute: ApprovedBudgetRoute,
+  decision: RuntimeBudgetGuardDecision,
+): boolean {
+  if (decision.budgetScope !== "per_day") {
+    return true;
+  }
+  return (
+    approvedRoute.dailySpentCents === decision.dailySpentCents &&
+    approvedRoute.dailyWindowStart === decision.dailyWindowStart &&
+    approvedRoute.dailyWindowEnd === decision.dailyWindowEnd
+  );
 }
 
 function approvedBudgetRouteFromRecord(
@@ -3584,23 +3779,35 @@ function approvedBudgetRouteFromRecord(
   );
   const budgetCents = metadataNonNegativeInteger(metadata, "budgetCents");
   const budgetSource = metadataString(metadata, "budgetSource");
+  const budgetScope = metadataString(metadata, "budgetScope") ?? "per_run";
   if (
     !provider ||
     !model ||
     estimatedCostCents === undefined ||
     budgetCents === undefined ||
-    (budgetSource !== "model_policy" && budgetSource !== "budget_policy")
+    (budgetSource !== "model_policy" && budgetSource !== "budget_policy") ||
+    (budgetScope !== "per_run" && budgetScope !== "per_day")
   ) {
     return undefined;
   }
   const budgetPolicyId = metadataString(metadata, "budgetPolicyId");
+  const dailySpentCents = metadataNonNegativeInteger(
+    metadata,
+    "dailySpentCents",
+  );
+  const dailyWindowStart = metadataString(metadata, "dailyWindowStart");
+  const dailyWindowEnd = metadataString(metadata, "dailyWindowEnd");
   return {
     provider,
     model,
     estimatedCostCents,
     budgetCents,
     budgetSource,
+    budgetScope,
     ...(budgetPolicyId ? { budgetPolicyId } : {}),
+    ...(dailySpentCents !== undefined ? { dailySpentCents } : {}),
+    ...(dailyWindowStart ? { dailyWindowStart } : {}),
+    ...(dailyWindowEnd ? { dailyWindowEnd } : {}),
   };
 }
 

@@ -125,17 +125,18 @@ reading that ledger. Setup status reports `modelPricingBasis`,
 `modelPricingSource`, and `modelPricingNotice`; default seed IDs and pricing
 must still be verified against the live provider catalog before production use.
 Bek now fails closed for budget-enforced routes without pricing metadata and
-pauses over-budget routes for approval, but before a shared workspace or hosted
-beta it still needs daily/workspace ceilings, billed provider response
-reconciliation, and alerts.
+pauses over-budget routes for approval. Worker execution also enforces
+same-day budget-policy ceilings before adapters start. Before a shared
+workspace or hosted beta, Bek still needs workspace-wide ceilings, billed
+provider response reconciliation, and alerts.
 
 Model routing is useful today for local demos and self-hosted pilots, but it is
 not yet a full provider management product. Admins can edit `provider/model`
 IDs and per-run caps, and the worker can pause over-budget runs before runtime
 execution. Bek does not yet have live model catalog discovery, provider
 credential installation, persisted benchmark refresh UI, forecast/projection
-UI, daily budget enforcement, workspace budget enforcement, or invoice-grade
-cost reconciliation.
+UI, workspace-wide budget enforcement, alerting, or invoice-grade cost
+reconciliation.
 
 Usage ledger entries should record each attempt with org, run, model policy,
 provider, model, input/output usage counts, estimated cost, local actual
@@ -161,7 +162,7 @@ Recommended local/pilot defaults:
 - Credential broker.
 - Billed-cost reconciliation against Gateway/provider invoices and dashboards.
 - Model catalog picker and live Gateway model discovery in the admin UI.
-- Production budget enforcement across persisted daily and per-run usage.
+- Production budget enforcement across workspace-wide usage.
 - Forecast and alerting surfaces for projected daily/workspace spend.
 - Tests for failed/fallback attempt accounting and billed-cost reconciliation
   semantics.
