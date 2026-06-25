@@ -76,7 +76,7 @@ export function createApprovalRequest(
   now = new Date().toISOString(),
   expiresAt = new Date(Date.parse(now) + 30 * 60 * 1000).toISOString(),
 ): ApprovalRequest {
-  return {
+  const approval: ApprovalRequest = {
     id: createId("approval"),
     orgId,
     runId,
@@ -88,6 +88,20 @@ export function createApprovalRequest(
     createdAt: now,
     expiresAt,
   };
+  const payloadMetadata = approvalPayloadMetadata(payload);
+  if (payloadMetadata) {
+    approval.payloadMetadata = payloadMetadata;
+  }
+  return approval;
+}
+
+function approvalPayloadMetadata(
+  payload: unknown,
+): Record<string, unknown> | undefined {
+  const redacted = redactUnknown(payload);
+  return redacted && typeof redacted === "object" && !Array.isArray(redacted)
+    ? (redacted as Record<string, unknown>)
+    : undefined;
 }
 
 export function hashPayload(payload: unknown): string {

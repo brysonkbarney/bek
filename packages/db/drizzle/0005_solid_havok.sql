@@ -1,0 +1,1 @@
+ALTER TABLE "worker_work_records" ADD COLUMN "approval_payload_metadata" jsonb DEFAULT '{}'::jsonb NOT NULL;

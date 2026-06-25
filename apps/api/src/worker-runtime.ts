@@ -347,6 +347,9 @@ export class LocalWorkerController {
       risk: gate.risk,
       status: gate.status,
       payloadHash: gate.payloadHash,
+      ...(gate.payloadMetadata
+        ? { payloadMetadata: structuredClone(gate.payloadMetadata) }
+        : {}),
       requestedByPrincipalId: run.requesterPrincipalId,
       createdAt: gate.createdAt,
       expiresAt: gate.expiresAt,

@@ -255,6 +255,7 @@ export interface ApprovalRequest {
   risk: RiskLevel;
   status: "pending" | "approved" | "denied" | "expired";
   payloadHash: string;
+  payloadMetadata?: Record<string, unknown> | undefined;
   requestedByPrincipalId: string;
   decidedByPrincipalId?: string;
   createdAt: ISODate;

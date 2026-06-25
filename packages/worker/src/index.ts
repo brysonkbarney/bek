@@ -6,6 +6,7 @@ import {
   type RunWorkItem,
   type RuntimeAdapter,
   type RuntimeAdapterKind,
+  type RuntimeEffectiveModelBudget,
   type RuntimeModelBudgetPreflight,
   type RuntimeModelRoute,
   type RuntimeObservabilityEvent,
@@ -24,8 +25,10 @@ import {
 import {
   VercelAiGatewayModelGateway,
   runModelWithFailover,
+  type ModelBenchmark,
   type ModelGateway,
   type ModelGatewayRunContext,
+  type ModelProviderRegistry,
   type ModelRouteMode,
 } from "@bek/model-router";
 import {
@@ -134,6 +137,7 @@ export interface WorkerLease {
 export interface WorkerApprovalGate {
   approvalId: string;
   payloadHash: string;
+  payloadMetadata?: Record<string, unknown> | undefined;
   action: string;
   risk: ApprovalRequest["risk"];
   status: ApprovalRequest["status"];
@@ -882,6 +886,9 @@ export class InMemoryWorkerQueue implements WorkerQueueContract {
     record.approval = {
       ...record.approval,
       status: input.approval.status,
+      ...(input.approval.payloadMetadata
+        ? { payloadMetadata: clone(input.approval.payloadMetadata) }
+        : {}),
     };
     this.emit({
       type: "worker.approval_resumed",
@@ -1625,6 +1632,7 @@ export class WorkerRuntimeService {
       accessBundles: clone(context.accessBundles),
       modelPolicy: clone(context.modelPolicy),
       modelRoute: clone(context.modelRoute),
+      effectiveModelBudget: createRuntimeEffectiveModelBudget(record, context),
       runtimeProfile: clone(context.runtimeProfile),
       grants: clone(context.grants),
       tools: this.tools,
@@ -1695,12 +1703,11 @@ export class WorkerRuntimeService {
     record: WorkerWorkRecord,
     context: WorkerRuntimeContext,
   ): ApprovalRequest | undefined {
-    if (isApprovedBudgetIncrease(record)) {
-      return undefined;
-    }
-
     const decision = runtimeBudgetGuardDecision(context);
     if (decision.decision === "within_budget") {
+      return undefined;
+    }
+    if (hasApprovedBudgetIncreaseForDecision(record, context, decision)) {
       return undefined;
     }
 
@@ -2074,6 +2081,8 @@ export interface AiSdkGatewayRuntimeAdapterOptions {
   kind?: RuntimeAdapterKind | undefined;
   gateway?: ModelGateway | undefined;
   modelRoutingMode?: ModelRouteMode | undefined;
+  registry?: ModelProviderRegistry | undefined;
+  benchmarks?: ModelBenchmark[] | undefined;
   gatewayContext?: ModelGatewayRunContext | undefined;
   gatewayTags?: string[] | undefined;
 }
@@ -2110,6 +2119,12 @@ export function createAiSdkGatewayRuntimeAdapter(
       mode: options.modelRoutingMode,
       estimatedInputTokens: input.modelRoute.budget?.estimatedInputTokens,
       estimatedOutputTokens: input.modelRoute.budget?.estimatedOutputTokens,
+      requireKnownPricing: input.effectiveModelBudget !== undefined,
+      effectiveBudgetCents: input.effectiveModelBudget?.budgetCents,
+      approvedOverBudgetRoute:
+        input.effectiveModelBudget?.approvedOverBudgetRoute,
+      registry: options.registry,
+      benchmarks: options.benchmarks,
       context: createGatewayRunContext(input, options),
     });
 
@@ -2634,24 +2649,29 @@ function withModelRouteBudgetPreflight(
   requester: Principal,
   place: PlaceScope,
 ): RuntimeModelRoute {
-  const estimatedCostCents = normalizeEstimatedCostCents(
-    route.estimatedCostCents ??
-      route.budget?.estimatedCostCents ??
-      run.estimatedCostCents,
+  const estimatedCostCents = Math.max(
+    normalizeEstimatedCostCents(route.estimatedCostCents ?? 0),
+    normalizeEstimatedCostCents(route.budget?.estimatedCostCents ?? 0),
+    normalizeEstimatedCostCents(run.estimatedCostCents),
   );
+  const computedBudget = createRuntimeModelBudgetPreflight({
+    modelPolicy,
+    runtimeProfile,
+    run,
+    requester,
+    place,
+    estimatedCostCents,
+  });
   return {
     ...route,
     estimatedCostCents,
-    budget:
-      route.budget ??
-      createRuntimeModelBudgetPreflight({
-        modelPolicy,
-        runtimeProfile,
-        run,
-        requester,
-        place,
-        estimatedCostCents,
-      }),
+    budget: route.budget
+      ? {
+          ...computedBudget,
+          estimatedInputTokens: route.budget.estimatedInputTokens,
+          estimatedOutputTokens: route.budget.estimatedOutputTokens,
+        }
+      : computedBudget,
   };
 }
 
@@ -2852,6 +2872,155 @@ function strictestRuntimeBudgetCeiling(context: WorkerRuntimeContext): {
   };
 }
 
+function createRuntimeEffectiveModelBudget(
+  record: WorkerWorkRecord,
+  context: WorkerRuntimeContext,
+): RuntimeEffectiveModelBudget {
+  const budgetCeiling = strictestRuntimeBudgetCeiling(context);
+  const approvedRoute = approvedBudgetRouteForCurrentContext(
+    record,
+    context,
+    budgetCeiling,
+  );
+
+  return {
+    budgetCents: budgetCeiling.budgetCents,
+    source: budgetCeiling.source,
+    ...(budgetCeiling.budgetPolicyId
+      ? { budgetPolicyId: budgetCeiling.budgetPolicyId }
+      : {}),
+    ...(approvedRoute ? { approvedOverBudgetRoute: approvedRoute } : {}),
+  };
+}
+
+interface ApprovedBudgetRoute {
+  provider: string;
+  model: string;
+  estimatedCostCents: number;
+  budgetCents: number;
+  budgetSource: "model_policy" | "budget_policy";
+  budgetPolicyId?: string | undefined;
+}
+
+function hasApprovedBudgetIncreaseForDecision(
+  record: WorkerWorkRecord,
+  context: WorkerRuntimeContext,
+  decision: RuntimeBudgetGuardDecision,
+): boolean {
+  return (
+    approvedBudgetRouteForCurrentContext(record, context, {
+      budgetCents: decision.budgetCents,
+      source: decision.budgetSource,
+      ...(decision.budgetPolicyId
+        ? { budgetPolicyId: decision.budgetPolicyId }
+        : {}),
+    }) !== undefined
+  );
+}
+
+function approvedBudgetRouteForCurrentContext(
+  record: WorkerWorkRecord,
+  context: WorkerRuntimeContext,
+  budgetCeiling: {
+    budgetCents: number;
+    source: "model_policy" | "budget_policy";
+    budgetPolicyId?: string | undefined;
+  },
+):
+  | Pick<ApprovedBudgetRoute, "provider" | "model" | "estimatedCostCents">
+  | undefined {
+  const approvedRoute = approvedBudgetRouteFromRecord(record);
+  if (!approvedRoute) {
+    return undefined;
+  }
+  const currentEstimatedCostCents = normalizeEstimatedCostCents(
+    context.modelRoute.budget?.estimatedCostCents ??
+      context.modelRoute.estimatedCostCents ??
+      context.run.estimatedCostCents,
+  );
+  const currentBudgetPolicyId = budgetCeiling.budgetPolicyId ?? "";
+  const approvedBudgetPolicyId = approvedRoute.budgetPolicyId ?? "";
+  if (
+    approvedRoute.provider !== context.modelRoute.provider ||
+    approvedRoute.model !== context.modelRoute.model ||
+    currentEstimatedCostCents > approvedRoute.estimatedCostCents ||
+    approvedRoute.budgetCents !== budgetCeiling.budgetCents ||
+    approvedRoute.budgetSource !== budgetCeiling.source ||
+    approvedBudgetPolicyId !== currentBudgetPolicyId
+  ) {
+    return undefined;
+  }
+  return {
+    provider: approvedRoute.provider,
+    model: approvedRoute.model,
+    estimatedCostCents: approvedRoute.estimatedCostCents,
+  };
+}
+
+function approvedBudgetRouteFromRecord(
+  record: WorkerWorkRecord,
+): ApprovedBudgetRoute | undefined {
+  if (
+    record.item.reason !== "approval_granted" ||
+    record.approval?.action !== "budget.increase" ||
+    record.approval.status !== "approved"
+  ) {
+    return undefined;
+  }
+  const metadata = record.approval.payloadMetadata;
+  if (!metadata) {
+    return undefined;
+  }
+  const provider = metadataString(metadata, "provider");
+  const model = metadataString(metadata, "model");
+  const estimatedCostCents = metadataNonNegativeInteger(
+    metadata,
+    "estimatedCostCents",
+  );
+  const budgetCents = metadataNonNegativeInteger(metadata, "budgetCents");
+  const budgetSource = metadataString(metadata, "budgetSource");
+  if (
+    !provider ||
+    !model ||
+    estimatedCostCents === undefined ||
+    budgetCents === undefined ||
+    (budgetSource !== "model_policy" && budgetSource !== "budget_policy")
+  ) {
+    return undefined;
+  }
+  const budgetPolicyId = metadataString(metadata, "budgetPolicyId");
+  return {
+    provider,
+    model,
+    estimatedCostCents,
+    budgetCents,
+    budgetSource,
+    ...(budgetPolicyId ? { budgetPolicyId } : {}),
+  };
+}
+
+function metadataString(
+  metadata: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = metadata[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function metadataNonNegativeInteger(
+  metadata: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = metadata[key];
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number(value)
+        : Number.NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.ceil(parsed) : undefined;
+}
+
 function budgetPoliciesForAccessBundles(
   budgetPolicies: BudgetPolicy[],
   accessBundles: AccessBundle[],
@@ -2864,14 +3033,6 @@ function budgetPoliciesForAccessBundles(
   );
   return budgetPolicies.filter(
     (policy) => policy.orgId === orgId && policyIds.has(policy.id),
-  );
-}
-
-function isApprovedBudgetIncrease(record: WorkerWorkRecord): boolean {
-  return (
-    record.item.reason === "approval_granted" &&
-    record.approval?.action === "budget.increase" &&
-    record.approval.status === "approved"
   );
 }
 
@@ -2975,6 +3136,9 @@ function approvalGateFromRequest(
   return {
     approvalId: approval.id,
     payloadHash: approval.payloadHash,
+    ...(approval.payloadMetadata
+      ? { payloadMetadata: clone(approval.payloadMetadata) }
+      : {}),
     action: approval.action,
     risk: approval.risk,
     status: approval.status,

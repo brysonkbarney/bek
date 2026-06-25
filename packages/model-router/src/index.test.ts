@@ -312,6 +312,161 @@ describe("model router", () => {
     });
   });
 
+  it("skips over-budget fallback routes and continues to cheaper candidates", async () => {
+    const registry = createModelProviderRegistry([
+      {
+        id: "openai",
+        displayName: "OpenAI",
+        kind: "openai",
+        models: [{ id: "openai/gpt-5.4", benchmark: benchmarks[0] }],
+      },
+      {
+        id: "anthropic",
+        displayName: "Anthropic",
+        kind: "anthropic",
+        models: [
+          { id: "anthropic/claude-sonnet-4.8", benchmark: benchmarks[1] },
+        ],
+      },
+      {
+        id: "openai-compatible",
+        displayName: "Local Gateway",
+        kind: "local",
+        models: [{ id: "openai-compatible/local", benchmark: benchmarks[2] }],
+      },
+    ]);
+    const calls: string[] = [];
+    const gateway = {
+      async complete(request: Parameters<FakeModelGateway["complete"]>[0]) {
+        calls.push(request.route.model);
+        if (request.route.model === "openai/gpt-5.4") {
+          throw new Error("simulated provider outage");
+        }
+        return new FakeModelGateway({ registry }).complete(request);
+      },
+    };
+
+    const result = await runModelWithFailover({
+      runId: "run_failover_budget_skip",
+      policy,
+      registry,
+      gateway,
+      prompt: "@bek investigate this failure",
+      estimatedInputTokens: 10_000,
+      estimatedOutputTokens: 2_000,
+      effectiveBudgetCents: 5,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.route?.model).toBe("openai-compatible/local");
+    expect(calls).toEqual(["openai/gpt-5.4", "openai-compatible/local"]);
+    expect(
+      result.attempts.map((attempt) => ({
+        model: attempt.route.model,
+        status: attempt.status,
+        budgetDecision: attempt.decision.budgetDecision,
+        remainingBudgetCents: attempt.decision.remainingBudgetCents,
+      })),
+    ).toEqual([
+      {
+        model: "openai/gpt-5.4",
+        status: "failed",
+        budgetDecision: "within_budget",
+        remainingBudgetCents: 1,
+      },
+      {
+        model: "anthropic/claude-sonnet-4.8",
+        status: "skipped",
+        budgetDecision: "over_budget",
+        remainingBudgetCents: -1,
+      },
+      {
+        model: "openai-compatible/local",
+        status: "succeeded",
+        budgetDecision: "within_budget",
+        remainingBudgetCents: 5,
+      },
+    ]);
+  });
+
+  it("limits budget approvals to the reviewed over-budget route", async () => {
+    const registry = createModelProviderRegistry([
+      {
+        id: "openai",
+        displayName: "OpenAI",
+        kind: "openai",
+        models: [{ id: "openai/gpt-5.4", benchmark: benchmarks[0] }],
+      },
+      {
+        id: "anthropic",
+        displayName: "Anthropic",
+        kind: "anthropic",
+        models: [
+          { id: "anthropic/claude-sonnet-4.8", benchmark: benchmarks[1] },
+        ],
+      },
+      {
+        id: "openai-compatible",
+        displayName: "Local Gateway",
+        kind: "local",
+        models: [{ id: "openai-compatible/local", benchmark: benchmarks[2] }],
+      },
+    ]);
+    const calls: string[] = [];
+    const gateway = {
+      async complete(request: Parameters<FakeModelGateway["complete"]>[0]) {
+        calls.push(request.route.model);
+        if (request.route.model === "openai/gpt-5.4") {
+          throw new Error("approved provider still failed");
+        }
+        return new FakeModelGateway({ registry }).complete(request);
+      },
+    };
+
+    const result = await runModelWithFailover({
+      runId: "run_failover_budget_approved",
+      policy,
+      registry,
+      gateway,
+      prompt: "@bek investigate this failure",
+      estimatedInputTokens: 10_000,
+      estimatedOutputTokens: 2_000,
+      effectiveBudgetCents: 3,
+      approvedOverBudgetRoute: {
+        provider: "openai",
+        model: "openai/gpt-5.4",
+        estimatedCostCents: 4,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.route?.model).toBe("openai-compatible/local");
+    expect(calls).toEqual(["openai/gpt-5.4", "openai-compatible/local"]);
+    expect(
+      result.attempts.map((attempt) => ({
+        model: attempt.route.model,
+        status: attempt.status,
+        budgetDecision: attempt.decision.budgetDecision,
+      })),
+    ).toEqual([
+      {
+        model: "openai/gpt-5.4",
+        status: "failed",
+        budgetDecision: "over_budget",
+      },
+      {
+        model: "anthropic/claude-sonnet-4.8",
+        status: "skipped",
+        budgetDecision: "over_budget",
+      },
+      {
+        model: "openai-compatible/local",
+        status: "succeeded",
+        budgetDecision: "within_budget",
+      },
+    ]);
+  });
+
   it("calls AI SDK Gateway models with run metadata and measured usage", async () => {
     const calls: AiSdkTextGenerationInput[] = [];
     const generate: AiSdkTextGenerationFunction = async (input) => {

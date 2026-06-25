@@ -71,6 +71,11 @@ describe("Bek snapshot persistence mapping", () => {
           risk: "write_external",
           status: "approved",
           payloadHash: "abc123",
+          payloadMetadata: {
+            provider: "openai",
+            model: "openai/gpt-5.4",
+            estimatedCostCents: 4,
+          },
           requestedByPrincipalId: "principal_bryson",
           decidedByPrincipalId: "principal_admin",
           createdAt: "2026-01-02T03:04:05.000Z",

@@ -781,6 +781,7 @@ export const workerWorkRecords = pgTable(
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     approvalId: text("approval_id"),
     approvalPayloadHash: text("approval_payload_hash"),
+    approvalPayloadMetadata: jsonObject("approval_payload_metadata"),
     approvalAction: text("approval_action"),
     approvalRisk: riskLevelEnum("approval_risk"),
     approvalStatus: approvalStatusEnum("approval_status"),

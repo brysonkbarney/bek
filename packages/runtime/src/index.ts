@@ -45,6 +45,19 @@ export interface RuntimeModelBudgetPreflight {
   estimatedOutputTokens: number;
 }
 
+export interface RuntimeEffectiveModelBudget {
+  budgetCents: number;
+  source: "model_policy" | "budget_policy";
+  budgetPolicyId?: string | undefined;
+  approvedOverBudgetRoute?:
+    | {
+        provider: string;
+        model: string;
+        estimatedCostCents: number;
+      }
+    | undefined;
+}
+
 export interface RuntimeArtifactRef {
   id: string;
   kind: "patch" | "log" | "test_report" | "screenshot" | "summary" | "other";
@@ -122,6 +135,7 @@ export interface RuntimeStartInput {
   accessBundles: AccessBundle[];
   modelPolicy: ModelPolicy;
   modelRoute: RuntimeModelRoute;
+  effectiveModelBudget?: RuntimeEffectiveModelBudget | undefined;
   runtimeProfile: RuntimeProfile;
   grants: CapabilityGrant[];
   sandbox?: RuntimeSandboxContext | undefined;

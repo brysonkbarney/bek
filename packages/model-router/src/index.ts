@@ -616,7 +616,7 @@ export class VercelAiGatewayModelGateway implements ModelGateway {
 
 export interface ModelFailoverAttempt {
   route: ModelRoute;
-  status: "succeeded" | "failed";
+  status: "succeeded" | "failed" | "skipped";
   decision: ModelFailoverDecisionMetadata;
   error?: string | undefined;
   retryable?: boolean | undefined;
@@ -630,6 +630,7 @@ export interface ModelFailoverDecisionMetadata {
   model: string;
   estimatedCostCents: number;
   budgetDecision: ModelBudgetPreflightDecision;
+  budgetCents: number;
   remainingBudgetCents: number;
   reason: string;
 }
@@ -647,6 +648,15 @@ export interface ModelFailoverInput {
   registry?: ModelProviderRegistry | undefined;
   ledger?: InMemoryModelCostLedger | undefined;
   createdAt?: string | undefined;
+  requireKnownPricing?: boolean | undefined;
+  effectiveBudgetCents?: number | undefined;
+  approvedOverBudgetRoute?:
+    | {
+        provider: string;
+        model: string;
+        estimatedCostCents: number;
+      }
+    | undefined;
 }
 
 export interface ModelFailoverResult {
@@ -666,7 +676,7 @@ export async function runModelWithFailover(
   const attempts: ModelFailoverAttempt[] = [];
 
   for (const [index, route] of routes.entries()) {
-    const decision = failoverDecisionMetadata(route, index);
+    const decision = failoverDecisionMetadata(route, index, input);
 
     ledger.recordEstimate({
       runId: input.runId,
@@ -679,6 +689,18 @@ export async function runModelWithFailover(
       reason: route.reason,
       ...(input.createdAt ? { createdAt: input.createdAt } : {}),
     });
+
+    const skipReason = skipReasonForFailoverRoute(route, decision, input);
+    if (skipReason) {
+      attempts.push({
+        route,
+        status: "skipped",
+        decision,
+        error: skipReason,
+        retryable: false,
+      });
+      continue;
+    }
 
     try {
       const response = await input.gateway.complete({
@@ -948,17 +970,59 @@ function budgetPreflightReason(
 function failoverDecisionMetadata(
   route: ModelRoute,
   index: number,
+  input: ModelFailoverInput,
 ): ModelFailoverDecisionMetadata {
+  const budget = effectiveRouteBudgetPreflight(route, input);
   return {
     attempt: index + 1,
     kind: index === 0 ? "primary" : "fallback",
     provider: route.provider,
     model: route.model,
-    estimatedCostCents: route.estimatedCostCents,
-    budgetDecision: route.budget.decision,
-    remainingBudgetCents: route.budget.remainingBudgetCents,
+    estimatedCostCents: budget.estimatedCostCents,
+    budgetDecision: budget.decision,
+    budgetCents: budget.budgetCents,
+    remainingBudgetCents: budget.remainingBudgetCents,
     reason: route.reason,
   };
+}
+
+function effectiveRouteBudgetPreflight(
+  route: ModelRoute,
+  input: ModelFailoverInput,
+): ModelRouteBudgetPreflight {
+  const budgetCents = input.effectiveBudgetCents ?? route.budget.budgetCents;
+  const estimatedCostCents = route.estimatedCostCents;
+  const remainingBudgetCents = budgetCents - estimatedCostCents;
+  return {
+    ...route.budget,
+    decision: remainingBudgetCents >= 0 ? "within_budget" : "over_budget",
+    budgetCents,
+    estimatedCostCents,
+    remainingBudgetCents,
+  };
+}
+
+function skipReasonForFailoverRoute(
+  route: ModelRoute,
+  decision: ModelFailoverDecisionMetadata,
+  input: ModelFailoverInput,
+): string | undefined {
+  if (input.requireKnownPricing && !route.benchmark) {
+    return `Skipped ${route.model}: pricing metadata is required before calling budget-enforced model routes.`;
+  }
+  if (decision.budgetDecision === "within_budget") {
+    return undefined;
+  }
+  const approved = input.approvedOverBudgetRoute;
+  const approvedForRoute =
+    approved !== undefined &&
+    approved.provider === route.provider &&
+    approved.model === route.model &&
+    decision.estimatedCostCents <= approved.estimatedCostCents;
+  if (approvedForRoute) {
+    return undefined;
+  }
+  return `Skipped ${route.model}: estimated ${decision.estimatedCostCents} cents exceeds budget ceiling ${decision.budgetCents} cents.`;
 }
 
 function filterRoutableModels(

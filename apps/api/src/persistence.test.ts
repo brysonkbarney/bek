@@ -190,4 +190,43 @@ describe("API persistence bootstrap", () => {
       metadata: expect.objectContaining({ error: "provider timeout" }),
     });
   });
+
+  it("attributes failed usage to an attempted model before skipped fallbacks", () => {
+    const snapshot = createSeedSnapshot("2026-01-02T03:04:05.000Z");
+    const run = snapshot.runs[0]!;
+    const write = modelUsageWriteFromRunEvent(
+      {
+        id: "event_appended_skipped_fallback",
+        orgId: run.orgId,
+        runId: run.id,
+        type: "run.status_changed",
+        message: "AI SDK Gateway model call failed.",
+        data: {
+          workerEventType: "model.completed",
+          status: "failed",
+          error: "no fallback stayed within budget",
+          attempts: [
+            {
+              provider: "openai",
+              model: "openai/gpt-5.4",
+              status: "failed",
+            },
+            {
+              provider: "anthropic",
+              model: "anthropic/claude-sonnet-4.8",
+              status: "skipped",
+            },
+          ],
+        },
+        createdAt: "2026-01-02T03:04:07.000Z",
+      },
+      run,
+    );
+
+    expect(write).toMatchObject({
+      provider: "openai",
+      model: "openai/gpt-5.4",
+      status: "failed",
+    });
+  });
 });

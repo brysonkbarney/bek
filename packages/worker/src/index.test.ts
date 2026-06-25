@@ -10,6 +10,7 @@ import {
 } from "@bek/runtime";
 import {
   FakeModelGateway,
+  createModelProviderRegistry,
   type ModelGateway,
   type ModelGatewayRequest,
   type ModelGatewayResponse,
@@ -930,6 +931,202 @@ describe("worker runtime service", () => {
     });
   });
 
+  it("recomputes stale route budget metadata before starting adapters", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_service_stale_route_budget",
+    });
+    const modelPolicy = snapshot.modelPolicies.find(
+      (policy) => policy.id === run.modelPolicyId,
+    );
+    if (!modelPolicy) {
+      throw new Error("Expected model policy.");
+    }
+    modelPolicy.perRunBudgetCents = 50;
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_service_stale_route_budget",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+
+    let started = false;
+    const adapter: RuntimeAdapter = {
+      id: "ai-sdk-local-stub",
+      kind: "ai_sdk",
+      canRun: () => true,
+      async start() {
+        started = true;
+        return completedResult();
+      },
+      async resume() {
+        throw new Error("Unexpected resume.");
+      },
+      async cancel() {
+        throw new Error("Unexpected cancel.");
+      },
+    };
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [adapter],
+      workerId: "worker_service_stale_route_budget",
+      modelRouteProvider: ({ modelPolicy: policy }) => ({
+        provider: "openai",
+        model: policy.defaultModel,
+        reason: "Supplied by test route provider.",
+        estimatedCostCents: 100,
+        budget: {
+          decision: "within_budget",
+          budgetCents: 50,
+          estimatedCostCents: 1,
+          remainingBudgetCents: 49,
+          estimatedInputTokens: 10,
+          estimatedOutputTokens: 10,
+        },
+      }),
+      now: () => baseNow,
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected stale budget route to pause.");
+    }
+    expect(started).toBe(false);
+    expect(decision.result.status).toBe("awaiting_approval");
+    expect(
+      queue.read().events.find((event) => event.type === "budget.checked"),
+    ).toMatchObject({
+      data: {
+        estimatedCostCents: 100,
+        budgetDecision: "over_budget",
+        budgetCents: 50,
+      },
+    });
+  });
+
+  it("requires a new budget approval when the approved ceiling changes", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_service_budget_approval_drift",
+    });
+    const modelPolicy = snapshot.modelPolicies.find(
+      (policy) => policy.id === run.modelPolicyId,
+    );
+    if (!modelPolicy) {
+      throw new Error("Expected model policy.");
+    }
+    modelPolicy.perRunBudgetCents = 3;
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_service_budget_approval_drift",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+
+    let started = false;
+    const adapter: RuntimeAdapter = {
+      id: "ai-sdk-local-stub",
+      kind: "ai_sdk",
+      canRun: () => true,
+      async start() {
+        started = true;
+        return completedResult();
+      },
+      async resume() {
+        started = true;
+        return completedResult();
+      },
+      async cancel() {
+        throw new Error("Unexpected cancel.");
+      },
+    };
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [adapter],
+      workerId: "worker_service_budget_approval_drift",
+      now: () => baseNow,
+    });
+
+    const paused = await service.processNext({ now: baseNow });
+    expect(paused.decision).toBe("processed");
+    if (paused.decision !== "processed") {
+      throw new Error("Expected budget pause.");
+    }
+    const firstGate = queue
+      .read()
+      .records.find((record) => record.item.runId === run.id)?.approval;
+    if (!firstGate) {
+      throw new Error("Expected first approval gate.");
+    }
+    expect(firstGate.payloadMetadata).toMatchObject({
+      provider: "openai",
+      model: "openai/gpt-5.4",
+      estimatedCostCents: 4,
+      budgetCents: 3,
+    });
+
+    const resume = queue.resumeAfterApproval({
+      approval: {
+        id: firstGate.approvalId,
+        orgId: run.orgId,
+        runId: run.id,
+        action: firstGate.action,
+        risk: firstGate.risk,
+        status: "approved",
+        payloadHash: firstGate.payloadHash,
+        payloadMetadata: firstGate.payloadMetadata,
+        requestedByPrincipalId: run.requesterPrincipalId,
+        decidedByPrincipalId: "principal_admin",
+        createdAt: firstGate.createdAt,
+        expiresAt: firstGate.expiresAt,
+        decidedAt: "2026-06-24T18:00:01.000Z",
+      },
+      now: "2026-06-24T18:00:01.000Z",
+    });
+    expect(resume.decision).toBe("resume_enqueued");
+    modelPolicy.perRunBudgetCents = 1;
+
+    const drifted = await service.processNext({
+      now: "2026-06-24T18:00:02.000Z",
+    });
+
+    expect(drifted.decision).toBe("processed");
+    if (drifted.decision !== "processed") {
+      throw new Error("Expected drifted budget work to pause again.");
+    }
+    expect(started).toBe(false);
+    expect(drifted.result.status).toBe("awaiting_approval");
+    expect(drifted.settlement.decision).toBe("paused_for_approval");
+    const secondGate = queue
+      .read()
+      .records.find((record) => record.item.runId === run.id)?.approval;
+    expect(secondGate).toMatchObject({
+      status: "pending",
+      payloadMetadata: expect.objectContaining({
+        estimatedCostCents: 4,
+        budgetCents: 1,
+      }),
+    });
+  });
+
   it("processes queued runs through the AI SDK Gateway adapter", async () => {
     const { snapshot, run } = snapshotWithQueuedRun({
       runId: "run_gateway_service",
@@ -956,6 +1153,26 @@ describe("worker runtime service", () => {
       adapters: [
         createAiSdkGatewayRuntimeAdapter({
           gateway,
+          registry: createModelProviderRegistry([
+            {
+              id: "openai",
+              displayName: "OpenAI",
+              kind: "openai",
+              models: [
+                {
+                  id: "openai/gpt-5.4",
+                  benchmark: {
+                    model: "openai/gpt-5.4",
+                    qualityScore: 95,
+                    speedScore: 70,
+                    inputCostPerMillionTokensCents: 125,
+                    outputCostPerMillionTokensCents: 1000,
+                    contextWindowTokens: 400_000,
+                  },
+                },
+              ],
+            },
+          ]),
           gatewayTags: ["env:test"],
         }),
       ],
@@ -1026,6 +1243,216 @@ describe("worker runtime service", () => {
           input: expect.any(Number),
           output: expect.any(Number),
         },
+      },
+    });
+  });
+
+  it("keeps AI SDK Gateway fallback under the strictest runtime budget", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_gateway_budget_fallback",
+      prompt: "@bek summarize the incident with fallback",
+    });
+    const budgetPolicy = snapshot.budgetPolicies[0];
+    if (!budgetPolicy) {
+      throw new Error("Expected budget policy.");
+    }
+    budgetPolicy.perRunCents = 5;
+    const registry = createModelProviderRegistry([
+      {
+        id: "openai",
+        displayName: "OpenAI",
+        kind: "openai",
+        models: [
+          {
+            id: "openai/gpt-5.4",
+            benchmark: {
+              model: "openai/gpt-5.4",
+              qualityScore: 95,
+              speedScore: 70,
+              inputCostPerMillionTokensCents: 0,
+              outputCostPerMillionTokensCents: 1000,
+              contextWindowTokens: 400_000,
+            },
+          },
+        ],
+      },
+      {
+        id: "anthropic",
+        displayName: "Anthropic",
+        kind: "anthropic",
+        models: [
+          {
+            id: "anthropic/claude-sonnet-4.8",
+            benchmark: {
+              model: "anthropic/claude-sonnet-4.8",
+              qualityScore: 90,
+              speedScore: 80,
+              inputCostPerMillionTokensCents: 0,
+              outputCostPerMillionTokensCents: 5000,
+              contextWindowTokens: 200_000,
+            },
+          },
+        ],
+      },
+      {
+        id: "openai-compatible",
+        displayName: "Local Gateway",
+        kind: "local",
+        models: [
+          {
+            id: "openai-compatible/local",
+            benchmark: {
+              model: "openai-compatible/local",
+              qualityScore: 40,
+              speedScore: 100,
+              inputCostPerMillionTokensCents: 0,
+              outputCostPerMillionTokensCents: 0,
+              contextWindowTokens: 32_000,
+            },
+          },
+        ],
+      },
+    ]);
+    const calledModels: string[] = [];
+    const fakeGateway = new FakeModelGateway({
+      registry,
+      behaviors: {
+        "openai/gpt-5.4": {
+          fail: true,
+          error: "simulated primary outage",
+        },
+        "openai-compatible/local": {
+          content: "Local fallback completed.",
+          inputTokens: 10,
+          outputTokens: 5,
+        },
+      },
+    });
+    const gateway: ModelGateway = {
+      async complete(request) {
+        calledModels.push(request.route.model);
+        return fakeGateway.complete(request);
+      },
+    };
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_gateway_budget_fallback",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [
+        createAiSdkGatewayRuntimeAdapter({
+          gateway,
+          registry,
+        }),
+      ],
+      workerId: "worker_gateway_budget_fallback",
+      now: () => baseNow,
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected gateway budget fallback processing.");
+    }
+    expect(decision.result).toMatchObject({
+      status: "completed",
+      finalText: "Local fallback completed.",
+    });
+    expect(calledModels).toEqual(["openai/gpt-5.4", "openai-compatible/local"]);
+    expect(
+      queue.read().events.find((event) => event.type === "model.completed"),
+    ).toMatchObject({
+      data: {
+        status: "succeeded",
+        provider: "openai-compatible",
+        model: "openai-compatible/local",
+        attempts: [
+          {
+            model: "openai/gpt-5.4",
+            status: "failed",
+            retryable: true,
+          },
+          {
+            model: "anthropic/claude-sonnet-4.8",
+            status: "skipped",
+            retryable: false,
+          },
+          {
+            model: "openai-compatible/local",
+            status: "succeeded",
+          },
+        ],
+      },
+    });
+  });
+
+  it("fails closed before AI SDK Gateway calls when pricing metadata is missing", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_gateway_missing_pricing",
+      prompt: "@bek summarize the incident without pricing",
+    });
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_gateway_missing_pricing",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+    const gateway = new CapturingModelGateway();
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [
+        createAiSdkGatewayRuntimeAdapter({
+          gateway,
+        }),
+      ],
+      workerId: "worker_gateway_missing_pricing",
+      now: () => baseNow,
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected missing pricing processing.");
+    }
+    expect(gateway.requests).toHaveLength(0);
+    expect(decision.result).toMatchObject({
+      status: "failed",
+      actualCostCents: 0,
+    });
+    expect(
+      queue.read().events.find((event) => event.type === "model.completed"),
+    ).toMatchObject({
+      data: {
+        status: "failed",
+        attempts: expect.arrayContaining([
+          expect.objectContaining({
+            model: "openai/gpt-5.4",
+            status: "skipped",
+          }),
+        ]),
       },
     });
   });

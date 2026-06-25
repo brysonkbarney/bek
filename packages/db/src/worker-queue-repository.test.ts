@@ -1,3 +1,4 @@
+import { createApprovalRequest } from "@bek/core";
 import { createRunWorkItem } from "@bek/runtime";
 import { InMemoryWorkerQueue } from "@bek/worker";
 import { describe, expect, it } from "vitest";
@@ -68,6 +69,69 @@ describe("worker queue persistence mapping", () => {
     expect(JSON.stringify(roundTripped)).not.toContain("abcdefghijklmnopqrstu");
     expect(roundTripped.records[0]).toMatchObject({
       terminalReason: "failed with [redacted:bearer-token]",
+    });
+  });
+
+  it("round-trips paused approval payload metadata", () => {
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: "org_demo",
+        runId: "run_worker_approval_metadata",
+        reason: "new_run",
+        traceId: "trace_worker_approval_metadata",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+    const claim = queue.claimNext({
+      workerId: "worker_1",
+      leaseMs: 5_000,
+      now: baseNow,
+    });
+    if (claim.decision !== "claimed") {
+      throw new Error("Expected claim.");
+    }
+    const approval = createApprovalRequest(
+      "org_demo",
+      "run_worker_approval_metadata",
+      "principal_bryson",
+      "budget.increase",
+      {
+        provider: "openai",
+        model: "openai/gpt-5.4",
+        estimatedCostCents: 4,
+        budgetCents: 3,
+        budgetSource: "model_policy",
+      },
+      "privileged",
+      baseNow,
+    );
+    queue.settle({
+      leaseId: claim.lease.id,
+      result: {
+        status: "awaiting_approval",
+        artifactRefs: [],
+        actualCostCents: 0,
+      },
+      approval,
+      now: "2026-06-24T18:00:02.000Z",
+    });
+
+    const rows = workerSnapshotToRows("org_demo", queue.read());
+    expect(rows.records[0]).toMatchObject({
+      approvalPayloadMetadata: expect.objectContaining({
+        model: "openai/gpt-5.4",
+        budgetCents: 3,
+      }),
+    });
+    expect(rowsToWorkerSnapshot(rows).records[0]?.approval).toMatchObject({
+      payloadMetadata: expect.objectContaining({
+        provider: "openai",
+        estimatedCostCents: 4,
+      }),
     });
   });
 

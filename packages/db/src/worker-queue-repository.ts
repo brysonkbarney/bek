@@ -437,6 +437,7 @@ function workerWorkRecordUpdateSet(row: WorkerWorkRecordRow) {
     leaseExpiresAt: row.leaseExpiresAt,
     approvalId: row.approvalId,
     approvalPayloadHash: row.approvalPayloadHash,
+    approvalPayloadMetadata: row.approvalPayloadMetadata,
     approvalAction: row.approvalAction,
     approvalRisk: row.approvalRisk,
     approvalStatus: row.approvalStatus,
@@ -479,6 +480,7 @@ function workerRecordToRow(
     leaseExpiresAt: lease ? toDate(lease.expiresAt) : null,
     approvalId: approval?.approvalId ?? null,
     approvalPayloadHash: approval?.payloadHash ?? null,
+    approvalPayloadMetadata: approval?.payloadMetadata ?? {},
     approvalAction: approval?.action ?? null,
     approvalRisk: approval?.risk ?? null,
     approvalStatus: approval?.status ?? null,
@@ -630,6 +632,9 @@ function approvalFromRow(
   return {
     approvalId: row.approvalId,
     payloadHash: row.approvalPayloadHash ?? "",
+    ...(nonEmptyRecord(row.approvalPayloadMetadata)
+      ? { payloadMetadata: row.approvalPayloadMetadata }
+      : {}),
     action: row.approvalAction ?? "unknown",
     risk: row.approvalRisk ?? "write_external",
     status: row.approvalStatus ?? "pending",
@@ -672,6 +677,15 @@ function workerEventFromRow(row: WorkerEventRow): WorkerEvent {
     event.data = denormalizeWorkerEventData(row.orgId, row.data);
   }
   return event;
+}
+
+function nonEmptyRecord(
+  value: Record<string, unknown> | null,
+): Record<string, unknown> | undefined {
+  if (!value || Object.keys(value).length === 0) {
+    return undefined;
+  }
+  return value;
 }
 
 function toDate(value: Date | string): Date {

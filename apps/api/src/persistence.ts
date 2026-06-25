@@ -417,6 +417,7 @@ function routeFromAttempts(
     attempts
       .filter(isRecord)
       .find((attempt) => attempt.status === "succeeded") ??
+    attempts.filter(isRecord).find((attempt) => attempt.status === "failed") ??
     attempts.filter(isRecord).at(-1);
   const provider = readString(candidate?.provider);
   const model = readString(candidate?.model);

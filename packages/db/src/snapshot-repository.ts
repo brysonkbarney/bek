@@ -238,6 +238,7 @@ type ApprovalSnapshotRow = Pick<
   | "risk"
   | "status"
   | "payloadHash"
+  | "payloadMetadata"
   | "requestedByPrincipalId"
   | "decidedByPrincipalId"
   | "createdAt"
@@ -618,6 +619,7 @@ export function snapshotToRows(
       risk: approval.risk,
       status: approval.status,
       payloadHash: approval.payloadHash,
+      payloadMetadata: approval.payloadMetadata ?? {},
       requestedByPrincipalId: approval.requestedByPrincipalId,
       decidedByPrincipalId: approval.decidedByPrincipalId ?? null,
       createdAt: toDate(approval.createdAt),
@@ -1009,6 +1011,9 @@ function approvalFromRow(row: ApprovalSnapshotRow): ApprovalRequest {
     risk: row.risk,
     status: row.status,
     payloadHash: row.payloadHash,
+    ...(nonEmptyRecord(row.payloadMetadata)
+      ? { payloadMetadata: row.payloadMetadata }
+      : {}),
     requestedByPrincipalId: row.requestedByPrincipalId,
     createdAt: toIso(row.createdAt),
     expiresAt: toIso(row.expiresAt),
