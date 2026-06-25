@@ -5,12 +5,14 @@ Status: partially wired.
 Bek's current admin **Audit** page combines run events with durable admin audit
 rows, but it is not yet a customer-grade append-only audit ledger. Bek now has a
 core `AuditEvent` shape, snapshot persistence for the database `audit_events`
-table, API emitters for access-bundle/grant admin mutations, and UI visibility
-for those rows. It does not yet write structured audit rows for every Slack
-ingress/outbox transition, GitHub webhook/action, worker transition, model call,
-tool call, credential lease, or sandbox action. Treat full audit as a launch
-blocker for hosted beta until the remaining side-effect emitters, export path,
-health checks, and UI explorer are wired end to end.
+table, API emitters for access-bundle/grant and MCP server admin mutations,
+filterable API/UI review, and authenticated redaction-safe NDJSON/CSV export for
+the combined audit/run log. It does not yet write structured audit rows for
+every Slack ingress/outbox transition, GitHub webhook/action, worker transition,
+model call, tool call, credential lease, or sandbox action. Treat full audit as
+a launch blocker for hosted beta until the remaining side-effect emitters,
+health checks, export checkpoints, and explorer detail views are wired end to
+end.
 
 Bek's observability layer is intentionally storage-neutral. The
 `@bek/observability` package gives runtime, worker, API, and future DB adapters a
@@ -98,6 +100,7 @@ Before Bek can claim hosted/customer auditability, implement these pieces:
   mutations already emit durable audit rows.
 - `tool_usage` repository and summaries matching the existing model-usage
   ledger shape.
-- `/api/audit-events` cursor/filter support and redaction-safe NDJSON export.
-- Audit explorer UI filters, resource/run/provider/risk columns, detail drawer,
-  export, and hash/redaction status.
+- Cursor support and persisted export checkpoints for `/api/audit-events`.
+- Audit explorer resource/provider/risk columns, detail drawer, and
+  hash/redaction status. Basic source/search/action/run filters and
+  NDJSON/CSV export are active in the admin page.

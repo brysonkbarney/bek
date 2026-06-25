@@ -493,6 +493,29 @@ export interface AuditEvent {
 }
 
 export type AuditLogEntry = AuditEvent | RunEvent;
+export type AuditEventSource = "all" | "audit" | "run";
+export type AuditExportFormat = "ndjson" | "csv";
+
+export interface AuditEventFilters {
+  source?: AuditEventSource;
+  action?: string;
+  runId?: string;
+  resourceType?: string;
+  resourceId?: string;
+  actorPrincipalId?: string;
+  decision?: AuditEvent["decision"];
+  risk?: string;
+  q?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+}
+
+export interface AuditEventExport {
+  filename: string;
+  contentType: string;
+  text: string;
+}
 
 export interface ApprovalRequest {
   id: string;
@@ -699,8 +722,85 @@ export async function fetchModelUsage(): Promise<ModelUsage> {
   return jsonRequest<ModelUsage>("/api/model-usage");
 }
 
-export async function fetchAuditEvents(): Promise<AuditLogEntry[]> {
-  return jsonRequest<AuditLogEntry[]>("/api/audit-events");
+export function auditEventsPath(filters: AuditEventFilters = {}): string {
+  const params = auditEventFilterParams(filters);
+  const query = params.toString();
+  return query ? `/api/audit-events?${query}` : "/api/audit-events";
+}
+
+export function auditEventsExportPath(
+  format: AuditExportFormat,
+  filters: AuditEventFilters = {},
+): string {
+  const params = auditEventFilterParams(filters);
+  params.set("format", format);
+  return `/api/audit-events/export?${params.toString()}`;
+}
+
+export async function fetchAuditEvents(
+  filters: AuditEventFilters = {},
+): Promise<AuditLogEntry[]> {
+  return jsonRequest<AuditLogEntry[]>(auditEventsPath(filters));
+}
+
+export async function fetchAuditEventExport(
+  format: AuditExportFormat,
+  filters: AuditEventFilters = {},
+): Promise<AuditEventExport> {
+  const path = auditEventsExportPath(format, filters);
+  const res = await fetch(`${readBekApiUrl()}${path}`, {
+    headers: adminAuthHeaders(),
+  });
+  if (!res.ok) {
+    throw await apiError(path, res);
+  }
+  const fallbackName = `bek-audit.${format === "csv" ? "csv" : "ndjson"}`;
+  return {
+    filename:
+      filenameFromContentDisposition(res.headers.get("content-disposition")) ??
+      fallbackName,
+    contentType:
+      res.headers.get("content-type") ??
+      (format === "csv" ? "text/csv" : "application/x-ndjson"),
+    text: await res.text(),
+  };
+}
+
+function auditEventFilterParams(filters: AuditEventFilters): URLSearchParams {
+  const params = new URLSearchParams();
+  appendOptionalParam(params, "source", filters.source);
+  appendOptionalParam(params, "action", filters.action);
+  appendOptionalParam(params, "runId", filters.runId);
+  appendOptionalParam(params, "resourceType", filters.resourceType);
+  appendOptionalParam(params, "resourceId", filters.resourceId);
+  appendOptionalParam(params, "actorPrincipalId", filters.actorPrincipalId);
+  appendOptionalParam(params, "decision", filters.decision);
+  appendOptionalParam(params, "risk", filters.risk);
+  appendOptionalParam(params, "q", filters.q);
+  appendOptionalParam(params, "since", filters.since);
+  appendOptionalParam(params, "until", filters.until);
+  if (filters.limit !== undefined) {
+    params.set("limit", String(filters.limit));
+  }
+  return params;
+}
+
+function appendOptionalParam(
+  params: URLSearchParams,
+  key: string,
+  value: string | undefined,
+) {
+  const trimmed = value?.trim();
+  if (trimmed) {
+    params.set(key, trimmed);
+  }
+}
+
+function filenameFromContentDisposition(
+  disposition: string | null,
+): string | undefined {
+  const match = disposition?.match(/filename="([^"]+)"/i);
+  return match?.[1];
 }
 
 export function slackInstallStartPath(returnTo = "/connectors"): string {

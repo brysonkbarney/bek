@@ -88,6 +88,12 @@ import {
   type WorkerGitHubDraftPullRequestExecutionOptions,
 } from "@bek/worker";
 import {
+  exportAuditEvents,
+  formatAuditEventExportNdjson,
+  type AuditEventExportRecord,
+  type AuditEventLike,
+} from "@bek/observability";
+import {
   modelUsageTotalsFromRuns,
   type ModelUsageRepository,
   type ModelUsageSink,
@@ -111,6 +117,7 @@ type PublicBekSnapshot = Omit<
   BekSnapshot,
   "auditEvents" | "ingressDeliveries" | "outboundDeliveries"
 >;
+type PublicAuditLogEntry = AuditEvent | RunEvent;
 type PublicOutboundDelivery = Omit<
   OutboundDelivery,
   "orgId" | "key" | "target" | "payload"
@@ -154,6 +161,20 @@ interface RecordAdminAuditEventInput {
   risk?: CapabilityGrant["risk"] | undefined;
   message: string;
   data?: Record<string, unknown> | undefined;
+}
+interface AuditEventQuery {
+  source: "all" | "audit" | "run";
+  action?: string | undefined;
+  runId?: string | undefined;
+  resourceType?: string | undefined;
+  resourceId?: string | undefined;
+  actorPrincipalId?: string | undefined;
+  decision?: CapabilityGrant["decision"] | undefined;
+  risk?: CapabilityGrant["risk"] | undefined;
+  q?: string | undefined;
+  since?: string | undefined;
+  until?: string | undefined;
+  limit: number;
 }
 
 type BekHonoEnv = {
@@ -2209,10 +2230,33 @@ export function createApp(
   app.get("/api/approvals", (c) => c.json(store.read().approvals));
   app.get("/api/audit-events", (c) => {
     const snapshot = store.read();
-    return c.json([
-      ...snapshot.auditEvents.map(publicAuditEvent),
-      ...snapshot.events.map(publicRunEvent),
-    ]);
+    const query = auditEventQuerySchema.parse(c.req.query());
+    return c.json(filteredPublicAuditLogEntries(snapshot, query));
+  });
+  app.get("/api/audit-events/export", (c) => {
+    const snapshot = store.read();
+    const query = auditEventExportQuerySchema.parse(c.req.query());
+    const entries = filteredPublicAuditLogEntries(snapshot, query);
+    const auditExport = exportAuditEvents(entries.map(auditLikeFromLogEntry), {
+      includeData: true,
+    });
+    const body =
+      query.format === "csv"
+        ? formatAuditEventExportCsv(auditExport.events)
+        : formatAuditEventExportNdjson(auditExport);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    c.header(
+      "content-disposition",
+      `attachment; filename="bek-audit-${timestamp}.${query.format === "csv" ? "csv" : "ndjson"}"`,
+    );
+    c.header("access-control-expose-headers", "content-disposition");
+    c.header(
+      "content-type",
+      query.format === "csv"
+        ? "text/csv; charset=utf-8"
+        : "application/x-ndjson; charset=utf-8",
+    );
+    return c.body(body);
   });
   app.get("/api/model-usage", async (c) => {
     const snapshot = store.read();
@@ -3544,6 +3588,42 @@ const updateGrantSchema = grantSchema.partial().refine(hasAtLeastOneField, {
   message: "At least one field must be provided.",
 });
 
+const auditTimestampSchema = z
+  .string()
+  .trim()
+  .refine(
+    (value) => !Number.isNaN(Date.parse(value)),
+    "Timestamp must be parseable as a date.",
+  );
+
+const auditEventQuerySchema = z
+  .object({
+    source: z.enum(["all", "audit", "run"]).optional().default("all"),
+    action: z.string().trim().min(1).max(160).optional(),
+    runId: z.string().trim().min(1).max(160).optional(),
+    resourceType: z.string().trim().min(1).max(160).optional(),
+    resourceId: z.string().trim().min(1).max(320).optional(),
+    actorPrincipalId: z.string().trim().min(1).max(160).optional(),
+    decision: decisionSchema.optional(),
+    risk: riskSchema.optional(),
+    q: z.string().trim().toLowerCase().min(1).max(320).optional(),
+    since: auditTimestampSchema.optional(),
+    until: auditTimestampSchema.optional(),
+    limit: z
+      .preprocess(
+        (value) =>
+          typeof value === "string" && value.trim() ? Number(value) : value,
+        z.number().int().min(1).max(1000).default(200),
+      )
+      .optional()
+      .default(200),
+  })
+  .strict();
+
+const auditEventExportQuerySchema = auditEventQuerySchema.extend({
+  format: z.enum(["ndjson", "csv"]).optional().default("ndjson"),
+});
+
 const updateModelPolicySchema = z
   .object({
     name: z.string().min(1).optional(),
@@ -4077,6 +4157,164 @@ function publicAuditEvent(event: AuditEvent): AuditEvent {
     publicEvent.data = redactUnknown(event.data) as Record<string, unknown>;
   }
   return publicEvent;
+}
+
+function filteredPublicAuditLogEntries(
+  snapshot: BekSnapshot,
+  query: AuditEventQuery,
+): PublicAuditLogEntry[] {
+  return publicAuditLogEntries(snapshot)
+    .filter((entry) => auditLogEntryMatchesQuery(entry, query))
+    .slice(0, query.limit);
+}
+
+function publicAuditLogEntries(snapshot: BekSnapshot): PublicAuditLogEntry[] {
+  return [
+    ...snapshot.auditEvents.map(publicAuditEvent),
+    ...snapshot.events.map(publicRunEvent),
+  ].sort(compareAuditLogEntries);
+}
+
+function compareAuditLogEntries(
+  left: PublicAuditLogEntry,
+  right: PublicAuditLogEntry,
+): number {
+  const timeDelta =
+    Date.parse(right.createdAt) - Date.parse(left.createdAt) ||
+    right.createdAt.localeCompare(left.createdAt);
+  if (timeDelta !== 0) {
+    return timeDelta;
+  }
+  return right.id.localeCompare(left.id);
+}
+
+function auditLogEntryMatchesQuery(
+  entry: PublicAuditLogEntry,
+  query: AuditEventQuery,
+): boolean {
+  const source = auditLogEntrySource(entry);
+  if (query.source !== "all" && source !== query.source) return false;
+  if (query.action && auditLogEntryAction(entry) !== query.action) return false;
+  if (query.runId && entry.runId !== query.runId) return false;
+  if (query.since && Date.parse(entry.createdAt) < Date.parse(query.since)) {
+    return false;
+  }
+  if (query.until && Date.parse(entry.createdAt) > Date.parse(query.until)) {
+    return false;
+  }
+  if ("action" in entry) {
+    if (query.resourceType && entry.resourceType !== query.resourceType) {
+      return false;
+    }
+    if (query.resourceId && entry.resourceId !== query.resourceId) {
+      return false;
+    }
+    if (
+      query.actorPrincipalId &&
+      entry.actorPrincipalId !== query.actorPrincipalId
+    ) {
+      return false;
+    }
+    if (query.decision && entry.decision !== query.decision) return false;
+    if (query.risk && entry.risk !== query.risk) return false;
+  } else if (
+    query.resourceType ||
+    query.resourceId ||
+    query.actorPrincipalId ||
+    query.decision ||
+    query.risk
+  ) {
+    return false;
+  }
+  return !query.q || auditLogEntrySearchText(entry).includes(query.q);
+}
+
+function auditLogEntrySource(entry: PublicAuditLogEntry): "audit" | "run" {
+  return "action" in entry ? "audit" : "run";
+}
+
+function auditLogEntryAction(entry: PublicAuditLogEntry): string {
+  return "action" in entry ? entry.action : entry.type;
+}
+
+function auditLogEntrySearchText(entry: PublicAuditLogEntry): string {
+  return [
+    auditLogEntrySource(entry),
+    auditLogEntryAction(entry),
+    entry.id,
+    entry.runId,
+    entry.message,
+    "action" in entry ? entry.resourceType : undefined,
+    "action" in entry ? entry.resourceId : undefined,
+    "action" in entry ? entry.actorPrincipalId : undefined,
+    JSON.stringify(entry.data ?? {}),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function auditLikeFromLogEntry(entry: PublicAuditLogEntry): AuditEventLike {
+  if ("action" in entry) {
+    return entry;
+  }
+  return {
+    id: entry.id,
+    orgId: entry.orgId,
+    runId: entry.runId,
+    action: entry.type,
+    resourceType: "run",
+    resourceId: entry.runId,
+    message: entry.message,
+    data: entry.data,
+    createdAt: entry.createdAt,
+  };
+}
+
+function formatAuditEventExportCsv(records: AuditEventExportRecord[]): string {
+  const headers = [
+    "id",
+    "orgId",
+    "createdAt",
+    "action",
+    "category",
+    "resourceType",
+    "resourceId",
+    "actorPrincipalId",
+    "runId",
+    "decision",
+    "risk",
+    "eventHash",
+    "dataHash",
+    "message",
+    "data",
+  ];
+  const rows = records.map((record) =>
+    headers.map((header) => csvCell(auditExportRecordValue(record, header))),
+  );
+  return [
+    headers.map(csvCell).join(","),
+    ...rows.map((row) => row.join(",")),
+  ].join("\n");
+}
+
+function auditExportRecordValue(
+  record: AuditEventExportRecord,
+  header: string,
+): string {
+  if (header === "data") {
+    return JSON.stringify(record.data ?? {});
+  }
+  const value = record[header as keyof AuditEventExportRecord];
+  return typeof value === "string"
+    ? value
+    : value === undefined
+      ? ""
+      : String(value);
+}
+
+function csvCell(value: string): string {
+  return /[",\n\r]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
 }
 
 function publicOutboundDelivery(

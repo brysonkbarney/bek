@@ -40,6 +40,9 @@ importers:
       "@bek/github":
         specifier: workspace:*
         version: link:../../packages/github
+      "@bek/observability":
+        specifier: workspace:*
+        version: link:../../packages/observability
       "@bek/runtime":
         specifier: workspace:*
         version: link:../../packages/runtime

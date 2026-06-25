@@ -2443,6 +2443,72 @@ describe("Bek API", () => {
     expect(invalidPatchId.status).toBe(400);
   });
 
+  it("filters and exports redaction-safe audit events", async () => {
+    const app = createApp();
+    const created = await app.request("/api/connectors/mcp", {
+      method: "POST",
+      body: JSON.stringify({
+        serverId: "linear",
+        displayName: "Linear",
+        transport: "stdio",
+        origin: "npx @linear/mcp-server",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(created.status).toBe(201);
+
+    await expect(
+      expectJson(app, "/api/audit-events?source=run&action=run.completed"),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        type: "run.completed",
+        runId: "run_demo",
+      }),
+    ]);
+    await expect(
+      expectJson(
+        app,
+        "/api/audit-events?source=audit&resourceType=mcp_server&q=linear",
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        action: "mcp_server.registered",
+        resourceId: "linear",
+      }),
+    ]);
+    await expect(
+      expectJson(app, "/api/audit-events?limit=1"),
+    ).resolves.toHaveLength(1);
+
+    const ndjson = await app.request(
+      "/api/audit-events/export?source=audit&action=mcp_server.registered&format=ndjson",
+    );
+    expect(ndjson.status).toBe(200);
+    expect(ndjson.headers.get("content-type")).toContain(
+      "application/x-ndjson",
+    );
+    expect(ndjson.headers.get("content-disposition")).toContain("bek-audit-");
+    const ndjsonText = await ndjson.text();
+    expect(ndjsonText.split("\n")).toHaveLength(2);
+    expect(ndjsonText).toContain('"recordType":"audit_export"');
+    expect(ndjsonText).toContain('"recordType":"audit_event"');
+    expect(ndjsonText).toContain('"action":"mcp_server.registered"');
+
+    const csv = await app.request(
+      "/api/audit-events/export?source=audit&action=mcp_server.registered&format=csv",
+    );
+    expect(csv.status).toBe(200);
+    expect(csv.headers.get("content-type")).toContain("text/csv");
+    const csvText = await csv.text();
+    expect(csvText.split("\n")[0]).toContain(
+      "id,orgId,createdAt,action,category",
+    );
+    expect(csvText).toContain("mcp_server.registered");
+
+    const invalidLimit = await app.request("/api/audit-events?limit=5000");
+    expect(invalidLimit.status).toBe(400);
+  });
+
   it("handles access bundle idempotency and invalid grant mutations", async () => {
     const app = createApp();
     const bundleRes = await app.request("/api/access-bundles", {

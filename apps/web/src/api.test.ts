@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   adminAuthHeaders,
+  auditEventsExportPath,
+  auditEventsPath,
   cancelRunPath,
   clearAdminApiToken,
   decideApproval,
@@ -8,6 +10,7 @@ import {
   detachBundleFromPlace,
   drainSlackOutbox,
   discoverSlackChannels,
+  fetchAuditEventExport,
   fetchBootstrap,
   fetchAuditEvents,
   fetchGitHubSetup,
@@ -524,6 +527,71 @@ describe("web API helpers", () => {
 
     await expect(fetchAuditEvents()).resolves.toEqual(auditEvents);
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("builds filtered audit event and export paths", () => {
+    expect(
+      auditEventsPath({
+        source: "audit",
+        q: " linear ",
+        action: "mcp_server.registered",
+        limit: 50,
+      }),
+    ).toBe(
+      "/api/audit-events?source=audit&action=mcp_server.registered&q=linear&limit=50",
+    );
+    expect(
+      auditEventsExportPath("csv", {
+        source: "run",
+        runId: "run_123",
+      }),
+    ).toBe("/api/audit-events/export?source=run&runId=run_123&format=csv");
+  });
+
+  it("fetches filtered audit events and exports with admin auth", async () => {
+    const storage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveAdminApiToken("runtime-token");
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(init?.headers).toEqual({ authorization: "Bearer runtime-token" });
+      if (String(input).includes("/api/audit-events/export")) {
+        expect(String(input)).toBe(
+          "http://localhost:4317/api/audit-events/export?source=audit&q=linear&limit=50&format=csv",
+        );
+        return new Response("id,action\naudit_1,mcp_server.registered", {
+          status: 200,
+          headers: {
+            "content-type": "text/csv",
+            "content-disposition": 'attachment; filename="bek-audit-demo.csv"',
+          },
+        });
+      }
+      expect(String(input)).toBe(
+        "http://localhost:4317/api/audit-events?source=audit&q=linear&limit=50",
+      );
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchAuditEvents({ source: "audit", q: "linear", limit: 50 }),
+    ).resolves.toEqual([]);
+    await expect(
+      fetchAuditEventExport("csv", {
+        source: "audit",
+        q: "linear",
+        limit: 50,
+      }),
+    ).resolves.toEqual({
+      filename: "bek-audit-demo.csv",
+      contentType: "text/csv",
+      text: "id,action\naudit_1,mcp_server.registered",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("registers MCP connectors with admin auth", async () => {

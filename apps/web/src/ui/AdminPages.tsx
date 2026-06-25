@@ -7,6 +7,7 @@ import {
   Clock,
   Copy,
   Database,
+  Download,
   ExternalLink,
   GitPullRequest,
   KeyRound,
@@ -31,6 +32,7 @@ import {
   decideApproval,
   detachBundleFromPlace,
   discoverSlackChannels,
+  fetchAuditEventExport,
   fetchAuditEvents,
   fetchBootstrap,
   fetchGitHubSetup,
@@ -48,6 +50,9 @@ import {
   updateModelPolicy,
   updateChannel,
   type AccessBundle,
+  type AuditEventFilters,
+  type AuditEventSource,
+  type AuditExportFormat,
   type AuditLogEntry,
   type ApprovalRequest,
   type Bootstrap,
@@ -3233,21 +3238,155 @@ export function MemoryPage() {
 }
 
 export function AuditPage() {
+  const [source, setSource] = useState<AuditEventSource>("all");
+  const [search, setSearch] = useState("");
+  const [action, setAction] = useState("");
+  const [runId, setRunId] = useState("");
+  const [limit, setLimit] = useState(200);
+  const [exportingFormat, setExportingFormat] =
+    useState<AuditExportFormat | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const filters: AuditEventFilters = {
+    source,
+    q: search,
+    action,
+    runId,
+    limit,
+  };
   const { data, isLoading, error } = useQuery({
-    queryKey: ["audit-events"],
-    queryFn: fetchAuditEvents,
+    queryKey: ["audit-events", filters],
+    queryFn: () => fetchAuditEvents(filters),
   });
 
   if (isLoading) return <div className="state">Loading audit log...</div>;
   if (error || !data)
     return <div className="state error">Bek API is not reachable.</div>;
 
+  async function downloadAudit(format: AuditExportFormat) {
+    setExportError(null);
+    setExportingFormat(format);
+    try {
+      const exported = await fetchAuditEventExport(format, filters);
+      const blob = new Blob([exported.text], { type: exported.contentType });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = exported.filename;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (downloadError) {
+      setExportError(
+        errorMessage(downloadError, "Bek could not export the audit log."),
+      );
+    } finally {
+      setExportingFormat(null);
+    }
+  }
+
   return (
     <div className="page">
       <PageHeader
         eyebrow="Audit"
         title="Every policy decision and action should leave a trail."
+        actions={
+          <>
+            <button
+              className="secondary"
+              type="button"
+              disabled={exportingFormat !== null}
+              aria-busy={exportingFormat === "ndjson"}
+              onClick={() => void downloadAudit("ndjson")}
+            >
+              <Download size={16} aria-hidden="true" />
+              {exportingFormat === "ndjson" ? "Exporting..." : "NDJSON"}
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              disabled={exportingFormat !== null}
+              aria-busy={exportingFormat === "csv"}
+              onClick={() => void downloadAudit("csv")}
+            >
+              <Download size={16} aria-hidden="true" />
+              {exportingFormat === "csv" ? "Exporting..." : "CSV"}
+            </button>
+          </>
+        }
       />
+      <Panel title="Audit filters">
+        {exportError ? <WarningCallout>{exportError}</WarningCallout> : null}
+        <form
+          className="settings-grid compact-form"
+          onSubmit={(event) => event.preventDefault()}
+        >
+          <label>
+            Source
+            <select
+              value={source}
+              onChange={(event) =>
+                setSource(event.target.value as AuditEventSource)
+              }
+            >
+              <option value="all">all</option>
+              <option value="audit">audit</option>
+              <option value="run">run</option>
+            </select>
+          </label>
+          <label className="wide-field">
+            Search
+            <input
+              value={search}
+              placeholder="mcp_server.updated"
+              onChange={(event) => setSearch(event.target.value)}
+            />
+          </label>
+          <label>
+            Action
+            <input
+              value={action}
+              placeholder="access_grant.updated"
+              onChange={(event) => setAction(event.target.value)}
+            />
+          </label>
+          <label>
+            Run ID
+            <input
+              value={runId}
+              placeholder="run_123"
+              onChange={(event) => setRunId(event.target.value)}
+            />
+          </label>
+          <label>
+            Limit
+            <select
+              value={limit}
+              onChange={(event) => setLimit(Number(event.target.value))}
+            >
+              <option value={50}>50</option>
+              <option value={200}>200</option>
+              <option value={500}>500</option>
+              <option value={1000}>1000</option>
+            </select>
+          </label>
+          <div className="form-actions">
+            <button
+              className="secondary"
+              type="button"
+              onClick={() => {
+                setSource("all");
+                setSearch("");
+                setAction("");
+                setRunId("");
+                setLimit(200);
+              }}
+            >
+              Reset
+            </button>
+          </div>
+        </form>
+      </Panel>
       <Panel>
         <EventTimeline events={data} />
       </Panel>

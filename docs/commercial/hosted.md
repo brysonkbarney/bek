@@ -98,7 +98,8 @@ handholding.
   buttons use vaulted install tokens with durable delivery tracking.
 - GitHub App installation, repo-scoped tokens, branch creation, and draft PRs
   are gated by approval.
-- Persistent Postgres, queue, object storage, and audit export are active.
+- Persistent Postgres, durable queue, object storage, complete side-effect audit
+  coverage, and audit export checkpoints are active.
 - Model usage is accounted by org, channel, run, provider, model, and phase.
 - Sandbox execution uses hosted microVM isolation with default-deny egress.
 - Admin API has real identity, RBAC, and tenant isolation tests.

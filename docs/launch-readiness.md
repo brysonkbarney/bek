@@ -137,7 +137,10 @@ These product items block broad design-partner rollout, not a code-only release 
 - Tenant isolation tests pass.
 - Access admin mutations emit durable audit events with their side effects, and
   the smoke script asserts grant create/update/place-attach and MCP server
-  registration/update audit rows.
+  registration/update audit rows. Filtered audit/run review plus redaction-safe
+  NDJSON/CSV export are active; hosted beta still needs durable audit emitters
+  for every Slack, GitHub, worker, model, credential, tool, and sandbox side
+  effect.
 - CORS stays allowlisted and admin API auth is mandatory for hosted/prod.
 - Slack unsigned demo mode cannot work in production.
 

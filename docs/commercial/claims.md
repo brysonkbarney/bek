@@ -28,6 +28,9 @@ sound ambitious, but the claims need to match the code that exists today.
   Connectors page; new registrations default to `pending`, and Postgres-backed
   deployments persist registration/update audit rows.
 - Bek rejects new `mcp.tool` grants that point at unregistered MCP servers.
+- The Audit API and admin page support filtered review of durable audit rows and
+  run events, plus authenticated redaction-safe NDJSON/CSV export with event
+  hashes.
 - Bek is designed to support many models, runtimes, MCP tools, repos, and
   sandboxes behind one visible teammate.
 - Hosted Bek is planned as a managed design-partner/waitlist offering.
@@ -46,9 +49,9 @@ sound ambitious, but the claims need to match the code that exists today.
   invocation.
 - Do not claim org-wide memory. The current Memory page is a stance page; Bek
   does not yet have source/chunk/embedding/citation storage or retrieval.
-- Do not claim customer-grade audit export. Bek persists durable audit rows for
-  access admin mutations, but the current Audit UI is mostly run timeline
-  evidence and export/filtering still needs work.
+- Do not claim a complete compliance-grade append-only audit ledger. Bek has
+  filtered audit/run export, but it still does not emit durable audit rows for
+  every Slack, GitHub, worker, model, credential, tool, and sandbox side effect.
 - Do not claim billing-grade spend controls. Current cost values are local
   estimates, not provider invoice reconciliation.
 - Do not claim compliance, SOC 2, tenant isolation, or managed key custody until
@@ -69,9 +72,10 @@ Then show:
 3. A run that pauses for a risky action approval.
 4. Model/budget settings.
 5. Slack connector status and principal mapping.
-6. Run timeline and current audit evidence.
+6. Audit filters plus NDJSON/CSV export for current run/admin evidence.
 
 Close by being explicit: the OSS spine is real, single-tenant self-hosted pilots
 are possible with handholding, and hosted Bek is not GA until tenant isolation,
 RBAC, managed credential custody, durable queues, production sandboxing,
-AI-generated repo work, customer audit, and billing reconciliation are finished.
+AI-generated repo work, complete side-effect audit coverage, and billing
+reconciliation are finished.

@@ -421,7 +421,7 @@ test("loads the admin overview and navigates representative routes", async ({
 }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  await installMockAdminApi(page);
+  const api = await installMockAdminApi(page);
   const nav = page.getByRole("navigation", { name: "Bek admin navigation" });
 
   await page.goto("/");
@@ -541,6 +541,18 @@ test("loads the admin overview and navigates representative routes", async ({
   await expect(
     page.getByText("access_grant · grant_checkout_pr · actor principal_admin"),
   ).toBeVisible();
+  await page.getByLabel("Search").fill("grant");
+  await expect
+    .poll(() =>
+      api.requests.some((request) =>
+        request.path.includes("/api/audit-events?source=all&q=grant"),
+      ),
+    )
+    .toBe(true);
+  const csvDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "CSV" }).click();
+  const csvDownload = await csvDownloadPromise;
+  expect(csvDownload.suggestedFilename()).toBe("bek-audit-demo.csv");
 
   await nav.getByRole("link", { name: "Settings", exact: true }).click();
   await expect(
@@ -627,6 +639,21 @@ async function installMockAdminApi(
       return;
     }
 
+    if (path.startsWith("/api/audit-events/export?")) {
+      const isCsv = path.includes("format=csv");
+      await route.fulfill({
+        headers: {
+          "content-disposition": `attachment; filename="bek-audit-demo.${isCsv ? "csv" : "ndjson"}"`,
+          "access-control-expose-headers": "content-disposition",
+        },
+        contentType: isCsv ? "text/csv" : "application/x-ndjson",
+        body: isCsv
+          ? "id,action\naudit_access_grant,access_grant.updated"
+          : '{"recordType":"audit_export","eventCount":1}\n{"recordType":"audit_event","action":"access_grant.updated"}',
+      });
+      return;
+    }
+
     const body = responseFor(path);
     if (!body) {
       await route.fulfill({
@@ -651,7 +678,9 @@ function responseFor(path: string): unknown {
   if (path === "/api/setup/status") return setupStatusFixture;
   if (path === "/api/setup/github") return githubSetupFixture;
   if (path === "/api/model-usage") return modelUsageFixture;
-  if (path === "/api/audit-events") return auditEventsFixture;
+  if (path === "/api/audit-events" || path.startsWith("/api/audit-events?")) {
+    return auditEventsFixture;
+  }
   if (path === "/api/runs/run_123") return runDetailFixture;
   if (path === "/api/worker/queue") return workerQueueFixture;
   if (path === "/api/outbound/slack") return slackOutboxFixture;

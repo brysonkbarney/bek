@@ -17,6 +17,7 @@
     "@bek/credentials": "workspace:*",
     "@bek/db": "workspace:*",
     "@bek/github": "workspace:*",
+    "@bek/observability": "workspace:*",
     "@bek/runtime": "workspace:*",
     "@bek/slack": "workspace:*",
     "@bek/worker": "workspace:*",

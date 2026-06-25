@@ -137,7 +137,8 @@ The smoke flow verifies:
   connector/repo binding persistence, and setup preview shape
 - signed Slack mention ingestion for the auto-started API, plus
   `/api/outbound/slack` summary and `/api/outbound/slack/drain`
-- `/api/model-usage` totals and `/api/audit-events` run timeline checks
+- `/api/model-usage` totals plus `/api/audit-events` filtering and
+  `/api/audit-events/export` checks
 
 To smoke the restart-safe Postgres worker queue, start Postgres, run migrations,
 and then run:
@@ -190,6 +191,8 @@ Then inspect:
 ```bash
 curl -s http://localhost:4317/api/approvals
 curl -s http://localhost:4317/api/audit-events
+curl -s 'http://localhost:4317/api/audit-events?source=audit&limit=50'
+curl -s 'http://localhost:4317/api/audit-events/export?format=ndjson&limit=50'
 ```
 
 The scripted smoke test performs the approval-gated version end to end and
