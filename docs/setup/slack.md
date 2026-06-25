@@ -26,9 +26,12 @@ It can:
 
 - verify Slack signatures with `SLACK_SIGNING_SECRET`,
 - answer Slack URL verification challenges,
-- normalize `app_mention`, `reaction_added`, Bek bot channel-join and
-  channel-leave events, plus Slack workspace lifecycle events,
+- normalize `app_mention`, `reaction_added`, direct-message `message.im`, Bek
+  bot channel-join and channel-leave events, plus Slack workspace lifecycle
+  events,
 - create a local Bek run when the event or slash-command channel matches seeded channel IDs,
+- create a confidential `slack_dm` place with only exact `slack.read` access
+  when a mapped Slack user DMs Bek,
 - auto-import a Slack channel and channel-specific `slack.read` grant when Bek's installed bot user joins it,
 - mark a configured channel unavailable when Slack reports that Bek's bot user
   left it, so later mentions in that channel do not create runs until Bek
@@ -100,6 +103,7 @@ token rotation, Slack directory sync, or self-service identity claiming.
    app_mention
    tokens_revoked
    reaction_added
+   message.im
    member_joined_channel
    member_left_channel
    ```
@@ -212,9 +216,10 @@ unavailable; re-inviting Bek flips the channel back to available.
     export SLACK_BOT_TOKEN=xoxb-...
     ```
 
-    Stored or manual tokens need `chat:write` for replies and
-    `channels:read`/`groups:read` for channel discovery; the default
-    `SLACK_BOT_SCOPES` includes them. Bek acknowledges Slack callbacks after
+    Stored or manual tokens need `chat:write` for replies,
+    `channels:read`/`groups:read` for channel discovery, and `im:history` for
+    direct messages; the default `SLACK_BOT_SCOPES` includes them. Bek
+    acknowledges Slack callbacks after
     ingress, run, worker, and outbound-delivery state has been persisted.
     Slack Web API posting runs through the outbound drain path after that ACK
     boundary, so a slow Slack API call does not consume Slack's callback

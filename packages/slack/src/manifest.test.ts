@@ -22,6 +22,11 @@ describe("Slack app manifest", () => {
         description: "Open-source AI teammate for governed Slack work.",
       },
       features: {
+        app_home: {
+          home_tab_enabled: false,
+          messages_tab_enabled: true,
+          messages_tab_read_only_enabled: false,
+        },
         bot_user: { display_name: "bek", always_online: true },
         slash_commands: [
           {
@@ -51,6 +56,7 @@ describe("Slack app manifest", () => {
             "app_mention",
             "tokens_revoked",
             "reaction_added",
+            "message.im",
             "member_joined_channel",
             "member_left_channel",
           ],

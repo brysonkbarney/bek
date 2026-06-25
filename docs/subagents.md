@@ -65,8 +65,8 @@ The user asked for 25 subagents. We will run them in batches because the local a
   mappings, and Slack events, slash commands, and approval interactivity prefer
   those mappings before the local env fallback.
 - Slack OAuth default scopes now include `channels:read` and `groups:read` for
-  channel discovery, and the Channels UI blocks importing channels the bot has
-  not joined.
+  channel discovery plus `im:history` for direct messages, and the Channels UI
+  blocks importing channels the bot has not joined.
 - Slack OAuth return targets are normalized to admin-console-relative paths
   before signing state and again before callback redirects, so a malicious or
   stale signed state cannot redirect an operator off the configured admin

@@ -9,6 +9,11 @@ export interface SlackAppManifest {
     background_color: string;
   };
   features: {
+    app_home: {
+      home_tab_enabled: boolean;
+      messages_tab_enabled: boolean;
+      messages_tab_read_only_enabled: boolean;
+    };
     bot_user: {
       display_name: string;
       always_online: boolean;
@@ -62,6 +67,7 @@ export const defaultSlackBotEvents = [
   "app_mention",
   "tokens_revoked",
   "reaction_added",
+  "message.im",
   "member_joined_channel",
   "member_left_channel",
 ] as const;
@@ -92,6 +98,11 @@ export function buildSlackAppManifest(
       background_color: input.backgroundColor?.trim() || "#111827",
     },
     features: {
+      app_home: {
+        home_tab_enabled: false,
+        messages_tab_enabled: true,
+        messages_tab_read_only_enabled: false,
+      },
       bot_user: {
         display_name: input.botDisplayName?.trim() || "bek",
         always_online: true,

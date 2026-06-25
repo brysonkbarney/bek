@@ -262,7 +262,7 @@ function storeActiveSlackCredential(
     secretRef: `bek-local-vault:slack:org_demo:${teamId}:bot`,
     status: "active",
     scopeSummary:
-      "app_mentions:read,reactions:read,commands,chat:write,channels:read,groups:read",
+      "app_mentions:read,reactions:read,commands,chat:write,channels:read,groups:read,im:history",
     metadata: {
       source: "test",
     },
@@ -1083,6 +1083,7 @@ describe("Bek API", () => {
         "chat:write",
         "channels:read",
         "groups:read",
+        "im:history",
       ]),
       slackGrantedScopes: expect.arrayContaining([
         "app_mentions:read",
@@ -1093,9 +1094,49 @@ describe("Bek API", () => {
         "reactions:read",
         "channels:read",
         "groups:read",
+        "im:history",
       ]),
       readyForWorkspace: false,
     });
+  });
+
+  it("uses configured Slack bot scopes for setup readiness", async () => {
+    process.env.SLACK_BOT_SCOPES = "chat:write,users:read";
+    const store = new BekStore();
+    const install = store.upsertConnectorInstall({
+      id: "connector_slack_T123",
+      kind: "slack",
+      provider: "slack",
+      externalId: "T123",
+      displayName: "Redo",
+      status: "active",
+      metadata: {
+        teamId: "T123",
+        teamName: "Redo",
+        botUserId: "U_BEK",
+        scopes: ["chat:write"],
+      },
+    });
+    store.upsertCredential({
+      id: "credential_slack_bot_T123",
+      connectorInstallId: install.id,
+      name: "Redo Slack bot token",
+      provider: "slack",
+      externalAccountId: "T123",
+      secretRef: "bek-local-vault:slack:org_demo:T123:bot",
+      status: "active",
+      scopeSummary: "chat:write",
+    });
+
+    const res = await createApp(store).request("/api/setup/status");
+    const json = (await res.json()) as {
+      slackRequiredScopes: string[];
+      missingSlackScopes: string[];
+    };
+
+    expect(res.status).toBe(200);
+    expect(json.slackRequiredScopes).toEqual(["chat:write", "users:read"]);
+    expect(json.missingSlackScopes).toEqual(["users:read"]);
   });
 
   it("marks the seed workspace ready when Slack install scopes are complete", async () => {
@@ -1107,6 +1148,7 @@ describe("Bek API", () => {
       "chat:write",
       "channels:read",
       "groups:read",
+      "im:history",
     ];
     const install = store.upsertConnectorInstall({
       id: "connector_slack_T123",
@@ -3747,6 +3789,7 @@ describe("Bek API", () => {
         "chat:write",
         "channels:read",
         "groups:read",
+        "im:history",
       ]),
     );
     expect(json.redirectUri).toBe(process.env.SLACK_REDIRECT_URI);
@@ -3774,7 +3817,7 @@ describe("Bek API", () => {
     process.env.SLACK_REDIRECT_URI =
       "https://slack-oauth.example.com/api/slack/oauth/callback";
     process.env.SLACK_BOT_SCOPES =
-      "app_mentions:read,reactions:read,commands,chat:write,channels:read,groups:read";
+      "app_mentions:read,reactions:read,commands,chat:write,channels:read,groups:read,im:history";
 
     const denied = await createApp().request("/api/slack/manifest");
     expect(denied.status).toBe(401);
@@ -3796,6 +3839,7 @@ describe("Bek API", () => {
       };
       manifest: {
         features: {
+          app_home: { messages_tab_enabled: boolean };
           bot_user: { display_name: string };
           slash_commands: Array<{ command: string; url: string }>;
         };
@@ -3816,9 +3860,14 @@ describe("Bek API", () => {
     expect(json).toMatchObject({
       ok: true,
       baseUrl: "https://bek-public.example.com",
-      scopes: expect.arrayContaining(["commands", "channels:read"]),
+      scopes: expect.arrayContaining([
+        "commands",
+        "channels:read",
+        "im:history",
+      ]),
       botEvents: expect.arrayContaining([
         "app_mention",
+        "message.im",
         "reaction_added",
         "member_joined_channel",
       ]),
@@ -3829,6 +3878,7 @@ describe("Bek API", () => {
         redirect: "https://slack-oauth.example.com/api/slack/oauth/callback",
       },
     });
+    expect(json.manifest.features.app_home.messages_tab_enabled).toBe(true);
     expect(json.manifest.features.bot_user.display_name).toBe("bek");
     expect(json.manifest.features.slash_commands[0]).toMatchObject({
       command: "/bek",
@@ -5581,6 +5631,196 @@ describe("Bek API", () => {
         decidedByPrincipalId: "principal_admin",
       },
     });
+  });
+
+  it("creates a confidential Slack DM place and run for mapped DM users", async () => {
+    process.env.BEK_SLACK_BACKGROUND_DRAIN = "false";
+    mapSlackTestUsers({ "T123:U123": "principal_bryson" });
+    const store = new BekStore();
+    installActiveSlackApp(store, { botUserId: "U_BEK" });
+    const slackClient = new FakeSlackWebApiClient();
+    const app = createApp(store, { slackClient });
+    const payload = {
+      team_id: "T123",
+      event_id: "EvDmMessage",
+      event: {
+        type: "message",
+        channel: "D123",
+        user: "U123",
+        text: "can you summarize my open work?",
+        ts: "1710000000.000200",
+        event_ts: "1710000000.000200",
+        channel_type: "im",
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+    const initialRunCount = store.read().runs.length;
+
+    const res = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      ok: boolean;
+      runId: string;
+      placeId: string;
+      channelId: string;
+    };
+    expect(json).toMatchObject({
+      ok: true,
+      runId: expect.any(String),
+      placeId: expect.any(String),
+      channelId: "D123",
+    });
+    const snapshot = store.read();
+    const dm = snapshot.places.find(
+      (place) => place.id === json.placeId && place.externalId === "D123",
+    );
+    expect(dm).toMatchObject({
+      kind: "slack_dm",
+      provider: "slack",
+      name: "DM with U123",
+      sensitivity: "confidential",
+      metadata: expect.objectContaining({
+        teamId: "T123",
+        slackUserId: "U123",
+        channelType: "im",
+        source: "slack_dm_event",
+        firstSeenAt: expect.any(String),
+        lastSeenAt: expect.any(String),
+      }),
+    });
+    expect(snapshot.runs).toHaveLength(initialRunCount + 1);
+    expect(snapshot.runs.find((run) => run.id === json.runId)).toMatchObject({
+      placeScopeId: dm?.id,
+      requesterPrincipalId: "principal_bryson",
+      trigger: "dm",
+      status: "completed",
+    });
+    const dmBundles = snapshot.accessBundles.filter((bundle) =>
+      bundle.attachedPlaceIds.includes(dm!.id),
+    );
+    expect(dmBundles.flatMap((bundle) => bundle.grants)).toEqual([
+      expect.objectContaining({
+        capability: "slack.read",
+        resource: "slack:D123",
+        decision: "allow",
+        requiresApproval: false,
+      }),
+    ]);
+    expect(
+      dmBundles
+        .flatMap((bundle) => bundle.grants)
+        .some((grant) => grant.capability.startsWith("github.")),
+    ).toBe(false);
+
+    const retry = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+    expect(retry.status).toBe(200);
+    await expect(retry.json()).resolves.toMatchObject({
+      deduped: true,
+      runId: json.runId,
+    });
+    expect(
+      store.read().places.filter((place) => place.externalId === "D123"),
+    ).toHaveLength(1);
+    expect(store.read().runs).toHaveLength(initialRunCount + 1);
+
+    const drain = await app.request("/api/outbound/slack/drain", {
+      method: "POST",
+      body: JSON.stringify({}),
+      headers: { "content-type": "application/json" },
+    });
+    expect(drain.status).toBe(200);
+    expect(slackClient.postMessageCalls).toHaveLength(1);
+    expect(slackClient.postMessageCalls[0]).toMatchObject({
+      channel: "D123",
+      thread_ts: "1710000000.000200",
+      text: expect.stringContaining("Bek finished."),
+    });
+  });
+
+  it("ignores Slack DMs from unmapped users without creating places or runs", async () => {
+    const store = new BekStore();
+    installActiveSlackApp(store, { botUserId: "U_BEK" });
+    const app = createApp(store);
+    const initialRunCount = store.read().runs.length;
+    const payload = {
+      team_id: "T123",
+      event_id: "EvDmUnmapped",
+      event: {
+        type: "message",
+        channel: "D_UNMAPPED",
+        user: "U_UNMAPPED",
+        text: "hello",
+        ts: "1710000000.000201",
+        channel_type: "im",
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+
+    const res = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-slack-no-retry")).toBe("1");
+    await expect(res.json()).resolves.toMatchObject({
+      ok: false,
+      ignored: true,
+      reason: "Slack user U_UNMAPPED is not mapped to a Bek principal.",
+    });
+    expect(store.read().runs).toHaveLength(initialRunCount);
+    expect(
+      store.read().places.some((place) => place.externalId === "D_UNMAPPED"),
+    ).toBe(false);
+  });
+
+  it("ignores Slack DMs from workspaces without an active install", async () => {
+    mapSlackTestUsers({ "T123:U123": "principal_bryson" });
+    const store = new BekStore();
+    installActiveSlackApp(store, { teamId: "T999", botUserId: "U_BEK" });
+    const app = createApp(store);
+    const initialRunCount = store.read().runs.length;
+    const payload = {
+      team_id: "T123",
+      event_id: "EvDmWrongWorkspace",
+      event: {
+        type: "message",
+        channel: "D_WRONG_TEAM",
+        user: "U123",
+        text: "hello",
+        ts: "1710000000.000202",
+        channel_type: "im",
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+
+    const res = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-slack-no-retry")).toBe("1");
+    await expect(res.json()).resolves.toMatchObject({
+      ok: false,
+      ignored: true,
+      reason: "Bek does not have an active Slack install for this workspace.",
+    });
+    expect(store.read().runs).toHaveLength(initialRunCount);
+    expect(
+      store.read().places.some((place) => place.externalId === "D_WRONG_TEAM"),
+    ).toBe(false);
   });
 
   it("returns a friendly stale response for expired Slack approval buttons", async () => {

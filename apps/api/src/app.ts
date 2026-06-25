@@ -353,6 +353,34 @@ export function createApp(
     });
   }
 
+  function ensureSlackReadAccessForDm(dm: PlaceScope) {
+    const resource = `slack:${dm.externalId}`;
+    const snapshot = store.read();
+    const attachedBundles = snapshot.accessBundles.filter((bundle) =>
+      bundle.attachedPlaceIds.includes(dm.id),
+    );
+    if (
+      attachedBundles.some((bundle) =>
+        bundle.grants.some((grant) => isSlackReadAllowGrant(grant, resource)),
+      )
+    ) {
+      return;
+    }
+
+    const bundle = store.createAccessBundle({
+      name: `Slack DM access for ${dm.name}`,
+      description: `Allows @bek to read ${dm.name} when directly messaged in Slack.`,
+      attachedPlaceIds: [dm.id],
+    });
+    store.createGrant(bundle.id, {
+      capability: "slack.read",
+      resource,
+      decision: "allow",
+      risk: "read_internal",
+      requiresApproval: false,
+    });
+  }
+
   function isSlackReadAllowGrant(grant: CapabilityGrant, resource: string) {
     return (
       grant.capability === "slack.read" &&
@@ -461,6 +489,115 @@ export function createApp(
       channelId: channel.externalId,
       botIsMember: true,
     };
+  }
+
+  function handleSlackDmEvent(
+    event: NormalizedSlackInteraction,
+  ): Record<string, unknown> {
+    if (!event.teamId) {
+      return {
+        ok: false,
+        ignored: true,
+        reason: "Slack DM payload is missing team.",
+      };
+    }
+    if (!event.channelId) {
+      return {
+        ok: false,
+        ignored: true,
+        reason: "Slack DM payload is missing channel.",
+      };
+    }
+    if (!event.userId) {
+      return {
+        ok: false,
+        ignored: true,
+        reason: "Slack DM payload is missing user.",
+      };
+    }
+
+    const snapshot = store.read();
+    const install = activeSlackInstallForTeam(snapshot, event.teamId);
+    if (!install) {
+      return {
+        ok: false,
+        ignored: true,
+        reason: "Bek does not have an active Slack install for this workspace.",
+      };
+    }
+
+    const requesterPrincipalId = slackPrincipalIdForUser(
+      snapshot,
+      event.userId,
+      event.teamId,
+    );
+    if (!requesterPrincipalId) {
+      return {
+        ok: false,
+        ignored: true,
+        reason: slackUserMappingReason(event.userId),
+      };
+    }
+
+    const place = getOrCreateSlackDmPlace(event);
+    ensureSlackReadAccessForDm(place);
+    const run = createRunAndQueue({
+      placeScopeId: place.id,
+      prompt: event.text?.trim() || "Direct message to Bek",
+      requesterPrincipalId,
+      trigger: "dm",
+      capability: "slack.read",
+      resource: `slack:${place.externalId}`,
+    });
+    enqueueSlackRunOutcome(run.id, {
+      channelId: event.channelId,
+      threadTs: event.threadTs,
+      teamId: event.teamId,
+    });
+
+    return {
+      ok: true,
+      runId: run.id,
+      placeId: place.id,
+      channelId: place.externalId,
+    };
+  }
+
+  function getOrCreateSlackDmPlace(event: NormalizedSlackInteraction) {
+    const now = new Date().toISOString();
+    const snapshot = store.read();
+    const existing = snapshot.places.find(
+      (place) =>
+        place.kind === "slack_dm" &&
+        place.provider === "slack" &&
+        place.externalId === event.channelId,
+    );
+    const metadata = {
+      ...(existing?.metadata ?? {}),
+      ...(event.teamId ? { teamId: event.teamId } : {}),
+      ...(event.userId ? { slackUserId: event.userId } : {}),
+      channelType: "im",
+      source: stringMetadata(existing?.metadata, "source") ?? "slack_dm_event",
+      lastSeenAt: now,
+    };
+
+    if (existing) {
+      return store.updatePlace(existing.id, {
+        metadata,
+      });
+    }
+
+    return store.createPlace({
+      kind: "slack_dm",
+      provider: "slack",
+      externalId: event.channelId!,
+      name: `DM with ${event.userId ?? "Slack user"}`,
+      sensitivity: "confidential",
+      metadata: {
+        ...metadata,
+        firstSeenAt: now,
+      },
+    });
   }
 
   function handleSlackChannelLeftEvent(
@@ -2533,6 +2670,8 @@ export function createApp(
           status: response.ok ? "processed" : "ignored",
           response: { ...response },
         });
+      }
+      if (response.ok || eventKey) {
         await flushChangesWithDeliveryRollback(eventKey);
       }
       if (!response.ok) {
@@ -2575,6 +2714,28 @@ export function createApp(
       }
       if (!response.ok) {
         markSlackNoRetry(c);
+      }
+      return c.json(withSlackRetryMetadata(response, retry));
+    }
+    if (event.type === "dm") {
+      const response = handleSlackDmEvent(event);
+      if (eventKey) {
+        store.recordIngressDelivery({
+          key: eventKey,
+          kind: "slack.event",
+          status: response.ok ? "processed" : "ignored",
+          runId:
+            typeof response.runId === "string" ? response.runId : undefined,
+          response: { ...response },
+        });
+      }
+      if (response.ok || eventKey) {
+        await flushChangesWithDeliveryRollback(eventKey);
+      }
+      if (!response.ok) {
+        markSlackNoRetry(c);
+      } else {
+        scheduleSlackBackgroundWork();
       }
       return c.json(withSlackRetryMetadata(response, retry));
     }
@@ -3777,6 +3938,7 @@ function slackRequiredScopeReadiness(
   install: ConnectorInstall | undefined,
   credential: CredentialRecord | undefined,
 ): { required: string[]; granted: string[]; missing: string[] } {
+  const required = slackBotScopes();
   const granted = new Set<string>();
   for (const scope of parseSlackScopeSummary(credential?.scopeSummary)) {
     granted.add(scope);
@@ -3786,9 +3948,9 @@ function slackRequiredScopeReadiness(
   }
   const grantedScopes = Array.from(granted).sort();
   return {
-    required: [...defaultSlackBotScopes],
+    required,
     granted: grantedScopes,
-    missing: defaultSlackBotScopes.filter((scope) => !granted.has(scope)),
+    missing: required.filter((scope) => !granted.has(scope)),
   };
 }
 
@@ -3856,6 +4018,7 @@ const defaultSlackBotScopes = [
   "chat:write",
   "channels:read",
   "groups:read",
+  "im:history",
 ];
 
 function adminOrigins(): string[] {

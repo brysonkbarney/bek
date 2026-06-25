@@ -30,6 +30,7 @@ describe("environment templates", () => {
     "chat:write",
     "channels:read",
     "groups:read",
+    "im:history",
   ];
 
   it.each([".env.example", ".env.docker.example"])(

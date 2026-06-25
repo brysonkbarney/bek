@@ -64,6 +64,45 @@ describe("Slack event normalization", () => {
     });
   });
 
+  it("normalizes Slack direct messages", () => {
+    expect(
+      normalizeSlackEvent({
+        team_id: "T123",
+        event: {
+          type: "message",
+          channel: "D123",
+          user: "U123",
+          text: "can you help here?",
+          ts: "1700000000.000006",
+          event_ts: "1700000000.000006",
+          channel_type: "im",
+        },
+      }),
+    ).toMatchObject({
+      type: "dm",
+      channelId: "D123",
+      channelType: "im",
+      teamId: "T123",
+      userId: "U123",
+      text: "can you help here?",
+      threadTs: "1700000000.000006",
+    });
+
+    expect(
+      normalizeSlackEvent({
+        team_id: "T123",
+        event: {
+          type: "message",
+          channel: "D123",
+          user: "U123",
+          text: "edited",
+          subtype: "message_changed",
+          channel_type: "im",
+        },
+      }),
+    ).toEqual({ type: "unknown" });
+  });
+
   it("normalizes bot channel join events", () => {
     expect(
       normalizeSlackEvent({

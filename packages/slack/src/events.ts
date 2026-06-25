@@ -2,6 +2,7 @@ export interface NormalizedSlackInteraction {
   type:
     | "mention"
     | "reaction"
+    | "dm"
     | "channel_joined"
     | "channel_left"
     | "app_uninstalled"
@@ -112,6 +113,21 @@ export function normalizeSlackEvent(
   }
   if (typeof event.bot_id === "string" || event.subtype === "bot_message") {
     return { type: "unknown" };
+  }
+  if (
+    event.type === "message" &&
+    event.channel_type === "im" &&
+    event.subtype === undefined
+  ) {
+    return {
+      type: "dm",
+      channelId: typeof event.channel === "string" ? event.channel : undefined,
+      channelType: "im",
+      teamId,
+      userId: typeof event.user === "string" ? event.user : undefined,
+      text: typeof event.text === "string" ? event.text : undefined,
+      threadTs: slackThreadTs(event),
+    };
   }
   if (event.type === "app_mention") {
     return {
