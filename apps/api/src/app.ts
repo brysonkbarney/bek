@@ -1779,6 +1779,45 @@ export function createApp(
   app.get("/api/connectors/slack", (c) =>
     c.json(slackInstallSummaries(store.read())),
   );
+  app.post("/api/connectors/slack/manual-install", async (c) => {
+    const body = manualSlackInstallSchema.parse(await c.req.json());
+    const before = slackConnectorInstallForTeam(store.read(), body.teamId);
+    const now = new Date().toISOString();
+    const scopes = body.scopes ?? slackBotScopes();
+    const install = store.upsertConnectorInstall({
+      id: before?.id ?? `connector_slack_${safeIdPart(body.teamId)}`,
+      kind: "slack",
+      provider: "slack",
+      externalId: body.teamId,
+      displayName: body.workspaceName ?? before?.displayName ?? body.teamId,
+      status: "active",
+      installedByPrincipalId:
+        before?.installedByPrincipalId ?? adminPrincipalId(c),
+      metadata: {
+        ...(before?.metadata ?? {}),
+        source: "manual_admin",
+        teamId: body.teamId,
+        teamName: body.workspaceName ?? before?.displayName ?? body.teamId,
+        scopes,
+        manuallyConfiguredAt: now,
+        ...(body.botUserId ? { botUserId: body.botUserId } : {}),
+      },
+      now,
+    });
+    recordAdminAuditEvent(c, {
+      action: "slack_install.manual_upserted",
+      resourceType: "connector_install",
+      resourceId: install.id,
+      message: `Manually configured Slack install ${install.displayName}.`,
+      data: {
+        before,
+        after: install,
+        scopes,
+      },
+    });
+    await store.flushChanges();
+    return c.json(publicConnectorInstall(install));
+  });
   app.get("/api/connectors/mcp", (c) =>
     c.json(
       store
@@ -2861,6 +2900,38 @@ export function createApp(
         state.reason.includes("SLACK_STATE_SECRET") ? 500 : 400,
       );
     }
+    const oauthStateKey = `slack:oauth-state:${state.payload.nonce}`;
+    if (store.findIngressDelivery(oauthStateKey)) {
+      if (state.payload.callbackMode === "redirect") {
+        return c.redirect(
+          adminReturnUrl(state.payload.returnTo, {
+            slack_install: "error",
+            slack_error: "state_replay",
+          }),
+          302,
+        );
+      }
+      return c.json(
+        {
+          ok: false,
+          error: "Slack OAuth state has already been used.",
+          returnTo: state.payload.returnTo ?? null,
+        },
+        409,
+      );
+    }
+    store.recordIngressDelivery({
+      key: oauthStateKey,
+      kind: "slack.oauth",
+      status: "processed",
+      response: {
+        ok: true,
+        status: "state_consumed",
+        callbackMode: state.payload.callbackMode ?? "json",
+        returnTo: state.payload.returnTo ?? null,
+      },
+    });
+    await flushChangesWithDeliveryRollback(oauthStateKey);
 
     const missing = missingEnv([
       "SLACK_CLIENT_ID",
@@ -2947,6 +3018,31 @@ export function createApp(
         {
           ok: false,
           error: exchange.error,
+          returnTo: state.payload.returnTo ?? null,
+        },
+        400,
+      );
+    }
+
+    const missingScopes = missingRequiredSlackBotScopes(exchange.install.scope);
+    if (missingScopes.length > 0) {
+      if (state.payload.callbackMode === "redirect") {
+        return c.redirect(
+          adminReturnUrl(state.payload.returnTo, {
+            slack_install: "error",
+            slack_error: "missing_scopes",
+            missing_slack_scopes: missingScopes.join(","),
+          }),
+          302,
+        );
+      }
+      return c.json(
+        {
+          ok: false,
+          error: `Slack install is missing required scopes: ${missingScopes.join(
+            ", ",
+          )}.`,
+          missingScopes,
           returnTo: state.payload.returnTo ?? null,
         },
         400,
@@ -3054,6 +3150,25 @@ export function createApp(
             ok: false,
             error: `Slack user ${interaction.slackUserId} is not mapped to a Bek principal. Set BEK_SLACK_USER_PRINCIPAL_MAP or approve in the admin API.`,
             text: "Bek parsed this approval button, but this Slack user is not mapped to an approver yet.",
+          }),
+          retry,
+        ),
+        400,
+      );
+    }
+
+    const installCheck = requireActiveSlackInstall(
+      store.read(),
+      interaction.teamId,
+    );
+    if (!installCheck.ok) {
+      markSlackNoRetry(c);
+      return c.json(
+        withSlackRetryMetadata(
+          buildSlackEphemeralResponse({
+            ok: false,
+            error: installCheck.reason,
+            text: installCheck.text,
           }),
           retry,
         ),
@@ -3210,6 +3325,24 @@ export function createApp(
     }
 
     const snapshot = store.read();
+    const installCheck = requireActiveSlackInstall(snapshot, command.teamId);
+    if (!installCheck.ok) {
+      const response = buildSlackCommandIgnoredResponse({
+        reason: installCheck.reason,
+        text: installCheck.text,
+      });
+      if (commandKey) {
+        store.recordIngressDelivery({
+          key: commandKey,
+          kind: "slack.command",
+          status: "ignored",
+          response: { ...response },
+        });
+        await flushChangesWithDeliveryRollback(commandKey);
+      }
+      markSlackNoRetry(c);
+      return c.json(withSlackRetryMetadata(response, retry));
+    }
     const place = resolveSlackPlace(
       snapshot,
       command.channelId,
@@ -3415,6 +3548,46 @@ export function createApp(
     }
     if (event.type === "mention" || event.type === "reaction") {
       const snapshot = store.read();
+      const installCheck = requireActiveSlackInstall(snapshot, event.teamId);
+      if (!installCheck.ok) {
+        const response = {
+          ok: false,
+          ignored: true,
+          reason: installCheck.reason,
+        };
+        if (eventKey) {
+          store.recordIngressDelivery({
+            key: eventKey,
+            kind: "slack.event",
+            status: "ignored",
+            response: { ...response },
+          });
+          await flushChangesWithDeliveryRollback(eventKey);
+        }
+        markSlackNoRetry(c);
+        return c.json(withSlackRetryMetadata(response, retry));
+      }
+      if (event.type === "reaction") {
+        const reactionIgnoredReason = ignoredSlackReactionReason(event);
+        if (reactionIgnoredReason) {
+          const response = {
+            ok: true,
+            ignored: true,
+            reason: reactionIgnoredReason,
+          };
+          if (eventKey) {
+            store.recordIngressDelivery({
+              key: eventKey,
+              kind: "slack.event",
+              status: "ignored",
+              response: { ...response },
+            });
+            await flushChangesWithDeliveryRollback(eventKey);
+          }
+          markSlackNoRetry(c);
+          return c.json(withSlackRetryMetadata(response, retry));
+        }
+      }
       if (!event.channelId) {
         const response = {
           ok: false,
@@ -3688,6 +3861,30 @@ const updateChannelSchema = createChannelSchema
   .refine(hasAtLeastOneField, {
     message: "At least one field must be provided.",
   });
+
+const slackScopeSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(80)
+  .regex(/^[A-Za-z0-9:._-]+$/, {
+    message:
+      "Slack scopes may only contain letters, numbers, colons, periods, underscores, and hyphens.",
+  });
+
+const manualSlackInstallSchema = z
+  .object({
+    teamId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(80)
+      .regex(/^[A-Za-z0-9_-]+$/),
+    workspaceName: z.string().trim().min(1).max(120).optional(),
+    botUserId: z.string().trim().min(1).max(80).optional(),
+    scopes: z.array(slackScopeSchema).min(1).max(64).optional(),
+  })
+  .strict();
 
 const mcpServerIdSchema = z
   .string()
@@ -3988,10 +4185,7 @@ function slackPlaceAcceptsTeam(
     if (teamId && teamId !== placeTeamId) {
       return false;
     }
-    const matchingInstall = slackInstalls.find(
-      (install) => install.externalId === placeTeamId,
-    );
-    return !matchingInstall || matchingInstall.status === "active";
+    return activeSlackInstallForTeam(snapshot, placeTeamId) !== undefined;
   }
 
   if (slackInstalls.length === 0) {
@@ -5323,6 +5517,56 @@ function slackRequiredScopeReadiness(
   };
 }
 
+function requireActiveSlackInstall(
+  snapshot: BekSnapshot,
+  teamId?: string | undefined,
+):
+  | {
+      ok: true;
+      install: ConnectorInstall;
+      credential: CredentialRecord | undefined;
+    }
+  | {
+      ok: false;
+      reason: string;
+      text: string;
+      missingScopes?: string[] | undefined;
+    } {
+  if (!teamId) {
+    return {
+      ok: false,
+      reason: "Slack payload is missing team.",
+      text: "Bek could not identify the Slack workspace for this request.",
+    };
+  }
+  const install = activeSlackInstallForTeam(snapshot, teamId);
+  if (!install) {
+    return {
+      ok: false,
+      reason: "Bek does not have an active Slack install for this workspace.",
+      text: "Bek is not actively installed for this Slack workspace.",
+    };
+  }
+  const credential = latestSlackCredential(snapshot, install.id, teamId);
+  const scopeReadiness = slackRequiredScopeReadiness(install, credential);
+  if (scopeReadiness.missing.length > 0) {
+    return {
+      ok: false,
+      reason: `Slack install is missing required scopes: ${scopeReadiness.missing.join(
+        ", ",
+      )}.`,
+      text: "Bek's Slack app is missing required scopes. Reinstall Bek from Connectors.",
+      missingScopes: scopeReadiness.missing,
+    };
+  }
+  return { ok: true, install, credential };
+}
+
+function missingRequiredSlackBotScopes(grantedScopes: string[]): string[] {
+  const granted = new Set(grantedScopes);
+  return slackBotScopes().filter((scope) => !granted.has(scope));
+}
+
 function parseSlackScopeSummary(scopeSummary: string | undefined): string[] {
   return (scopeSummary ?? "")
     .split(/[,\s]+/)
@@ -5867,6 +6111,7 @@ function slackOutboundDeliveryKey(
     message.kind,
     message.runId ?? "no-run",
     approvalId ?? "run",
+    stringValue(target.teamId) ?? "unknown-team",
     stringValue(target.channelId) ?? "unknown-channel",
     stringValue(target.threadTs) ?? "root",
   ].join(":");
@@ -5989,6 +6234,30 @@ function slackBotScopes(): string[] {
     .split(",")
     .map((scope) => scope.trim())
     .filter(Boolean);
+}
+
+function allowedSlackReactions(): Set<string> {
+  return new Set(
+    (process.env.BEK_SLACK_REACTION_ALLOWLIST ?? "eyes,white_check_mark")
+      .split(",")
+      .map((reaction) => reaction.trim())
+      .filter(Boolean),
+  );
+}
+
+function ignoredSlackReactionReason(
+  event: NormalizedSlackInteraction,
+): string | undefined {
+  if (event.itemType !== "message") {
+    return "Slack reaction is not attached to a message.";
+  }
+  if (!event.reaction) {
+    return "Slack reaction payload is missing reaction.";
+  }
+  if (!allowedSlackReactions().has(event.reaction)) {
+    return `Slack reaction ${event.reaction} is not configured to trigger Bek.`;
+  }
+  return undefined;
 }
 
 function slackManifestBaseUrl(c: Context): string {

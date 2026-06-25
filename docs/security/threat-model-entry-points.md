@@ -41,18 +41,18 @@ and hosted sandbox implementation.
 
 ## Trust Boundaries
 
-| Boundary                      | Current control                                                                     | Open production questions                                                      |
-| ----------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Slack to API callbacks        | HMAC signature verification, 5-minute replay window, and snapshot-persisted dedupe. | Slack team mapping, deauthorization handling, multi-instance hardening.        |
-| API to local credential vault | AES-GCM encrypted OAuth token envelopes bound to org/credential/team context.       | Key rotation, revocation, backup/restore, KMS migration.                       |
-| API to Slack Web API          | Stored OAuth tokens or `SLACK_BOT_TOKEN`, typed client, and durable local outbox.   | Daemonized outbound dispatcher and stale-delivery recovery.                    |
-| Browser admin app to API      | CORS allowlist and optional bearer token, mandatory in production.                  | Real admin identity, RBAC, session management, audit completeness.             |
-| API to store                  | In-memory local store or Postgres snapshot repository.                              | Row-level command persistence, transactional audit, tenant isolation, backups. |
-| API/worker to GitHub          | Signed webhook ingress, local config, token, fake-client, and workflow contracts.   | Installation token broker and isolated repo work execution.                    |
-| Runtime to model providers    | Model route and cost primitives.                                                    | Provider adapters, credential broker, usage accounting.                        |
-| Runtime to MCP tools          | Manifest, schema hash, quarantine, and proxy request contracts.                     | Live transport, credential scope, output redaction.                            |
-| Runtime to sandbox            | Docker policy and fake provider contracts.                                          | Hosted microVM isolation, egress enforcement, artifact scanning.               |
-| Worker queue to execution     | In-memory queue contract with optional Postgres snapshot persistence.               | Daemonized claims, retries, cancellation, idempotent side effects.             |
+| Boundary                      | Current control                                                                                                                                             | Open production questions                                                      |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Slack to API callbacks        | HMAC signature verification, 5-minute replay window, snapshot-persisted dedupe, active-install/scope gates, reaction allowlist, and single-use OAuth state. | Hosted tenant routing and full Slack directory sync.                           |
+| API to local credential vault | AES-GCM encrypted OAuth token envelopes bound to org/credential/team context.                                                                               | Key rotation, revocation, backup/restore, KMS migration.                       |
+| API to Slack Web API          | Stored OAuth tokens or `SLACK_BOT_TOKEN`, typed client, and durable local outbox.                                                                           | Daemonized outbound dispatcher and stale-delivery recovery.                    |
+| Browser admin app to API      | CORS allowlist and optional bearer token, mandatory in production.                                                                                          | Real admin identity, RBAC, session management, audit completeness.             |
+| API to store                  | In-memory local store or Postgres snapshot repository.                                                                                                      | Row-level command persistence, transactional audit, tenant isolation, backups. |
+| API/worker to GitHub          | Signed webhook ingress, local config, token, fake-client, and workflow contracts.                                                                           | Installation token broker and isolated repo work execution.                    |
+| Runtime to model providers    | Model route and cost primitives.                                                                                                                            | Provider adapters, credential broker, usage accounting.                        |
+| Runtime to MCP tools          | Manifest, schema hash, quarantine, and proxy request contracts.                                                                                             | Live transport, credential scope, output redaction.                            |
+| Runtime to sandbox            | Docker policy and fake provider contracts.                                                                                                                  | Hosted microVM isolation, egress enforcement, artifact scanning.               |
+| Worker queue to execution     | In-memory queue contract with optional Postgres snapshot persistence.                                                                                       | Daemonized claims, retries, cancellation, idempotent side effects.             |
 
 ## Runtime Entry Points
 
@@ -150,7 +150,8 @@ Before live repo/MCP/sandbox chaining, Bek still needs:
 
 - Slack request signatures fail closed unless local unsigned mode is explicitly
   enabled outside production.
-- Slack OAuth state is signed, time-bounded, and verified before callback work.
+- Slack OAuth state is signed, time-bounded, verified, and consumed once before
+  callback work can exchange a code or persist credentials.
 - Admin API routes fail closed unless `BEK_ADMIN_API_TOKEN` is configured or
   the explicit local-only `BEK_ALLOW_UNAUTHENTICATED_LOCAL=true` bypass is set
   outside production. `BEK_REQUIRE_ADMIN_AUTH=true` disables that local bypass.

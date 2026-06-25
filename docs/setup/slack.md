@@ -152,6 +152,12 @@ token rotation, Slack directory sync, or self-service identity claiming.
    enabled only in `NODE_ENV=production`. Without stored OAuth tokens, configure
    `SLACK_BOT_TOKEN` as the manual outbound posting fallback.
 
+   OAuth callback state is single-use. If Slack or a browser retries the same
+   state nonce after Bek has accepted it, Bek returns `state_replay` and does
+   not exchange another code. Code exchange also verifies that Slack granted the
+   configured bot scopes before persisting an install or credential; if you
+   change `SLACK_BOT_SCOPES`, reinstall Bek from the admin console.
+
    Then open the admin console at `/connectors` or `/setup` and use the Slack
    install action. The web action calls `/api/slack/install-url` with admin
    auth, then sends the operator to Slack.
@@ -227,6 +233,32 @@ unavailable; re-inviting Bek flips the channel back to available.
     Stored or manual tokens need `chat:write` for replies,
     `channels:read`/`groups:read` for channel discovery, and `im:history` for
     direct messages; the default `SLACK_BOT_SCOPES` includes them. Bek
+    mentions, reactions, slash commands, and approval buttons require an active
+    Slack install for the incoming `team_id` and the required scopes before they
+    can create runs or decide approvals.
+
+    If you intentionally use `SLACK_BOT_TOKEN` without OAuth token storage,
+    record the workspace as an active manual install from an authenticated admin
+    session before testing Slack ingress:
+
+    ```bash
+    curl -X POST "$BEK_WEB_API_URL/api/connectors/slack/manual-install" \
+      -H "authorization: Bearer $BEK_ADMIN_API_TOKEN" \
+      -H "content-type: application/json" \
+      -d '{"teamId":"T123","workspaceName":"Pilot Workspace","botUserId":"U_BEK"}'
+    ```
+
+    The manual install endpoint stores workspace metadata and scope readiness
+    only; it never stores a bot token. Outbound posting still uses the stored
+    OAuth credential when available or the `SLACK_BOT_TOKEN` fallback.
+
+    Reaction-triggered runs are allowlisted. By default, only `:eyes:` and
+    `:white_check_mark:` reactions on Slack message items trigger Bek. Override
+    with a comma-separated `BEK_SLACK_REACTION_ALLOWLIST` when a pilot uses a
+    different workflow emoji. Non-message reactions and non-allowlisted
+    reactions are acknowledged and ignored without creating runs.
+
+    Bek
     acknowledges Slack callbacks after
     ingress, run, worker, and outbound-delivery state has been persisted.
     Slack Web API posting runs through the outbound drain path after that ACK
@@ -276,6 +308,11 @@ For self-hosted pilots, keep one Slack workspace install mapped to one Bek API
 stack unless you have added tenant resolution and isolation outside the current
 repo. Slack `team_id` becomes a security boundary as soon as more than one
 workspace can reach the same callback host.
+
+Slack channel scopes that carry `metadata.teamId` are usable only while that
+workspace has an active Slack install. Revoked or missing installs leave the
+admin configuration visible but block mentions, reactions, slash commands, and
+approval interactions from executing.
 
 For real Slack testing, map Slack user IDs to Bek human principals from the
 admin console at `/connectors`. The Slack panel stores identities as

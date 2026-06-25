@@ -16,6 +16,7 @@ export interface NormalizedSlackInteraction {
   userId?: string | undefined;
   text?: string | undefined;
   reaction?: string | undefined;
+  itemType?: string | undefined;
   threadTs?: string | undefined;
   challenge?: string | undefined;
   isSelfJoin?: boolean | undefined;
@@ -140,17 +141,18 @@ export function normalizeSlackEvent(
     };
   }
   if (event.type === "reaction_added") {
+    const item =
+      event.item && typeof event.item === "object"
+        ? (event.item as Record<string, unknown>)
+        : undefined;
     return {
       type: "reaction",
-      channelId:
-        typeof (event.item as Record<string, unknown> | undefined)?.channel ===
-        "string"
-          ? ((event.item as Record<string, unknown>).channel as string)
-          : undefined,
+      channelId: typeof item?.channel === "string" ? item.channel : undefined,
       teamId,
       userId: typeof event.user === "string" ? event.user : undefined,
       reaction: typeof event.reaction === "string" ? event.reaction : undefined,
-      threadTs: slackThreadTs(event.item),
+      itemType: typeof item?.type === "string" ? item.type : undefined,
+      threadTs: slackThreadTs(item),
     };
   }
   return { type: "unknown" };

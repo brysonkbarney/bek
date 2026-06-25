@@ -497,6 +497,34 @@ describe("Bek ingress delivery state", () => {
       kind: "github.webhook",
     });
   });
+
+  it("records durable Slack OAuth state delivery keys", () => {
+    const store = new BekStore();
+
+    const delivery = store.recordIngressDelivery({
+      key: "slack:oauth-state:test-nonce",
+      kind: "slack.oauth",
+      status: "processed",
+      response: {
+        ok: true,
+        status: "state_consumed",
+      },
+    });
+
+    expect(delivery).toMatchObject({
+      provider: "slack",
+      kind: "slack.oauth",
+      key: "slack:oauth-state:test-nonce",
+      response: {
+        ok: true,
+        status: "state_consumed",
+      },
+    });
+    expect(store.findIngressDelivery(delivery.key)).toMatchObject({
+      provider: "slack",
+      kind: "slack.oauth",
+    });
+  });
 });
 
 describe("Bek outbound delivery state", () => {

@@ -843,6 +843,14 @@ try {
     "Slack outbox summary must not expose payload or target details by default.",
   );
 
+  const slackInstall = await postJson("/api/connectors/slack/manual-install", {
+    teamId: "T123",
+    workspaceName: "Bek Smoke",
+    botUserId: "U_BEK",
+  });
+  assert(slackInstall.status === "active", "Smoke Slack install should be active.");
+  assert(slackInstall.externalId === "T123", "Smoke Slack install should target team T123.");
+
   const slackEventBody = {
     team_id: "T123",
     event_id: `EvSmoke${Date.now()}`,

@@ -50,6 +50,7 @@ describe("Slack event normalization", () => {
           user: "U123",
           reaction: "eyes",
           item: {
+            type: "message",
             channel: "C123",
             ts: "1700000000.000003",
           },
@@ -60,6 +61,7 @@ describe("Slack event normalization", () => {
       channelId: "C123",
       teamId: "T123",
       reaction: "eyes",
+      itemType: "message",
       threadTs: "1700000000.000003",
     });
   });

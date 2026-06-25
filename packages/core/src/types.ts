@@ -284,6 +284,7 @@ export type IngressDeliveryKind =
   | "slack.event"
   | "slack.command"
   | "slack.interaction"
+  | "slack.oauth"
   | "github.webhook"
   | "api.run";
 

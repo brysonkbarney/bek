@@ -153,7 +153,7 @@ outbound-delivery rows before posting to Slack.
 - provider `slack`,
 - kind `slack.run_outcome` or `slack.approval_decision`,
 - stable idempotency key scoped to message kind, run, approval/run marker,
-  channel, and thread,
+  Slack team, channel, and thread,
 - target channel, thread, team, and rendered Slack payload,
 - attempts, max attempts, next-attempt timestamp, delivered/failed terminal
   state, and redacted last error.

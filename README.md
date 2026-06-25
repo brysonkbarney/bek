@@ -27,7 +27,7 @@ This repository is a working OSS product spine for Bek. It runs locally without 
 - Hono API with seeded Bek workspace data, admin-token gating, Slack event ingress, idempotent run creation via `Idempotency-Key`, approvals, audit events, and policy evaluation.
 - React + TanStack admin app with setup, channels, access bundles, runs, approvals, connectors, model policy, memory stance, audit, and settings.
 - Core TypeScript domain package with policy, approval, redaction, run, and security tests.
-- Slack helpers with fail-closed signature verification, OAuth state, OAuth code exchange, local encrypted install-token storage, slash-command parsing, direct-message handling, channel membership/lifecycle handling, approval interactions, message rendering, and Web API posting through vaulted OAuth tokens or `SLACK_BOT_TOKEN`.
+- Slack helpers with fail-closed signature verification, single-use OAuth state, OAuth code exchange, local encrypted install-token storage, active-install/scope gates for run creation and approvals, reaction allowlisting, slash-command parsing, direct-message handling, channel membership/lifecycle handling, approval interactions, message rendering, and Web API posting through vaulted OAuth tokens or `SLACK_BOT_TOKEN`.
 - Slack `@bek what can you access here?` mentions return a channel-scoped grant
   summary without creating an agent run.
 - Signed GitHub webhook ingress with delivery dedupe and normalized installation, pull request, and check-run metadata; approved GitHub worker execution is opt-in with fake and real modes.
