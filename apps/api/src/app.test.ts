@@ -343,6 +343,7 @@ describe("Bek API", () => {
     expect(second.status).toBe(200);
     await expect(second.json()).resolves.toMatchObject({
       deliveryId: "delivery-dedupe",
+      bodyHash: expect.any(String),
       deduped: true,
     });
     expect(
@@ -352,6 +353,79 @@ describe("Bek API", () => {
           (delivery) => delivery.key === "github:webhook:ping:delivery-dedupe",
         ),
     ).toHaveLength(1);
+    expect(
+      store
+        .read()
+        .ingressDeliveries.filter((delivery) =>
+          delivery.key.startsWith("github:webhook-body:"),
+        ),
+    ).toHaveLength(1);
+  });
+
+  it("dedupes GitHub webhook replays even when delivery headers change", async () => {
+    const store = new BekStore();
+    const app = createApp(store);
+    const rawBody = JSON.stringify({ zen: "Same signed body." });
+    const first = await app.request("/api/github/webhooks", {
+      method: "POST",
+      body: rawBody,
+      headers: signedGitHubHeaders(rawBody, {
+        eventName: "ping",
+        deliveryId: "delivery-body-replay-one",
+      }),
+    });
+    const second = await app.request("/api/github/webhooks", {
+      method: "POST",
+      body: rawBody,
+      headers: signedGitHubHeaders(rawBody, {
+        eventName: "ping",
+        deliveryId: "delivery-body-replay-two",
+      }),
+    });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    await expect(second.json()).resolves.toMatchObject({
+      deliveryId: "delivery-body-replay-one",
+      bodyHash: expect.any(String),
+      deduped: true,
+    });
+    expect(
+      store
+        .read()
+        .ingressDeliveries.filter((delivery) => delivery.provider === "github"),
+    ).toHaveLength(2);
+  });
+
+  it("rolls back GitHub webhook dedupe records when persistence fails", async () => {
+    const store = new BekStore(undefined, {
+      onSnapshotChanged: async () => {
+        throw new Error("database unavailable");
+      },
+    });
+    const rawBody = JSON.stringify({ zen: "Persist me." });
+    const res = await createApp(store).request("/api/github/webhooks", {
+      method: "POST",
+      body: rawBody,
+      headers: signedGitHubHeaders(rawBody, {
+        eventName: "ping",
+        deliveryId: "delivery-persistence-failure",
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(
+      store.findIngressDelivery(
+        "github:webhook:ping:delivery-persistence-failure",
+      ),
+    ).toBeUndefined();
+    expect(
+      store
+        .read()
+        .ingressDeliveries.some((delivery) =>
+          delivery.key.startsWith("github:webhook-body:"),
+        ),
+    ).toBe(false);
   });
 
   it("normalizes and persists supported GitHub pull request webhooks", async () => {
@@ -394,27 +468,31 @@ describe("Bek API", () => {
     });
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({
+    const json = await res.json();
+    expect(json).toMatchObject({
       ok: true,
       provider: "github",
       type: "github.pull_request",
       eventName: "pull_request",
       action: "opened",
       deliveryId: "delivery-pr-opened",
+      bodyHash: expect.any(String),
       installationId: "12345",
-      senderLogin: "octocat",
-      repository: {
-        fullName: "redohq/checkout",
-        resource: "github:redohq/checkout",
-      },
       pullRequest: {
         number: 42,
-        title: "Ship Bek",
-        head: { branch: "bek/ship", sha: "abc123" },
-        base: { branch: "main", sha: "def456" },
+        state: "open",
+        draft: false,
       },
     });
-    expect(store.read().ingressDeliveries[0]).toMatchObject({
+    expect(JSON.stringify(json)).not.toContain("redohq/checkout");
+    expect(JSON.stringify(json)).not.toContain("Ship Bek");
+    const delivery = store
+      .read()
+      .ingressDeliveries.find(
+        (candidate) =>
+          candidate.key === "github:webhook:pull_request:delivery-pr-opened",
+      );
+    expect(delivery).toMatchObject({
       provider: "github",
       kind: "github.webhook",
       key: "github:webhook:pull_request:delivery-pr-opened",
@@ -422,8 +500,11 @@ describe("Bek API", () => {
       response: {
         eventName: "pull_request",
         action: "opened",
+        bodyHash: expect.any(String),
       },
     });
+    expect(JSON.stringify(delivery)).not.toContain("redohq/checkout");
+    expect(JSON.stringify(delivery)).not.toContain("Ship Bek");
   });
 
   it("keeps Slack and GitHub webhook signatures isolated", async () => {
@@ -1402,6 +1483,88 @@ describe("Bek API", () => {
       status: "approved",
       decidedByPrincipalId: "principal_admin",
     });
+  });
+
+  it("dedupes API run creation when Idempotency-Key is reused with the same body", async () => {
+    const store = new BekStore();
+    const app = createApp(store);
+    const beforeRunCount = store.read().runs.length;
+    const body = JSON.stringify({
+      prompt: "@bek open a PR idempotently",
+      placeScopeId: "place_checkout",
+      capability: "github.pr",
+      resource: "github:redohq/checkout",
+    });
+    const request = {
+      method: "POST",
+      body,
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "run-create-123",
+      },
+    };
+
+    const first = await app.request("/api/runs", request);
+    const firstJson = (await first.json()) as { id: string; status: string };
+    const second = await app.request("/api/runs", request);
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(200);
+    await expect(second.json()).resolves.toMatchObject({
+      id: firstJson.id,
+      status: firstJson.status,
+      deduped: true,
+    });
+    expect(store.read().runs).toHaveLength(beforeRunCount + 1);
+    expect(store.read().ingressDeliveries[0]).toMatchObject({
+      provider: "api",
+      kind: "api.run",
+      key: "api:runs:run-create-123",
+      runId: firstJson.id,
+      status: "processed",
+    });
+  });
+
+  it("rejects reused API run idempotency keys with a different body", async () => {
+    const store = new BekStore();
+    const app = createApp(store);
+    const firstBody = JSON.stringify({
+      prompt: "@bek first request",
+      placeScopeId: "place_checkout",
+      capability: "slack.read",
+      resource: "slack:C_CHECKOUT",
+    });
+    const secondBody = JSON.stringify({
+      prompt: "@bek second request",
+      placeScopeId: "place_checkout",
+      capability: "slack.read",
+      resource: "slack:C_CHECKOUT",
+    });
+
+    const first = await app.request("/api/runs", {
+      method: "POST",
+      body: firstBody,
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "same-key-different-body",
+      },
+    });
+    const beforeConflictRunCount = store.read().runs.length;
+    const conflict = await app.request("/api/runs", {
+      method: "POST",
+      body: secondBody,
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "same-key-different-body",
+      },
+    });
+
+    expect(first.status).toBe(201);
+    expect(conflict.status).toBe(409);
+    await expect(conflict.json()).resolves.toMatchObject({
+      error: "Idempotency-Key was already used with a different request body.",
+    });
+    expect(store.read().runs).toHaveLength(beforeConflictRunCount);
   });
 
   it("redacts secret-shaped prompt text from public run responses", async () => {

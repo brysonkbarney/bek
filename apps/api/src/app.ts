@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import {
   BekStore,
   bundlesForPlace,
@@ -239,13 +239,19 @@ export function createApp(
     return latestApproval(store, approval.id);
   }
 
-  async function flushChangesWithDeliveryRollback(deliveryKey?: string) {
+  async function flushChangesWithDeliveryRollback(
+    deliveryKey?: string | readonly string[],
+  ) {
     try {
       await workerController.flushChanges();
       await store.flushChanges();
     } catch (error) {
-      if (deliveryKey) {
-        store.removeIngressDelivery(deliveryKey, { recordChange: false });
+      for (const key of Array.isArray(deliveryKey)
+        ? deliveryKey
+        : deliveryKey
+          ? [deliveryKey]
+          : []) {
+        store.removeIngressDelivery(key, { recordChange: false });
       }
       throw error;
     }
@@ -582,6 +588,8 @@ export function createApp(
     }
 
     let deliveryKey: string;
+    const bodyHash = createHash("sha256").update(rawBody).digest("hex");
+    const bodyKey = `github:webhook-body:${bodyHash}`;
     try {
       deliveryKey = createGitHubWebhookDeliveryDedupeKey({
         deliveryId,
@@ -593,8 +601,24 @@ export function createApp(
 
     const existing = store.findIngressDelivery(deliveryKey);
     if (existing) {
+      if (existing.response?.bodyHash !== bodyHash) {
+        return c.json(
+          {
+            error:
+              "GitHub webhook delivery id was already used with a different body.",
+          },
+          409,
+        );
+      }
       return c.json({
         ...(existing.response ?? {}),
+        deduped: true,
+      });
+    }
+    const existingBody = store.findIngressDelivery(bodyKey);
+    if (existingBody) {
+      return c.json({
+        ...(existingBody.response ?? {}),
         deduped: true,
       });
     }
@@ -619,6 +643,7 @@ export function createApp(
         provider: "github",
         eventName,
         deliveryId,
+        bodyHash,
         ignored: true,
         reason: "GitHub webhook ping acknowledged.",
       };
@@ -629,7 +654,14 @@ export function createApp(
         status: "ignored",
         response,
       });
-      await store.flushChanges();
+      store.recordIngressDelivery({
+        provider: "github",
+        key: bodyKey,
+        kind: "github.webhook",
+        status: "ignored",
+        response,
+      });
+      await flushChangesWithDeliveryRollback([deliveryKey, bodyKey]);
       return c.json(response);
     }
 
@@ -639,6 +671,7 @@ export function createApp(
         provider: "github",
         eventName,
         deliveryId,
+        bodyHash,
         ignored: true,
         reason: "Unsupported GitHub webhook event.",
       };
@@ -649,7 +682,14 @@ export function createApp(
         status: "ignored",
         response,
       });
-      await store.flushChanges();
+      store.recordIngressDelivery({
+        provider: "github",
+        key: bodyKey,
+        kind: "github.webhook",
+        status: "ignored",
+        response,
+      });
+      await flushChangesWithDeliveryRollback([deliveryKey, bodyKey]);
       return c.json(response);
     }
 
@@ -667,7 +707,9 @@ export function createApp(
       );
     }
 
-    const response = normalizedGitHubWebhookResponse(normalized);
+    const response = normalizedGitHubWebhookResponse(normalized, {
+      bodyHash,
+    });
     store.recordIngressDelivery({
       provider: "github",
       key: deliveryKey,
@@ -675,7 +717,14 @@ export function createApp(
       status: "processed",
       response,
     });
-    await store.flushChanges();
+    store.recordIngressDelivery({
+      provider: "github",
+      key: bodyKey,
+      kind: "github.webhook",
+      status: "processed",
+      response,
+    });
+    await flushChangesWithDeliveryRollback([deliveryKey, bodyKey]);
     return c.json(response);
   });
   app.post("/api/channels", async (c) => {
@@ -1013,8 +1062,45 @@ export function createApp(
   });
 
   app.post("/api/runs", async (c) => {
-    const body = createRunSchema.parse(await c.req.json());
+    const rawBody = await c.req.text();
+    const idempotency = idempotencyForRequest(c, rawBody, "api:runs");
+    if (idempotency.error) {
+      return c.json({ error: idempotency.error }, 400);
+    }
+    if (idempotency.key) {
+      const existing = store.findIngressDelivery(idempotency.key);
+      if (existing) {
+        if (existing.response?.requestHash !== idempotency.requestHash) {
+          return c.json(
+            {
+              error:
+                "Idempotency-Key was already used with a different request body.",
+            },
+            409,
+          );
+        }
+        return c.json({
+          ...(existing.response?.run as Record<string, unknown> | undefined),
+          deduped: true,
+        });
+      }
+    }
+
+    const body = createRunSchema.parse(JSON.parse(rawBody) as unknown);
     const run = await createRunAndAdvance(body);
+    if (idempotency.key) {
+      store.recordIngressDelivery({
+        provider: "api",
+        key: idempotency.key,
+        kind: "api.run",
+        status: "processed",
+        runId: run.id,
+        response: {
+          requestHash: idempotency.requestHash,
+          run,
+        },
+      });
+    }
     await store.flushChanges();
     await workerController.flushModelUsageChanges();
     return c.json(run, 201);
@@ -2379,75 +2465,42 @@ function isSupportedGitHubWebhookEvent(
 
 function normalizedGitHubWebhookResponse(
   event: NormalizedGitHubWebhookEvent,
+  input: { bodyHash: string },
 ): Record<string, unknown> {
   const response: Record<string, unknown> = {
     ok: true,
     provider: "github",
-    type: event.type,
     eventName: event.eventName,
+    deliveryId: event.deliveryId,
+    bodyHash: input.bodyHash,
+    type: event.type,
     action: event.action,
   };
-  assignDefined(response, "deliveryId", event.deliveryId);
   assignDefined(response, "installationId", event.installationId);
-  assignDefined(response, "senderLogin", event.senderLogin);
-
-  if (event.type === "github.installation") {
-    assignDefined(response, "accountLogin", event.accountLogin);
-    assignDefined(response, "repositorySelection", event.repositorySelection);
-    response.repositories = event.repositories.map(githubRepoResponse);
-    response.repositoriesAdded =
-      event.repositoriesAdded.map(githubRepoResponse);
-    response.repositoriesRemoved =
-      event.repositoriesRemoved.map(githubRepoResponse);
-    return response;
-  }
-
   if (event.type === "github.pull_request") {
-    response.repository = githubRepoResponse(event.repository);
     response.pullRequest = {
       number: event.pullRequest.number,
-      title: event.pullRequest.title,
       state: event.pullRequest.state,
       draft: event.pullRequest.draft,
-      authorLogin: event.pullRequest.authorLogin,
-      htmlUrl: event.pullRequest.htmlUrl,
-      head: {
-        branch: event.pullRequest.head.branch,
-        sha: event.pullRequest.head.sha,
-        repository: event.pullRequest.head.repository
-          ? githubRepoResponse(event.pullRequest.head.repository)
-          : undefined,
-      },
-      base: {
-        branch: event.pullRequest.base.branch,
-        sha: event.pullRequest.base.sha,
-        repository: githubRepoResponse(event.pullRequest.base.repository),
-      },
     };
-    return response;
   }
-
-  response.repository = githubRepoResponse(event.repository);
-  response.checkRun = {
-    id: event.checkRun.id,
-    name: event.checkRun.name,
-    headSha: event.checkRun.headSha,
-    status: event.checkRun.status,
-    conclusion: event.checkRun.conclusion,
-    htmlUrl: event.checkRun.htmlUrl,
-    pullRequestNumbers: event.checkRun.pullRequestNumbers,
-  };
+  if (event.type === "github.check_run") {
+    response.checkRun = {
+      id: event.checkRun.id,
+      status: event.checkRun.status,
+      conclusion: event.checkRun.conclusion,
+      pullRequestNumbers: event.checkRun.pullRequestNumbers,
+    };
+  }
+  if (event.type === "github.installation") {
+    response.installation = {
+      repositorySelection: event.repositorySelection,
+      repositoryCount: event.repositories.length,
+      repositoriesAddedCount: event.repositoriesAdded.length,
+      repositoriesRemovedCount: event.repositoriesRemoved.length,
+    };
+  }
   return response;
-}
-
-function githubRepoResponse(repo: GitHubRepoResource) {
-  return {
-    owner: repo.owner,
-    repo: repo.repo,
-    fullName: repo.fullName,
-    resource: repo.resource,
-    url: repo.url,
-  };
 }
 
 function assignDefined(
@@ -2574,6 +2627,33 @@ interface RateLimitDecision {
   resetAt: number;
   retryAfterSeconds: number;
   windowMs: number;
+}
+
+interface IdempotencyDecision {
+  key?: string | undefined;
+  requestHash?: string | undefined;
+  error?: string | undefined;
+}
+
+function idempotencyForRequest(
+  c: Context,
+  rawBody: string,
+  namespace: string,
+): IdempotencyDecision {
+  const header = c.req.header("idempotency-key")?.trim();
+  if (!header) {
+    return {};
+  }
+  if (!/^[a-zA-Z0-9._:-]{1,200}$/.test(header)) {
+    return {
+      error:
+        "Idempotency-Key must be 1-200 characters using letters, numbers, dots, underscores, colons, or hyphens.",
+    };
+  }
+  return {
+    key: `${namespace}:${header.toLowerCase()}`,
+    requestHash: createHash("sha256").update(rawBody).digest("hex"),
+  };
 }
 
 function maxRequestBodyBytes(

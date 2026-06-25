@@ -263,12 +263,13 @@ export type IngressDeliveryKind =
   | "slack.event"
   | "slack.command"
   | "slack.interaction"
-  | "github.webhook";
+  | "github.webhook"
+  | "api.run";
 
 export interface IngressDelivery {
   id: string;
   orgId: string;
-  provider: "slack" | "github";
+  provider: "slack" | "github" | "api";
   kind: IngressDeliveryKind;
   key: string;
   status: "processed" | "ignored";
