@@ -25,8 +25,9 @@ It can:
 
 - verify Slack signatures with `SLACK_SIGNING_SECRET`,
 - answer Slack URL verification challenges,
-- normalize `app_mention` and `reaction_added` events,
+- normalize `app_mention`, `reaction_added`, and Bek bot channel-join events,
 - create a local Bek run when the event or slash-command channel matches seeded channel IDs,
+- auto-import a Slack channel and channel-specific `slack.read` grant when Bek's installed bot user joins it,
 - redirect installers to Slack OAuth with signed state,
 - validate OAuth callback state and exchange OAuth codes when
   `BEK_SLACK_OAUTH_EXCHANGE=true`, or when that variable is unset and
@@ -51,7 +52,7 @@ the Slack app's Bot User OAuth Token. The env templates set
 without storing a token until you explicitly opt in.
 
 It does not yet include hosted-grade KMS/secret-manager custody, rotation,
-revocation workflows, or persistent Slack user/principal mapping.
+revocation workflows, Slack directory sync, or self-service identity claiming.
 
 ## Create A Slack App
 
@@ -69,6 +70,7 @@ revocation workflows, or persistent Slack user/principal mapping.
    ```txt
    app_mention
    reaction_added
+   member_joined_channel
    ```
 
 6. Install the app into the workspace.
@@ -127,7 +129,7 @@ revocation workflows, or persistent Slack user/principal mapping.
    `slackInstalled=true`, `slackInstallStatus=active`, the workspace name or
    ID, the bot user ID, and `slackTokenStored=true`.
 
-9. Discover Slack channels.
+9. Discover or invite Bek into Slack channels.
 
    The admin-authenticated discovery endpoint uses the stored OAuth bot token
    for the active Slack install. If no stored token is available, it falls back
@@ -152,6 +154,12 @@ revocation workflows, or persistent Slack user/principal mapping.
    name, privacy/archive flags, whether the bot is a member, whether Bek
    already has a configured place for that channel, and the next cursor. It
    does not return Slack bot tokens or raw provider error strings.
+
+   As a faster setup path, invite Bek's installed bot user into the pilot
+   channel. When Slack sends `member_joined_channel` for Bek's bot user, the
+   Events API imports the channel with the Slack team ID and creates the same
+   channel-scoped `slack.read` grant that manual imports create. Human join
+   events are ignored.
 
 10. Review the imported channel grant.
 
@@ -243,9 +251,10 @@ The seed data recognizes:
 | `#checkout-eng`    | `C_CHECKOUT`       | `place_checkout` |
 | `#general`         | `C_GENERAL`        | `place_general`  |
 
-Real Slack channel IDs will differ. Use `/channels` discovery or
-`GET /api/slack/channels/discover` to import the pilot channel, confirm
-`botIsMember=true`, and persist the Slack team ID on the Bek channel place.
+Real Slack channel IDs will differ. Use `/channels` discovery,
+`GET /api/slack/channels/discover`, or invite Bek into the pilot channel to
+import it, confirm or create bot membership, and persist the Slack team ID on
+the Bek channel place.
 If operators use the raw `POST /api/channels` endpoint, pass `externalTeamId`
 so Bek rejects callbacks from a different Slack team even if a channel ID
 collides. After import, verify the imported place has the channel-specific
@@ -266,5 +275,5 @@ Before inviting Bek broadly, decide:
 ## Launch Blockers
 
 - Hosted-grade credential broker/KMS, rotation, revocation, and access audit.
-- Persistent Slack user/principal mapping.
-- Full persistent Slack channel sync beyond operator-triggered discovery.
+- Slack directory sync and self-service user identity claiming.
+- Full persistent Slack channel sync beyond operator-triggered discovery and Bek bot join import.

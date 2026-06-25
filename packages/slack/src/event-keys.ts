@@ -22,7 +22,9 @@ export function buildSlackEventDurableKey(
 
   const eventType = stringValue(event.type);
   const channelId =
-    stringValue(event.channel) ?? nestedString(event, "item", "channel");
+    stringValue(event.channel) ??
+    nestedString(event, "channel", "id") ??
+    nestedString(event, "item", "channel");
   const eventTs =
     stringValue(event.event_ts) ??
     stringValue(event.ts) ??

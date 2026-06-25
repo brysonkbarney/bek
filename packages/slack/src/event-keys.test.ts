@@ -28,6 +28,33 @@ describe("Slack durable event keys", () => {
         },
       }),
     ).toBe("slack:event:T123:reaction_added:C123:1700000000.000001:U123");
+
+    expect(
+      buildSlackEventDurableKey({
+        team_id: "T123",
+        event: {
+          type: "member_joined_channel",
+          user: "U_BEK",
+          channel: "C123",
+          event_ts: "1700000000.000002",
+        },
+      }),
+    ).toBe(
+      "slack:event:T123:member_joined_channel:C123:1700000000.000002:U_BEK",
+    );
+
+    expect(
+      buildSlackEventDurableKey({
+        team_id: "T123",
+        event: {
+          type: "channel_joined",
+          channel: { id: "C123" },
+          event_ts: "1700000000.000003",
+        },
+      }),
+    ).toBe(
+      "slack:event:T123:channel_joined:C123:1700000000.000003:unknown-actor",
+    );
   });
 
   it("builds command and interaction keys", () => {

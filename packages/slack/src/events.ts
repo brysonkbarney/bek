@@ -1,12 +1,20 @@
 export interface NormalizedSlackInteraction {
-  type: "mention" | "reaction" | "url_verification" | "unknown";
+  type:
+    | "mention"
+    | "reaction"
+    | "channel_joined"
+    | "url_verification"
+    | "unknown";
   channelId?: string | undefined;
+  channelName?: string | undefined;
+  channelType?: string | undefined;
   teamId?: string | undefined;
   userId?: string | undefined;
   text?: string | undefined;
   reaction?: string | undefined;
   threadTs?: string | undefined;
   challenge?: string | undefined;
+  isSelfJoin?: boolean | undefined;
 }
 
 export function normalizeSlackEvent(
@@ -28,6 +36,35 @@ export function normalizeSlackEvent(
   }
   const teamId =
     stringValue(record.team_id) ?? nestedString(record, "team", "id");
+  if (event.type === "channel_joined") {
+    const channel =
+      event.channel && typeof event.channel === "object"
+        ? (event.channel as Record<string, unknown>)
+        : undefined;
+    return {
+      type: "channel_joined",
+      channelId:
+        stringValue(channel?.id) ??
+        (typeof event.channel === "string" ? event.channel : undefined),
+      channelName: stringValue(channel?.name),
+      teamId,
+      userId: typeof event.user === "string" ? event.user : undefined,
+      isSelfJoin: true,
+    };
+  }
+  if (event.type === "member_joined_channel") {
+    return {
+      type: "channel_joined",
+      channelId: typeof event.channel === "string" ? event.channel : undefined,
+      channelName:
+        typeof event.channel_name === "string" ? event.channel_name : undefined,
+      channelType:
+        typeof event.channel_type === "string" ? event.channel_type : undefined,
+      teamId,
+      userId: typeof event.user === "string" ? event.user : undefined,
+      isSelfJoin: false,
+    };
+  }
   if (typeof event.bot_id === "string" || event.subtype === "bot_message") {
     return { type: "unknown" };
   }

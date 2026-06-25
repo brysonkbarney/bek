@@ -191,6 +191,29 @@ function mapSlackTestUsers(map: Record<string, unknown>) {
   process.env.BEK_SLACK_USER_PRINCIPAL_MAP = JSON.stringify(map);
 }
 
+function installActiveSlackApp(
+  store: BekStore,
+  input: {
+    teamId?: string | undefined;
+    botUserId?: string | undefined;
+  } = {},
+) {
+  const teamId = input.teamId ?? "T123";
+  return store.upsertConnectorInstall({
+    id: `connector_slack_${teamId}`,
+    kind: "slack",
+    provider: "slack",
+    externalId: teamId,
+    displayName: "Redo",
+    status: "active",
+    metadata: {
+      teamId,
+      teamName: "Redo",
+      ...(input.botUserId ? { botUserId: input.botUserId } : {}),
+    },
+  });
+}
+
 function clearGitHubEnv() {
   delete process.env.BEK_GITHUB_EXECUTION;
   delete process.env.GITHUB_API_BASE_URL;
@@ -4100,6 +4123,204 @@ describe("Bek API", () => {
 
     expect(first.status).toBe(200);
     await expect(second.json()).resolves.toMatchObject({ deduped: true });
+  });
+
+  it("auto-imports a Slack channel when Bek joins it", async () => {
+    const store = new BekStore();
+    installActiveSlackApp(store, { botUserId: "U_BEK" });
+    const app = createApp(store);
+    const payload = {
+      team_id: "T123",
+      event_id: "EvBekJoinedChannel",
+      event: {
+        type: "member_joined_channel",
+        user: "U_BEK",
+        channel: "C_NEW",
+        channel_type: "C",
+        event_ts: "1710000000.000010",
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+
+    const first = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(first.status).toBe(200);
+    await expect(first.json()).resolves.toMatchObject({
+      ok: true,
+      imported: true,
+      configured: true,
+      channelId: "C_NEW",
+    });
+    const snapshot = store.read();
+    const channel = snapshot.places.find(
+      (place) => place.provider === "slack" && place.externalId === "C_NEW",
+    );
+    expect(channel).toMatchObject({
+      kind: "slack_channel",
+      name: "#C_NEW",
+      sensitivity: "internal",
+      metadata: expect.objectContaining({
+        teamId: "T123",
+        source: "slack_join_event",
+        joinedUserId: "U_BEK",
+      }),
+    });
+    expect(snapshot.runs).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ placeScopeId: channel?.id }),
+      ]),
+    );
+    expect(snapshot.accessBundles.flatMap((bundle) => bundle.grants)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          capability: "slack.read",
+          resource: "slack:C_NEW",
+          decision: "allow",
+          requiresApproval: false,
+        }),
+      ]),
+    );
+
+    const retry = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+    expect(retry.status).toBe(200);
+    await expect(retry.json()).resolves.toMatchObject({
+      deduped: true,
+      imported: true,
+      channelId: "C_NEW",
+    });
+    expect(
+      store
+        .read()
+        .places.filter(
+          (place) => place.provider === "slack" && place.externalId === "C_NEW",
+        ),
+    ).toHaveLength(1);
+  });
+
+  it("repairs Slack channel grants when Bek joins an already imported channel", async () => {
+    const store = new BekStore();
+    installActiveSlackApp(store, { botUserId: "U_BEK" });
+    const channel = store.createPlace({
+      kind: "slack_channel",
+      provider: "slack",
+      externalId: "C_EXISTING",
+      name: "#existing",
+      sensitivity: "internal",
+      metadata: { teamId: "T123" },
+    });
+    const payload = {
+      team_id: "T123",
+      event_id: "EvBekJoinedExistingChannel",
+      event: {
+        type: "member_joined_channel",
+        user: "U_BEK",
+        channel: "C_EXISTING",
+        event_ts: "1710000000.000012",
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+
+    const res = await createApp(store).request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: true,
+      imported: false,
+      configured: true,
+      placeId: channel.id,
+      channelId: "C_EXISTING",
+    });
+    expect(store.read().places).toHaveLength(3);
+    expect(
+      store.read().accessBundles.flatMap((bundle) => bundle.grants),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          capability: "slack.read",
+          resource: "slack:C_EXISTING",
+          decision: "allow",
+          requiresApproval: false,
+        }),
+      ]),
+    );
+  });
+
+  it("requires the installed Slack bot user ID before importing member join events", async () => {
+    const store = new BekStore();
+    installActiveSlackApp(store);
+    const payload = {
+      team_id: "T123",
+      event_id: "EvBekJoinedMissingBotUser",
+      event: {
+        type: "member_joined_channel",
+        user: "U_BEK",
+        channel: "C_UNKNOWN_BOT",
+        event_ts: "1710000000.000013",
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+
+    const res = await createApp(store).request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-slack-no-retry")).toBe("1");
+    await expect(res.json()).resolves.toMatchObject({
+      ok: false,
+      ignored: true,
+      reason: "Slack channel join did not add Bek's bot user.",
+    });
+    expect(
+      store.read().places.some((place) => place.externalId === "C_UNKNOWN_BOT"),
+    ).toBe(false);
+  });
+
+  it("ignores Slack channel joins that are not Bek's bot user", async () => {
+    const store = new BekStore();
+    installActiveSlackApp(store, { botUserId: "U_BEK" });
+    const payload = {
+      team_id: "T123",
+      event_id: "EvHumanJoinedChannel",
+      event: {
+        type: "member_joined_channel",
+        user: "U_HUMAN",
+        channel: "C_HUMAN_JOIN",
+        event_ts: "1710000000.000011",
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+
+    const res = await createApp(store).request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-slack-no-retry")).toBe("1");
+    await expect(res.json()).resolves.toMatchObject({
+      ok: false,
+      ignored: true,
+      reason: "Slack channel join did not add Bek's bot user.",
+    });
+    expect(
+      store.read().places.some((place) => place.externalId === "C_HUMAN_JOIN"),
+    ).toBe(false);
   });
 
   it("returns the original ignored Slack event response on retries", async () => {

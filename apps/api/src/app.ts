@@ -52,6 +52,7 @@ import {
   type SlackListChannelsInput,
   type SlackApprovalInteraction,
   type SlackInstallRecord,
+  type NormalizedSlackInteraction,
   type SlackWebApiClient,
   verifySlackOAuthState,
   verifySlackSignature,
@@ -358,6 +359,94 @@ export function createApp(
       grant.decision === "allow" &&
       !grant.requiresApproval
     );
+  }
+
+  function handleSlackChannelJoinedEvent(
+    event: NormalizedSlackInteraction,
+  ): Record<string, unknown> {
+    if (!event.channelId) {
+      return {
+        ok: false,
+        ignored: true,
+        reason: "Slack channel join payload is missing channel.",
+      };
+    }
+
+    const snapshot = store.read();
+    const install = activeSlackInstallForTeam(snapshot, event.teamId);
+    if (!install) {
+      return {
+        ok: false,
+        ignored: true,
+        reason: "Bek does not have an active Slack install for this workspace.",
+      };
+    }
+
+    const botUserId = stringMetadata(install.metadata, "botUserId");
+    if (!event.isSelfJoin && (!botUserId || event.userId !== botUserId)) {
+      return {
+        ok: false,
+        ignored: true,
+        reason: "Slack channel join did not add Bek's bot user.",
+      };
+    }
+
+    const existing = resolveSlackPlace(snapshot, event.channelId, event.teamId);
+    if (existing) {
+      ensureSlackReadAccessForChannel(existing);
+      return {
+        ok: true,
+        imported: false,
+        configured: true,
+        placeId: existing.id,
+        channelId: existing.externalId,
+      };
+    }
+
+    const conflicting = snapshot.places.find(
+      (place) =>
+        place.kind === "slack_channel" &&
+        place.provider === "slack" &&
+        place.externalId === event.channelId,
+    );
+    if (conflicting) {
+      return {
+        ok: false,
+        ignored: true,
+        reason:
+          "Slack channel is already configured for a different workspace.",
+      };
+    }
+
+    const metadata: Record<string, unknown> = {
+      source: "slack_join_event",
+    };
+    if (event.teamId) {
+      metadata.teamId = event.teamId;
+    }
+    if (event.userId) {
+      metadata.joinedUserId = event.userId;
+    }
+    if (event.channelType) {
+      metadata.channelType = event.channelType;
+    }
+
+    const channel = store.createPlace({
+      kind: "slack_channel",
+      provider: "slack",
+      externalId: event.channelId,
+      name: slackChannelDisplayName(event),
+      sensitivity: "internal",
+      metadata,
+    });
+    ensureSlackReadAccessForChannel(channel);
+    return {
+      ok: true,
+      imported: true,
+      configured: true,
+      placeId: channel.id,
+      channelId: channel.externalId,
+    };
   }
 
   function decideApprovalAndQueue(
@@ -2092,6 +2181,22 @@ export function createApp(
     if (event.type === "url_verification") {
       return c.json({ challenge: event.challenge });
     }
+    if (event.type === "channel_joined") {
+      const response = handleSlackChannelJoinedEvent(event);
+      if (eventKey) {
+        store.recordIngressDelivery({
+          key: eventKey,
+          kind: "slack.event",
+          status: response.ok ? "processed" : "ignored",
+          response: { ...response },
+        });
+        await flushChangesWithDeliveryRollback(eventKey);
+      }
+      if (!response.ok) {
+        markSlackNoRetry(c);
+      }
+      return c.json(withSlackRetryMetadata(response, retry));
+    }
     if (event.type === "mention" || event.type === "reaction") {
       const snapshot = store.read();
       if (!event.channelId) {
@@ -3169,6 +3274,27 @@ function latestSlackInstall(
   return snapshot.connectorInstalls.find(
     (install) => install.kind === "slack" && install.provider === "slack",
   );
+}
+
+function activeSlackInstallForTeam(
+  snapshot: BekSnapshot,
+  teamId?: string | undefined,
+): ConnectorInstall | undefined {
+  return snapshot.connectorInstalls.find(
+    (install) =>
+      install.kind === "slack" &&
+      install.provider === "slack" &&
+      install.status === "active" &&
+      (!teamId || install.externalId === teamId),
+  );
+}
+
+function slackChannelDisplayName(event: NormalizedSlackInteraction): string {
+  const name = event.channelName?.trim();
+  if (name) {
+    return name.startsWith("#") ? name : `#${name}`;
+  }
+  return `#${event.channelId ?? "slack-channel"}`;
 }
 
 function latestSlackCredential(
