@@ -1369,13 +1369,17 @@ export function createApp(
       snapshot.accessBundles.length > 0 &&
       snapshot.modelPolicies.length > 0 &&
       modelPricing.ready;
+    const githubExecutionReadyForWorkspace =
+      githubGrantCount > 0 &&
+      githubExecution.status.enabled &&
+      githubExecution.status.ready;
     const readyForWorkspace =
       readyForLocalDemo &&
       slackInstall?.status === "active" &&
       Boolean(slackCredential) &&
       slackScopeReadiness.missing.length === 0 &&
       snapshot.runtimeProfiles.length > 0 &&
-      githubGrantCount > 0;
+      githubExecutionReadyForWorkspace;
     return c.json({
       visibleHandle: snapshot.agent.handle,
       singleVisibleAgent,

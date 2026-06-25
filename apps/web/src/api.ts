@@ -188,6 +188,11 @@ export interface SetupStatus {
   modelPricingError?: string | null;
   runtimeProfiles: number;
   githubGrantCount: number;
+  githubExecutionMode?: string;
+  githubExecutionEnabled?: boolean;
+  githubExecutionReady?: boolean;
+  githubExecutionNetworkCalls?: string;
+  githubExecutionErrors?: string[];
   pendingApprovals: number;
   readyForLocalDemo: boolean;
   readyForWorkspace: boolean;

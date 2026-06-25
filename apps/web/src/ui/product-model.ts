@@ -252,7 +252,11 @@ export function setupOperationsFromStatus(
   const accessReady = status.accessBundles > 0;
   const modelReady = modelPricingReady(status);
   const runtimeReady = status.runtimeProfiles > 0;
-  const githubReady = status.githubGrantCount > 0;
+  const githubPolicyReady = status.githubGrantCount > 0;
+  const githubExecutionReady = Boolean(
+    status.githubExecutionEnabled && status.githubExecutionReady,
+  );
+  const githubReady = githubPolicyReady && githubExecutionReady;
   const workspace = status.slackWorkspaceName ?? status.slackWorkspaceId;
   const operations: SetupOperation[] = [
     {
@@ -372,22 +376,27 @@ export function setupOperationsFromStatus(
     id: "github-policy",
     phase: "6",
     title: "Govern repo access",
-    detail: githubReady
-      ? "Repo work is visible through access-bundle grants."
+    detail: githubPolicyReady
+      ? githubExecutionSetupDetail(status)
       : "Add at least one GitHub repo or organization grant before workspace use.",
-    status: githubReady ? "ready" : "needs action",
+    status: githubReady
+      ? "ready"
+      : githubPolicyReady
+        ? "policy configured"
+        : "needs action",
     complete: githubReady,
     facts: [
       `${status.githubGrantCount} GitHub grant${
         status.githubGrantCount === 1 ? "" : "s"
       }`,
+      githubExecutionFact(status),
       "Governed through access policy",
     ],
     primaryAction: {
-      label: githubReady ? "Review grants" : "Add repo grant",
-      route: "/access-bundles",
+      label: githubPolicyReady ? "Open GitHub setup" : "Add repo grant",
+      route: githubPolicyReady ? "/connectors" : "/access-bundles",
     },
-    secondaryAction: { label: "Open GitHub setup", route: "/connectors" },
+    secondaryAction: { label: "Review grants", route: "/access-bundles" },
   });
 
   return operations;
@@ -494,9 +503,9 @@ export function connectorSummaries(data: Bootstrap): Array<{
     {
       id: "github",
       name: "GitHub",
-      status: hasGitHub ? "connected" : "not connected",
+      status: hasGitHub ? "policy configured" : "not connected",
       detail: hasGitHub
-        ? "Selected repo grants are attached to access bundles."
+        ? "Selected repo grants are attached; execution readiness is shown in setup."
         : "Install the GitHub App to enable repo work.",
       metric: `${githubGrantCount} grants`,
       route: "/access-bundles",
@@ -597,6 +606,34 @@ function modelPricingFact(status: SetupStatus): string {
   return status.modelPricingReady
     ? "Pricing registry: ready"
     : `Missing pricing: ${formatPricedModels(status.missingPricedModels)}`;
+}
+
+function githubExecutionSetupDetail(status: SetupStatus): string {
+  if (status.githubExecutionEnabled && status.githubExecutionReady) {
+    return "Repo grants are attached and GitHub App execution is ready.";
+  }
+  if (status.githubExecutionEnabled) {
+    return `Repo grants are attached, but GitHub App execution needs repair: ${githubExecutionErrorSummary(
+      status,
+    )}.`;
+  }
+  return "Repo grants are attached; real GitHub execution is disabled until App credentials are configured.";
+}
+
+function githubExecutionFact(status: SetupStatus): string {
+  const mode = status.githubExecutionMode ?? "disabled";
+  if (status.githubExecutionEnabled && status.githubExecutionReady) {
+    return `Execution: ready (${mode})`;
+  }
+  if (status.githubExecutionEnabled) {
+    return `Execution: blocked (${mode})`;
+  }
+  return `Execution: disabled (${mode})`;
+}
+
+function githubExecutionErrorSummary(status: SetupStatus): string {
+  const errors = status.githubExecutionErrors?.filter(Boolean) ?? [];
+  return errors.length > 0 ? errors.join("; ") : "missing ready checks";
 }
 
 function formatPricedModels(models: string[] | undefined): string {

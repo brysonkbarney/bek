@@ -27,6 +27,11 @@ const readySetup: SetupStatus = {
   modelPricingError: null,
   runtimeProfiles: 1,
   githubGrantCount: 1,
+  githubExecutionMode: "real",
+  githubExecutionEnabled: true,
+  githubExecutionReady: true,
+  githubExecutionNetworkCalls: "github_on_approved_worker_run",
+  githubExecutionErrors: [],
   pendingApprovals: 0,
   readyForLocalDemo: true,
   readyForWorkspace: true,
@@ -81,7 +86,10 @@ describe("admin product helpers", () => {
       expect.objectContaining({
         complete: true,
         status: "ready",
-        facts: expect.arrayContaining(["1 GitHub grant"]),
+        facts: expect.arrayContaining([
+          "1 GitHub grant",
+          "Execution: ready (real)",
+        ]),
       }),
     );
   });
@@ -124,6 +132,38 @@ describe("admin product helpers", () => {
         complete: false,
         status: "needs action",
         primaryAction: { label: "Add repo grant", route: "/access-bundles" },
+      }),
+    );
+  });
+
+  it("does not mark GitHub repo grants as executable when App execution is disabled", () => {
+    const operations = setupOperationsFromStatus(
+      {
+        ...readySetup,
+        githubExecutionMode: "disabled",
+        githubExecutionEnabled: false,
+        githubExecutionReady: false,
+        githubExecutionNetworkCalls: "none",
+        githubExecutionErrors: [],
+        readyForWorkspace: false,
+      },
+      {
+        adminAuthDetail: "Using a browser-entered admin token.",
+        adminAuthenticated: true,
+      },
+    );
+
+    expect(operations.find((step) => step.id === "github-policy")).toEqual(
+      expect.objectContaining({
+        complete: false,
+        status: "policy configured",
+        detail:
+          "Repo grants are attached; real GitHub execution is disabled until App credentials are configured.",
+        facts: expect.arrayContaining([
+          "1 GitHub grant",
+          "Execution: disabled (disabled)",
+        ]),
+        primaryAction: { label: "Open GitHub setup", route: "/connectors" },
       }),
     );
   });
@@ -218,6 +258,41 @@ describe("admin product helpers", () => {
     ).toMatchObject({
       status: "not configured",
       route: "/models",
+    });
+  });
+
+  it("describes GitHub grants as policy until execution readiness is verified", () => {
+    const connectors = connectorSummaries({
+      ...emptyBootstrap,
+      accessBundles: [
+        {
+          id: "bundle_repo",
+          name: "Repo access",
+          description: "GitHub repo policy",
+          budgetPolicyId: "budget_default",
+          grants: [
+            {
+              id: "grant_repo",
+              capability: "github.pr",
+              resource: "github:redohq/checkout",
+              decision: "ask",
+              risk: "writes_code",
+              requiresApproval: true,
+            },
+          ],
+          attachedPlaceIds: [],
+        },
+      ],
+    });
+
+    expect(
+      connectors.find((connector) => connector.id === "github"),
+    ).toMatchObject({
+      status: "policy configured",
+      detail:
+        "Selected repo grants are attached; execution readiness is shown in setup.",
+      metric: "1 grants",
+      route: "/access-bundles",
     });
   });
 

@@ -1139,7 +1139,8 @@ describe("Bek API", () => {
     expect(json.missingSlackScopes).toEqual(["users:read"]);
   });
 
-  it("marks the seed workspace ready when Slack install scopes are complete", async () => {
+  it("marks the seed workspace ready when Slack scopes and GitHub execution are complete", async () => {
+    process.env.BEK_GITHUB_EXECUTION = "fake";
     const store = new BekStore();
     const scopes = [
       "app_mentions:read",
@@ -1182,8 +1183,62 @@ describe("Bek API", () => {
       slackInstalled: true,
       slackTokenStored: true,
       missingSlackScopes: [],
+      githubExecutionMode: "fake",
+      githubExecutionEnabled: true,
+      githubExecutionReady: true,
+      githubExecutionNetworkCalls: "none",
       readyForLocalDemo: true,
       readyForWorkspace: true,
+    });
+  });
+
+  it("keeps the seed workspace unready when GitHub execution is disabled", async () => {
+    const store = new BekStore();
+    const scopes = [
+      "app_mentions:read",
+      "reactions:read",
+      "commands",
+      "chat:write",
+      "channels:read",
+      "groups:read",
+      "im:history",
+    ];
+    const install = store.upsertConnectorInstall({
+      id: "connector_slack_T123",
+      kind: "slack",
+      provider: "slack",
+      externalId: "T123",
+      displayName: "Redo",
+      status: "active",
+      metadata: {
+        teamId: "T123",
+        teamName: "Redo",
+        botUserId: "U_BEK",
+        scopes,
+      },
+    });
+    store.upsertCredential({
+      id: "credential_slack_bot_T123",
+      connectorInstallId: install.id,
+      name: "Redo Slack bot token",
+      provider: "slack",
+      externalAccountId: "T123",
+      secretRef: "bek-local-vault:slack:org_demo:T123:bot",
+      status: "active",
+      scopeSummary: scopes.join(","),
+    });
+
+    const res = await createApp(store).request("/api/setup/status");
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      missingSlackScopes: [],
+      githubGrantCount: 2,
+      githubExecutionMode: "disabled",
+      githubExecutionEnabled: false,
+      githubExecutionReady: true,
+      readyForLocalDemo: true,
+      readyForWorkspace: false,
     });
   });
 
