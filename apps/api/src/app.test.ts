@@ -1716,12 +1716,18 @@ describe("Bek API", () => {
     process.env.GITHUB_APP_INSTALLATION_ID = "456";
     process.env.GITHUB_APP_PRIVATE_KEY = testGitHubPrivateKey;
     process.env.GITHUB_APP_WEBHOOK_SECRET = "a-webhook-secret-with-length";
-    const store = new BekStore();
-    const bundle = store.createAccessBundle({
+    const snapshot = createSeedSnapshot();
+    snapshot.accessBundles.unshift({
+      id: "bundle_org_wide_github",
+      orgId: snapshot.org.id,
       name: "Org-wide GitHub",
       description: "Wildcard policy grant that is not repo-scoped.",
+      budgetPolicyId: "budget_checkout",
+      attachedPlaceIds: [],
+      grants: [],
     });
-    store.createGrant(bundle.id, {
+    snapshot.accessBundles[0]!.grants.push({
+      id: "grant_org_wide_github",
       capability: "github.read",
       resource: "github:redohq/*",
       decision: "allow",
@@ -1729,7 +1735,9 @@ describe("Bek API", () => {
       requiresApproval: false,
     });
 
-    const res = await createApp(store).request("/api/setup/github");
+    const res = await createApp(new BekStore(snapshot)).request(
+      "/api/setup/github",
+    );
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
@@ -2052,7 +2060,7 @@ describe("Bek API", () => {
       }),
       headers: { "content-type": "application/json" },
     });
-    expect(duplicate.status).toBe(400);
+    expect(duplicate.status).toBe(409);
 
     const externalIdUpdate = await app.request(`/api/channels/${channel.id}`, {
       method: "PATCH",
@@ -2107,7 +2115,7 @@ describe("Bek API", () => {
         headers: { "content-type": "application/json" },
       },
     );
-    expect(duplicateExternalId.status).toBe(400);
+    expect(duplicateExternalId.status).toBe(409);
 
     const protectedDelete = await app.request("/api/channels/place_checkout", {
       method: "DELETE",
@@ -2207,6 +2215,41 @@ describe("Bek API", () => {
       decision: "deny",
       requiresApproval: false,
     });
+    await expect(expectJson(app, "/api/audit-events")).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "access_bundle.place_attached",
+          actorPrincipalId: "principal_admin",
+          resourceId: bundle.id,
+          data: expect.objectContaining({
+            placeId: channel.id,
+            adminAuthMethod: "local_bypass",
+          }),
+        }),
+        expect.objectContaining({
+          action: "access_grant.created",
+          actorPrincipalId: "principal_admin",
+          resourceId: grant.id,
+          decision: "ask",
+          risk: "write_external",
+          data: expect.objectContaining({
+            after: expect.objectContaining({
+              resource: "mcp:linear/create_issue",
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          action: "access_grant.updated",
+          actorPrincipalId: "principal_admin",
+          resourceId: grant.id,
+          decision: "deny",
+          data: expect.objectContaining({
+            before: expect.objectContaining({ decision: "ask" }),
+            after: expect.objectContaining({ decision: "deny" }),
+          }),
+        }),
+      ]),
+    );
   });
 
   it("handles access bundle idempotency and invalid grant mutations", async () => {
@@ -2308,6 +2351,25 @@ describe("Bek API", () => {
     );
     expect(invalidGrant.status).toBe(400);
 
+    const wildcardGitHubGrant = await app.request(
+      `/api/access-bundles/${bundle.id}/grants`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          capability: "github.pr",
+          resource: "github:redohq/*",
+          decision: "ask",
+          risk: "write_external",
+          requiresApproval: true,
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(wildcardGitHubGrant.status).toBe(400);
+    await expect(wildcardGitHubGrant.json()).resolves.toMatchObject({
+      error: "GitHub grants must use github:owner/repo resources.",
+    });
+
     const grantRes = await app.request(
       `/api/access-bundles/${bundle.id}/grants`,
       {
@@ -2324,6 +2386,25 @@ describe("Bek API", () => {
     );
     expect(grantRes.status).toBe(201);
     const grant = (await grantRes.json()) as { id: string };
+
+    const duplicateGrant = await app.request(
+      `/api/access-bundles/${bundle.id}/grants`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          capability: "github.read",
+          resource: " github:RedoHQ/checkout ",
+          decision: "allow",
+          risk: "read_internal",
+          requiresApproval: false,
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(duplicateGrant.status).toBe(409);
+    await expect(duplicateGrant.json()).resolves.toMatchObject({
+      error: expect.stringContaining("Duplicate grant already exists"),
+    });
 
     const emptyGrantPatch = await app.request(
       `/api/access-bundles/${bundle.id}/grants/${grant.id}`,

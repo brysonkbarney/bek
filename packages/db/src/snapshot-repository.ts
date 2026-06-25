@@ -1,6 +1,7 @@
 import type {
   AccessBundle,
   ApprovalRequest,
+  AuditEvent,
   BekSnapshot,
   CapabilityGrant,
   ConnectorInstall,
@@ -18,6 +19,7 @@ import {
   accessBundles,
   agents,
   approvals,
+  auditEvents,
   budgetPolicies,
   capabilityProfiles,
   connectorInstalls,
@@ -37,6 +39,7 @@ import {
   type AccessBundleRow,
   type AgentRow,
   type ApprovalRow,
+  type AuditEventRow,
   type BudgetPolicyRow,
   type CapabilityProfileRow,
   type ConnectorInstallRow,
@@ -247,6 +250,21 @@ type ApprovalSnapshotRow = Pick<
   | "expiresAt"
   | "decidedAt"
 >;
+type AuditEventSnapshotRow = Pick<
+  AuditEventRow,
+  | "id"
+  | "orgId"
+  | "actorPrincipalId"
+  | "runId"
+  | "action"
+  | "resourceType"
+  | "resourceId"
+  | "decision"
+  | "risk"
+  | "message"
+  | "data"
+  | "createdAt"
+>;
 type IngressDeliverySnapshotRow = Pick<
   IngressDeliveryRow,
   | "id"
@@ -299,6 +317,7 @@ export interface BekSnapshotRows {
   runs: RunSnapshotRow[];
   events: RunEventSnapshotRow[];
   approvals: ApprovalSnapshotRow[];
+  auditEvents: AuditEventSnapshotRow[];
   ingressDeliveries: IngressDeliverySnapshotRow[];
   outboundDeliveries: OutboundDeliverySnapshotRow[];
 }
@@ -338,6 +357,7 @@ export class DrizzleBekSnapshotRepository implements BekSnapshotRepository {
       runRows,
       eventRows,
       approvalRows,
+      auditEventRows,
       ingressDeliveryRows,
       outboundDeliveryRows,
     ] = await Promise.all([
@@ -424,6 +444,11 @@ export class DrizzleBekSnapshotRepository implements BekSnapshotRepository {
         .orderBy(desc(approvals.createdAt), asc(approvals.id)),
       this.db
         .select()
+        .from(auditEvents)
+        .where(eq(auditEvents.orgId, orgId))
+        .orderBy(desc(auditEvents.createdAt), asc(auditEvents.id)),
+      this.db
+        .select()
         .from(ingressDeliveries)
         .where(eq(ingressDeliveries.orgId, orgId))
         .orderBy(desc(ingressDeliveries.createdAt), asc(ingressDeliveries.id)),
@@ -454,6 +479,7 @@ export class DrizzleBekSnapshotRepository implements BekSnapshotRepository {
       runs: runRows,
       events: eventRows,
       approvals: approvalRows,
+      auditEvents: auditEventRows,
       ingressDeliveries: ingressDeliveryRows,
       outboundDeliveries: outboundDeliveryRows,
     });
@@ -640,6 +666,20 @@ export function snapshotToRows(
       expiresAt: toDate(approval.expiresAt),
       decidedAt: approval.decidedAt ? toDate(approval.decidedAt) : null,
     })),
+    auditEvents: snapshot.auditEvents.map((event) => ({
+      id: event.id,
+      orgId: event.orgId,
+      actorPrincipalId: event.actorPrincipalId ?? null,
+      runId: event.runId ?? null,
+      action: event.action,
+      resourceType: event.resourceType,
+      resourceId: event.resourceId ?? null,
+      decision: event.decision ?? null,
+      risk: event.risk ?? null,
+      message: event.message,
+      data: event.data ?? {},
+      createdAt: toDate(event.createdAt),
+    })),
     ingressDeliveries: snapshot.ingressDeliveries.map((delivery) => ({
       id: delivery.id,
       orgId: delivery.orgId,
@@ -779,6 +819,7 @@ export function rowsToSnapshot(rows: BekSnapshotRows): BekSnapshot {
     })),
     events: rows.events.map(eventFromRow),
     approvals: rows.approvals.map(approvalFromRow),
+    auditEvents: rows.auditEvents.map(auditEventFromRow),
     ingressDeliveries: rows.ingressDeliveries.map(ingressDeliveryFromRow),
     outboundDeliveries: rows.outboundDeliveries.map(outboundDeliveryFromRow),
   };
@@ -800,6 +841,7 @@ async function deleteCurrentSnapshotRows(db: MutationDb, orgId: string) {
     .delete(outboundDeliveries)
     .where(eq(outboundDeliveries.orgId, orgId));
   await db.delete(ingressDeliveries).where(eq(ingressDeliveries.orgId, orgId));
+  await db.delete(auditEvents).where(eq(auditEvents.orgId, orgId));
   await db.delete(approvals).where(eq(approvals.orgId, orgId));
   await db.delete(runEvents).where(eq(runEvents.orgId, orgId));
   await db.delete(runs).where(eq(runs.orgId, orgId));
@@ -937,6 +979,9 @@ async function insertSnapshotRows(db: MutationDb, rows: BekSnapshotRows) {
   if (rows.approvals.length > 0) {
     await db.insert(approvals).values(rows.approvals);
   }
+  if (rows.auditEvents.length > 0) {
+    await db.insert(auditEvents).values(rows.auditEvents);
+  }
   if (rows.ingressDeliveries.length > 0) {
     await db.insert(ingressDeliveries).values(rows.ingressDeliveries);
   }
@@ -1042,6 +1087,37 @@ function approvalFromRow(row: ApprovalSnapshotRow): ApprovalRequest {
   }
 
   return approval;
+}
+
+function auditEventFromRow(row: AuditEventSnapshotRow): AuditEvent {
+  const event: AuditEvent = {
+    id: row.id,
+    orgId: row.orgId,
+    action: row.action,
+    resourceType: row.resourceType,
+    message: row.message,
+    createdAt: toIso(row.createdAt),
+  };
+  if (row.actorPrincipalId) {
+    event.actorPrincipalId = row.actorPrincipalId;
+  }
+  if (row.runId) {
+    event.runId = row.runId;
+  }
+  if (row.resourceId) {
+    event.resourceId = row.resourceId;
+  }
+  if (row.decision) {
+    event.decision = row.decision;
+  }
+  if (row.risk) {
+    event.risk = row.risk;
+  }
+  const data = nonEmptyRecord(row.data);
+  if (data) {
+    event.data = data;
+  }
+  return event;
 }
 
 function connectorInstallFromRow(

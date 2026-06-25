@@ -41,8 +41,9 @@ sound ambitious, but the claims need to match the code that exists today.
   worker-only invocation.
 - Do not claim org-wide memory. The current Memory page is a stance page; Bek
   does not yet have source/chunk/embedding/citation storage or retrieval.
-- Do not claim customer-grade audit export. Current audit UI is mostly run
-  timeline evidence; durable append-only audit rows are still planned.
+- Do not claim customer-grade audit export. Bek persists durable audit rows for
+  access admin mutations, but the current Audit UI is mostly run timeline
+  evidence and export/filtering still needs work.
 - Do not claim billing-grade spend controls. Current cost values are local
   estimates, not provider invoice reconciliation.
 - Do not claim compliance, SOC 2, tenant isolation, or managed key custody until

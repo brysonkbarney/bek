@@ -8,6 +8,7 @@ import {
 } from "@bek/core";
 import type {
   ApprovalRequest,
+  AuditEvent,
   CapabilityGrant,
   BekSnapshot,
   ConnectorInstall,
@@ -106,7 +107,7 @@ interface ApprovalDecisionRequestBody {
 }
 type PublicBekSnapshot = Omit<
   BekSnapshot,
-  "ingressDeliveries" | "outboundDeliveries"
+  "auditEvents" | "ingressDeliveries" | "outboundDeliveries"
 >;
 type PublicOutboundDelivery = Omit<
   OutboundDelivery,
@@ -141,6 +142,16 @@ interface AdminAuthContext {
   orgId: string;
   principalId: string;
   method: AdminAuthMethod;
+}
+
+interface RecordAdminAuditEventInput {
+  action: string;
+  resourceType: string;
+  resourceId?: string | undefined;
+  decision?: CapabilityGrant["decision"] | undefined;
+  risk?: CapabilityGrant["risk"] | undefined;
+  message: string;
+  data?: Record<string, unknown> | undefined;
 }
 
 type BekHonoEnv = {
@@ -281,7 +292,13 @@ export function createApp(
   app.onError((error, c) => {
     const message =
       error instanceof Error ? error.message : "Bek request failed.";
-    const status = message.toLowerCase().includes("not found") ? 404 : 400;
+    const normalized = message.toLowerCase();
+    const status = normalized.includes("not found")
+      ? 404
+      : normalized.includes("duplicate") ||
+          normalized.includes("already exists")
+        ? 409
+        : 400;
     return c.json({ error: message }, status);
   });
 
@@ -327,6 +344,24 @@ export function createApp(
       principalId: adminAuth.principalId,
       payloadHash: body.payloadHash,
     };
+  }
+
+  function recordAdminAuditEvent(
+    c: Context<BekHonoEnv>,
+    input: RecordAdminAuditEventInput,
+  ): AuditEvent {
+    const adminAuth = c.get("adminAuth");
+    if (!adminAuth) {
+      throw new Error("Admin auth context is missing.");
+    }
+    return store.recordAuditEvent({
+      actorPrincipalId: adminAuth.principalId,
+      ...input,
+      data: {
+        ...(input.data ?? {}),
+        adminAuthMethod: adminAuth.method,
+      },
+    });
   }
 
   function ensureSlackReadAccessForChannel(channel: PlaceScope) {
@@ -1946,8 +1981,19 @@ export function createApp(
     return c.json(bundle, 201);
   });
   app.patch("/api/access-bundles/:bundleId", async (c) => {
+    const snapshot = store.read();
+    const before = snapshot.accessBundles.find(
+      (bundle) => bundle.id === c.req.param("bundleId"),
+    );
     const body = updateAccessBundleSchema.parse(await c.req.json());
     const bundle = store.updateAccessBundle(c.req.param("bundleId"), body);
+    recordAdminAuditEvent(c, {
+      action: "access_bundle.updated",
+      resourceType: "access_bundle",
+      resourceId: bundle.id,
+      message: `Updated access bundle ${bundle.name}.`,
+      data: { before, after: bundle },
+    });
     await store.flushChanges();
     return c.json(bundle);
   });
@@ -1957,6 +2003,16 @@ export function createApp(
       c.req.param("bundleId"),
       body.placeId,
     );
+    recordAdminAuditEvent(c, {
+      action: "access_bundle.place_attached",
+      resourceType: "access_bundle",
+      resourceId: bundle.id,
+      message: `Attached place ${body.placeId} to access bundle ${bundle.name}.`,
+      data: {
+        placeId: body.placeId,
+        attachedPlaceIds: bundle.attachedPlaceIds,
+      },
+    });
     await store.flushChanges();
     return c.json(bundle);
   });
@@ -1965,22 +2021,55 @@ export function createApp(
       c.req.param("bundleId"),
       c.req.param("placeId"),
     );
+    recordAdminAuditEvent(c, {
+      action: "access_bundle.place_detached",
+      resourceType: "access_bundle",
+      resourceId: bundle.id,
+      message: `Detached place ${c.req.param("placeId")} from access bundle ${bundle.name}.`,
+      data: {
+        placeId: c.req.param("placeId"),
+        attachedPlaceIds: bundle.attachedPlaceIds,
+      },
+    });
     await store.flushChanges();
     return c.json(bundle);
   });
   app.post("/api/access-bundles/:bundleId/grants", async (c) => {
     const body = grantSchema.parse(await c.req.json());
     const grant = store.createGrant(c.req.param("bundleId"), body);
+    recordAdminAuditEvent(c, {
+      action: "access_grant.created",
+      resourceType: "access_grant",
+      resourceId: grant.id,
+      decision: grant.decision,
+      risk: grant.risk,
+      message: `Created ${grant.capability} grant for ${grant.resource}.`,
+      data: { bundleId: c.req.param("bundleId"), after: grant },
+    });
     await store.flushChanges();
     return c.json(grant, 201);
   });
   app.patch("/api/access-bundles/:bundleId/grants/:grantId", async (c) => {
+    const before = findAccessGrant(
+      store.read(),
+      c.req.param("bundleId"),
+      c.req.param("grantId"),
+    );
     const body = updateGrantSchema.parse(await c.req.json());
     const grant = store.updateGrant(
       c.req.param("bundleId"),
       c.req.param("grantId"),
       body,
     );
+    recordAdminAuditEvent(c, {
+      action: "access_grant.updated",
+      resourceType: "access_grant",
+      resourceId: grant.id,
+      decision: grant.decision,
+      risk: grant.risk,
+      message: `Updated ${grant.capability} grant for ${grant.resource}.`,
+      data: { bundleId: c.req.param("bundleId"), before, after: grant },
+    });
     await store.flushChanges();
     return c.json(grant);
   });
@@ -1989,6 +2078,15 @@ export function createApp(
       c.req.param("bundleId"),
       c.req.param("grantId"),
     );
+    recordAdminAuditEvent(c, {
+      action: "access_grant.deleted",
+      resourceType: "access_grant",
+      resourceId: grant.id,
+      decision: grant.decision,
+      risk: grant.risk,
+      message: `Deleted ${grant.capability} grant for ${grant.resource}.`,
+      data: { bundleId: c.req.param("bundleId"), before: grant },
+    });
     await store.flushChanges();
     return c.json(grant);
   });
@@ -2011,9 +2109,13 @@ export function createApp(
   });
   app.get("/api/runs", (c) => c.json(store.read().runs.map(publicRun)));
   app.get("/api/approvals", (c) => c.json(store.read().approvals));
-  app.get("/api/audit-events", (c) =>
-    c.json(store.read().events.map(publicRunEvent)),
-  );
+  app.get("/api/audit-events", (c) => {
+    const snapshot = store.read();
+    return c.json([
+      ...snapshot.auditEvents.map(publicAuditEvent),
+      ...snapshot.events.map(publicRunEvent),
+    ]);
+  });
   app.get("/api/model-usage", async (c) => {
     const snapshot = store.read();
     const repositoryTotals =
@@ -3645,6 +3747,20 @@ function githubRepoGrantBindingReadiness(snapshot: BekSnapshot): {
   return { required, missing };
 }
 
+function findAccessGrant(
+  snapshot: BekSnapshot,
+  bundleId: string,
+  grantId: string,
+): CapabilityGrant {
+  const grant = snapshot.accessBundles
+    .find((bundle) => bundle.id === bundleId)
+    ?.grants.find((candidate) => candidate.id === grantId);
+  if (!grant) {
+    throw new Error("Grant not found.");
+  }
+  return structuredClone(grant);
+}
+
 function safeGitHubBranchIdPart(value: string): string {
   return value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-") || "run";
 }
@@ -3658,6 +3774,17 @@ function publicRun(run: Run): Run {
 
 function publicRunEvent(event: RunEvent): RunEvent {
   const publicEvent: RunEvent = {
+    ...event,
+    message: redactSecrets(event.message),
+  };
+  if (event.data) {
+    publicEvent.data = redactUnknown(event.data) as Record<string, unknown>;
+  }
+  return publicEvent;
+}
+
+function publicAuditEvent(event: AuditEvent): AuditEvent {
+  const publicEvent: AuditEvent = {
     ...event,
     message: redactSecrets(event.message),
   };

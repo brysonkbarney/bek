@@ -1,7 +1,9 @@
 import { createSeedSnapshot, type BekSnapshot } from "@bek/core";
+import { getTableConfig } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 import type { ModelUsageRow } from "./schema";
 import {
+  DrizzleBekSnapshotRepository,
   preserveModelUsageRowsForSnapshot,
   rowsToSnapshot,
   snapshotToRows,
@@ -108,6 +110,132 @@ describe("Bek snapshot persistence mapping", () => {
     expect(rowsToSnapshot(snapshotToRows(snapshot)).approvals).toEqual(
       snapshot.approvals,
     );
+  });
+
+  it("round-trips durable audit event records", () => {
+    const snapshot: BekSnapshot = {
+      ...createSeedSnapshot("2026-01-02T03:04:05.000Z"),
+      auditEvents: [
+        {
+          id: "audit_policy_ask",
+          orgId: "org_demo",
+          actorPrincipalId: "principal_bryson",
+          runId: "run_demo",
+          action: "github.pr",
+          resourceType: "github_repo",
+          resourceId: "redohq/checkout",
+          decision: "ask",
+          risk: "write_external",
+          message: "Policy requested approval for a pull request.",
+          data: {
+            approvalId: "approval_demo",
+            capability: "github.pr",
+          },
+          createdAt: "2026-01-02T03:04:07.000Z",
+        },
+        {
+          id: "audit_slack_ignored",
+          orgId: "org_demo",
+          action: "slack.event.ignored",
+          resourceType: "slack_event",
+          message: "Ignored duplicate Slack delivery.",
+          createdAt: "2026-01-02T03:04:08.000Z",
+        },
+      ],
+    };
+
+    const rows = snapshotToRows(snapshot);
+
+    expect(rows.auditEvents).toEqual([
+      {
+        id: "audit_policy_ask",
+        orgId: "org_demo",
+        actorPrincipalId: "principal_bryson",
+        runId: "run_demo",
+        action: "github.pr",
+        resourceType: "github_repo",
+        resourceId: "redohq/checkout",
+        decision: "ask",
+        risk: "write_external",
+        message: "Policy requested approval for a pull request.",
+        data: {
+          approvalId: "approval_demo",
+          capability: "github.pr",
+        },
+        createdAt: new Date("2026-01-02T03:04:07.000Z"),
+      },
+      {
+        id: "audit_slack_ignored",
+        orgId: "org_demo",
+        actorPrincipalId: null,
+        runId: null,
+        action: "slack.event.ignored",
+        resourceType: "slack_event",
+        resourceId: null,
+        decision: null,
+        risk: null,
+        message: "Ignored duplicate Slack delivery.",
+        data: {},
+        createdAt: new Date("2026-01-02T03:04:08.000Z"),
+      },
+    ]);
+    expect(rowsToSnapshot(rows).auditEvents).toEqual(snapshot.auditEvents);
+  });
+
+  it("deletes and inserts audit events in restore dependency order", async () => {
+    const snapshot: BekSnapshot = {
+      ...createSeedSnapshot("2026-01-02T03:04:05.000Z"),
+      auditEvents: [
+        {
+          id: "audit_policy_ask",
+          orgId: "org_demo",
+          actorPrincipalId: "principal_bryson",
+          runId: "run_demo",
+          action: "github.pr",
+          resourceType: "github_repo",
+          resourceId: "redohq/checkout",
+          decision: "ask",
+          risk: "write_external",
+          message: "Policy requested approval for a pull request.",
+          createdAt: "2026-01-02T03:04:07.000Z",
+        },
+      ],
+    };
+    const db = new RecordingMutationDb();
+    const repository = new DrizzleBekSnapshotRepository(
+      db as unknown as ConstructorParameters<
+        typeof DrizzleBekSnapshotRepository
+      >[0],
+    );
+
+    await repository.saveSnapshot(snapshot);
+
+    const deleteAuditEvents = db.operations.indexOf("delete:audit_events");
+    expect(deleteAuditEvents).toBeGreaterThanOrEqual(0);
+    expect(deleteAuditEvents).toBeLessThan(
+      db.operations.indexOf("delete:run_events"),
+    );
+    expect(deleteAuditEvents).toBeLessThan(
+      db.operations.indexOf("delete:runs"),
+    );
+    expect(deleteAuditEvents).toBeLessThan(
+      db.operations.indexOf("delete:principals"),
+    );
+
+    const insertAuditEvents = db.operations.findIndex((operation) =>
+      operation.startsWith("insert:audit_events:"),
+    );
+    expect(insertAuditEvents).toBeGreaterThan(
+      db.operations.findIndex((operation) =>
+        operation.startsWith("insert:principals:"),
+      ),
+    );
+    expect(insertAuditEvents).toBeGreaterThan(
+      db.operations.findIndex((operation) =>
+        operation.startsWith("insert:runs:"),
+      ),
+    );
+    expect(db.operations[insertAuditEvents]).toBe("insert:audit_events:1");
   });
 
   it("round-trips durable ingress delivery records", () => {
@@ -329,4 +457,48 @@ function modelUsageRow(overrides: Partial<ModelUsageRow>): ModelUsageRow {
     createdAt: new Date("2026-01-02T03:04:05.000Z"),
     ...overrides,
   };
+}
+
+class RecordingMutationDb {
+  readonly operations: string[] = [];
+
+  async transaction<T>(
+    callback: (tx: RecordingMutationDb) => Promise<T>,
+  ): Promise<T> {
+    return callback(this);
+  }
+
+  select() {
+    return {
+      from: () => ({
+        where: () => ({
+          orderBy: async () => [],
+        }),
+      }),
+    };
+  }
+
+  delete(table: Parameters<typeof getTableConfig>[0]) {
+    const tableName = getTableConfig(table).name;
+    return {
+      where: async () => {
+        this.operations.push(`delete:${tableName}`);
+      },
+    };
+  }
+
+  insert(table: Parameters<typeof getTableConfig>[0]) {
+    const tableName = getTableConfig(table).name;
+    return {
+      values: (values: object | object[]) => {
+        this.operations.push(
+          `insert:${tableName}:${Array.isArray(values) ? values.length : 1}`,
+        );
+        return {
+          onConflictDoNothing: async () => undefined,
+          onConflictDoUpdate: async () => undefined,
+        };
+      },
+    };
+  }
 }

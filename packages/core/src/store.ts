@@ -7,6 +7,7 @@ import type {
   AccessBundle,
   AgentIdentity,
   ApprovalRequest,
+  AuditEvent,
   BekSnapshot,
   CapabilityGrant,
   CapabilityKind,
@@ -54,6 +55,27 @@ export interface SetRunStatusInput {
   data?: Record<string, unknown> | undefined;
   now?: string | undefined;
 }
+
+export interface RecordAuditEventInput {
+  actorPrincipalId?: string | undefined;
+  runId?: string | undefined;
+  action: string;
+  resourceType: string;
+  resourceId?: string | undefined;
+  decision?: CapabilityGrant["decision"] | undefined;
+  risk?: CapabilityGrant["risk"] | undefined;
+  message: string;
+  data?: Record<string, unknown> | undefined;
+  now?: string | undefined;
+}
+
+type GrantMutationInput = {
+  capability?: CapabilityGrant["capability"] | undefined;
+  resource?: string | undefined;
+  decision?: CapabilityGrant["decision"] | undefined;
+  risk?: CapabilityGrant["risk"] | undefined;
+  requiresApproval?: boolean | undefined;
+};
 
 export interface RecordIngressDeliveryInput {
   key: string;
@@ -426,13 +448,10 @@ export class BekStore {
     input: Omit<CapabilityGrant, "id"> & { id?: string | undefined },
   ): CapabilityGrant {
     const bundle = this.findBundle(bundleId);
+    const normalized = normalizeGrantInput(bundle, input);
     const grant: CapabilityGrant = {
       id: input.id ?? createId("grant"),
-      capability: input.capability,
-      resource: input.resource,
-      decision: input.decision,
-      risk: input.risk,
-      requiresApproval: input.requiresApproval,
+      ...normalized,
     };
     bundle.grants.unshift(grant);
     this.recordChange();
@@ -450,8 +469,9 @@ export class BekStore {
       requiresApproval?: boolean | undefined;
     },
   ): CapabilityGrant {
+    const bundle = this.findBundle(bundleId);
     const grant = this.findGrant(bundleId, grantId);
-    Object.assign(grant, input);
+    Object.assign(grant, normalizeGrantInput(bundle, input, grant));
     this.recordChange();
     return structuredClone(grant);
   }
@@ -1058,6 +1078,46 @@ export class BekStore {
     return structuredClone(delivery);
   }
 
+  recordAuditEvent(input: RecordAuditEventInput): AuditEvent {
+    const now = input.now ?? new Date().toISOString();
+    const action = input.action.trim();
+    const resourceType = input.resourceType.trim();
+    const message = input.message.trim();
+    if (!action) {
+      throw new Error("Audit event action is required.");
+    }
+    if (!resourceType) {
+      throw new Error("Audit event resource type is required.");
+    }
+    if (!message) {
+      throw new Error("Audit event message is required.");
+    }
+    if (input.actorPrincipalId) {
+      this.findPrincipal(input.actorPrincipalId);
+    }
+    if (input.runId) {
+      this.findRun(input.runId);
+    }
+
+    const event: AuditEvent = {
+      id: createId("audit"),
+      orgId: this.snapshot.org.id,
+      action,
+      resourceType,
+      message: redactSecrets(message),
+      createdAt: now,
+    };
+    assignOptional(event, "actorPrincipalId", input.actorPrincipalId);
+    assignOptional(event, "runId", input.runId);
+    assignOptional(event, "resourceId", input.resourceId?.trim() || undefined);
+    assignOptional(event, "decision", input.decision);
+    assignOptional(event, "risk", input.risk);
+    assignOptional(event, "data", redactedRecord(input.data));
+    this.snapshot.auditEvents.unshift(event);
+    this.recordChange();
+    return structuredClone(event);
+  }
+
   appendRunEvent(input: AppendRunEventInput): RunEvent {
     const run = this.findRun(input.runId);
     const event = createRunEvent(
@@ -1271,6 +1331,90 @@ function eventTypeForStatus(status: RunStatus): RunEvent["type"] {
     return "run.failed";
   }
   return "run.status_changed";
+}
+
+function normalizeGrantInput(
+  bundle: AccessBundle,
+  input: GrantMutationInput,
+  existing?: CapabilityGrant | undefined,
+): Omit<CapabilityGrant, "id"> {
+  const capability = input.capability ?? existing?.capability;
+  const decision = input.decision ?? existing?.decision;
+  const risk = input.risk ?? existing?.risk;
+  const requiresApproval = input.requiresApproval ?? existing?.requiresApproval;
+  if (!capability) {
+    throw new Error("Grant capability is required.");
+  }
+  if (!decision) {
+    throw new Error("Grant decision is required.");
+  }
+  if (!risk) {
+    throw new Error("Grant risk is required.");
+  }
+  if (requiresApproval === undefined) {
+    throw new Error("Grant approval requirement is required.");
+  }
+  const resource = normalizeGrantResource(
+    capability,
+    input.resource ?? existing?.resource,
+  );
+  if (decision === "ask" && !requiresApproval) {
+    throw new Error("Ask grants must require approval.");
+  }
+  if (decision !== "ask" && requiresApproval) {
+    throw new Error("Only ask grants can require approval.");
+  }
+  const duplicate = bundle.grants.find(
+    (grant) =>
+      grant.id !== existing?.id &&
+      grant.capability === capability &&
+      grant.resource === resource,
+  );
+  if (duplicate) {
+    throw new Error(
+      `Duplicate grant already exists for ${capability} on ${resource}.`,
+    );
+  }
+  return {
+    capability,
+    resource,
+    decision,
+    risk,
+    requiresApproval,
+  };
+}
+
+function normalizeGrantResource(
+  capability: CapabilityKind,
+  rawResource: string | undefined,
+): string {
+  const resource = rawResource?.trim();
+  if (!resource) {
+    throw new Error("Grant resource is required.");
+  }
+  if (isGitHubCapability(capability)) {
+    const match = /^github:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(
+      resource,
+    );
+    if (!match) {
+      throw new Error("GitHub grants must use github:owner/repo resources.");
+    }
+    const owner = match[1];
+    const repo = match[2];
+    if (!owner || !repo) {
+      throw new Error("GitHub grants must use github:owner/repo resources.");
+    }
+    return `github:${owner.toLowerCase()}/${repo}`;
+  }
+  return resource;
+}
+
+function isGitHubCapability(capability: CapabilityKind): boolean {
+  return (
+    capability === "github.read" ||
+    capability === "github.branch" ||
+    capability === "github.pr"
+  );
 }
 
 function normalizeOutboundMaxAttempts(value: number | undefined): number {

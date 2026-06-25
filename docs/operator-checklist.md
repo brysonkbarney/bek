@@ -126,8 +126,9 @@ the current OSS spine.
       verify `/api/setup/status` has no missing GitHub repo bindings.
 - [ ] Blocked: replace the deterministic Bek run manifest PR with
       AI-generated repo diffs produced inside an isolated runtime.
-- [ ] Blocked: persist expanded audit events and hosted token-broker records for
-      token minting, branch writes, PR writes, and webhook handling.
+- [ ] Partially active: access-bundle/grant admin mutations persist durable
+      audit rows. Still blocked: hosted token-broker audit records for token
+      minting, branch writes, PR writes, and webhook handling.
 
 ## Models, Budgets, And Cost
 

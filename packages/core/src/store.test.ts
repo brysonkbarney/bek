@@ -736,6 +736,81 @@ describe("Bek admin control plane store", () => {
     expect(detached.attachedPlaceIds).toEqual([]);
   });
 
+  it("normalizes grants and rejects unsafe duplicates", () => {
+    const store = new BekStore();
+    const bundle = store.createAccessBundle({
+      name: "GitHub",
+      description: "GitHub grants",
+    });
+    const grant = store.createGrant(bundle.id, {
+      capability: "github.read",
+      resource: " github:RedoHQ/checkout ",
+      decision: "allow",
+      risk: "read_internal",
+      requiresApproval: false,
+    });
+
+    expect(grant.resource).toBe("github:redohq/checkout");
+    expect(() =>
+      store.createGrant(bundle.id, {
+        capability: "github.read",
+        resource: "github:redohq/checkout",
+        decision: "allow",
+        risk: "read_internal",
+        requiresApproval: false,
+      }),
+    ).toThrow("Duplicate grant already exists");
+    expect(() =>
+      store.createGrant(bundle.id, {
+        capability: "github.pr",
+        resource: "github:redohq/*",
+        decision: "ask",
+        risk: "write_external",
+        requiresApproval: true,
+      }),
+    ).toThrow("GitHub grants must use github:owner/repo resources.");
+    expect(() =>
+      store.updateGrant(bundle.id, grant.id, {
+        decision: "ask",
+        requiresApproval: false,
+      }),
+    ).toThrow("Ask grants must require approval.");
+  });
+
+  it("records redacted audit events for admin mutations", () => {
+    const store = new BekStore();
+    const event = store.recordAuditEvent({
+      actorPrincipalId: "principal_admin",
+      action: "access_grant.updated",
+      resourceType: "access_grant",
+      resourceId: "grant_github_pr",
+      decision: "ask",
+      risk: "write_external",
+      message: "Updated grant with ghp_123456789012345678901234",
+      data: {
+        before: { resource: "github:redohq/checkout" },
+        secretRef: "bek-local-vault:secret",
+      },
+      now: "2026-01-02T03:04:05.000Z",
+    });
+
+    expect(event).toMatchObject({
+      actorPrincipalId: "principal_admin",
+      action: "access_grant.updated",
+      resourceType: "access_grant",
+      resourceId: "grant_github_pr",
+      decision: "ask",
+      risk: "write_external",
+      message: "Updated grant with [redacted:github-token]",
+      data: {
+        before: { resource: "github:redohq/checkout" },
+        secretRef: "[redacted:field]",
+      },
+      createdAt: "2026-01-02T03:04:05.000Z",
+    });
+    expect(store.read().auditEvents).toEqual([event]);
+  });
+
   it("updates model and runtime policies used by setup", () => {
     const store = new BekStore();
 

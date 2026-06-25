@@ -265,6 +265,21 @@ export interface ApprovalRequest {
   decidedAt?: ISODate;
 }
 
+export interface AuditEvent {
+  id: string;
+  orgId: string;
+  actorPrincipalId?: string;
+  runId?: string;
+  action: string;
+  resourceType: string;
+  resourceId?: string;
+  decision?: Decision;
+  risk?: RiskLevel;
+  message: string;
+  data?: Record<string, unknown>;
+  createdAt: ISODate;
+}
+
 export type IngressDeliveryKind =
   | "slack.event"
   | "slack.command"
@@ -331,6 +346,7 @@ export interface BekSnapshot {
   runs: Run[];
   events: RunEvent[];
   approvals: ApprovalRequest[];
+  auditEvents: AuditEvent[];
   ingressDeliveries: IngressDelivery[];
   outboundDeliveries: OutboundDelivery[];
 }

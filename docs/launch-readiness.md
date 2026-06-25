@@ -124,7 +124,7 @@ These product items block broad design-partner rollout, not a code-only release 
 - Sandbox egress denies metadata/private/control-plane networks.
 - MCP schema drift is quarantined.
 - Tenant isolation tests pass.
-- Audit events are emitted transactionally with side effects.
+- Access admin mutations emit durable audit events with their side effects.
 - CORS stays allowlisted and admin API auth is mandatory for hosted/prod.
 - Slack unsigned demo mode cannot work in production.
 
