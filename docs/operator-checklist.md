@@ -37,6 +37,10 @@ the current OSS spine.
       `BEK_ADMIN_API_TOKEN`, generate `BEK_CREDENTIAL_MASTER_KEY`, generate
       `SLACK_STATE_SECRET` before Slack OAuth, and generate
       `GITHUB_APP_WEBHOOK_SECRET` before GitHub webhooks.
+- [ ] For non-localhost Docker installs, set `BEK_WEB_API_URL`,
+      `BEK_ADMIN_ORIGINS`, and `SLACK_REDIRECT_URI` together. The first
+      `BEK_ADMIN_ORIGINS` entry must be the admin web origin Slack OAuth should
+      return to after the API callback.
 - [ ] Run `docker compose --env-file .env.docker --profile app run --rm --build migrate`
       before first app startup and after pulling schema changes.
 - [ ] Start the containerized app with
@@ -61,12 +65,17 @@ the current OSS spine.
 - [ ] Configure interactivity callbacks at `/api/slack/interactivity`.
 - [ ] Set OAuth variables before using the web Slack install action or the raw
       `/api/slack/install` fallback endpoint.
+- [ ] Confirm the Slack app redirect URL exactly matches `SLACK_REDIRECT_URI`,
+      and confirm the first `BEK_ADMIN_ORIGINS` entry is the admin web origin
+      operators should land on after OAuth completes.
 - [ ] Set `BEK_CREDENTIAL_MASTER_KEY` before OAuth exchange so Bek can store
       the returned bot token in the local encrypted vault. Keep this key stable
       across API restarts and database restores.
 - [ ] Set `BEK_SLACK_OAUTH_EXCHANGE=true` outside production when testing real
-      OAuth code exchange. If it is unset, exchange is enabled only in
-      `NODE_ENV=production`; the env templates explicitly set it to `false`.
+      OAuth code exchange and token storage. If it is unset, exchange is
+      enabled only in `NODE_ENV=production`; the env templates explicitly set it
+      to `false`. Use `SLACK_BOT_TOKEN` as the manual fallback only when you are
+      not relying on stored OAuth tokens.
 - [ ] Confirm `/setup` or `/connectors` reports an active Slack install plus a
       stored bot token before inviting Bek into pilot channels.
 - [ ] Use `SLACK_BOT_TOKEN` with `chat:write` only as a manual fallback when no
@@ -75,6 +84,10 @@ the current OSS spine.
       with admin auth, to confirm the pilot channel ID, `botIsMember=true`,
       and whether Bek already has a configured channel place. Use `limit` and
       `cursor` for bounded paging when calling the raw API.
+- [ ] After importing a real Slack channel, confirm Bek created the
+      channel-specific `slack.read` grant and attached bundle. Move or extend
+      the grant set if the channel should use a broader team bundle before
+      testing `@bek`.
 - [ ] In `/connectors`, map every pilot requester and approver Slack user ID
       to a Bek human principal. Prefer persisted `TEAM_ID:USER_ID` mappings
       over `BEK_SLACK_USER_PRINCIPAL_MAP`.

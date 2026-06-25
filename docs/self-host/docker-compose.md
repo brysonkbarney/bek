@@ -56,16 +56,34 @@ reach, such as `https://bek-api.example.com` or `http://localhost:4317` for the
 local Compose template. You can change it by restarting the web container; the
 published web image does not need to be rebuilt for each API URL.
 
+For non-localhost Docker installs, treat the public API, admin web origin, and
+Slack redirect as one coordinated setting. Set all three together:
+
+```env
+BEK_WEB_API_URL=https://bek-api.example.com
+BEK_ADMIN_ORIGINS=https://bek-admin.example.com
+SLACK_REDIRECT_URI=https://bek-api.example.com/api/slack/oauth/callback
+```
+
+`BEK_WEB_API_URL` is where the browser sends admin API calls, so it must be
+reachable from the operator's browser. `SLACK_REDIRECT_URI` must exactly match
+one redirect URL configured in the Slack app and must point at the public API.
+`BEK_ADMIN_ORIGINS` is the comma-separated list of allowed admin web origins;
+the first entry is also the web origin Bek redirects the browser back to after
+Slack OAuth completes. Put the real admin console origin first when multiple
+origins are allowed.
+
 The regular `.env.example` keeps host-machine URLs for local Node development.
 The Docker template sets `BEK_SLACK_OAUTH_EXCHANGE=false` so Slack callbacks
-validate state without exchanging codes until you opt in. Set it to `true` when
-you specifically want to verify OAuth exchange; with `BEK_CREDENTIAL_MASTER_KEY`
-set, Bek stores the returned bot token in the local encrypted vault. Set
-`SLACK_BOT_TOKEN` in `.env.docker` only as a manual fallback for outbound
-`chat:write` replies, approval buttons, approval decisions, and final answers.
-If `BEK_SLACK_OAUTH_EXCHANGE` is unset, the API exchanges OAuth codes only when
-`NODE_ENV=production`; the Docker template pins it to `false` until the operator
-opts in deliberately.
+validate state without exchanging codes until you opt in.
+`BEK_SLACK_OAUTH_EXCHANGE=true` is required when you want Bek to exchange Slack
+OAuth codes and store the returned bot token in the local encrypted vault. Set
+`BEK_CREDENTIAL_MASTER_KEY` before enabling exchange and keep it stable. If you
+do not enable exchange, set `SLACK_BOT_TOKEN` in `.env.docker` as the manual
+fallback for outbound `chat:write` replies, approval buttons, approval
+decisions, and final answers. If `BEK_SLACK_OAUTH_EXCHANGE` is unset, the API
+exchanges OAuth codes only when `NODE_ENV=production`; the Docker template pins
+it to `false` until the operator opts in deliberately.
 
 ## Start Dependencies Only
 
@@ -128,7 +146,10 @@ docker compose --env-file .env.docker --profile app up -d --build
 
 When you change `BEK_WEB_API_URL`, restart the web container so `/bek-config.js`
 reflects the new browser-facing API URL. Do not rebuild or embed admin tokens in
-the web image.
+the web image. When you change `BEK_ADMIN_ORIGINS`, `SLACK_REDIRECT_URI`, or
+`BEK_SLACK_OAUTH_EXCHANGE`, restart the API container as well, then rerun the
+Slack install flow so the redirect URI and token-storage behavior match the new
+configuration.
 
 `BEK_SANDBOX_PROVIDER` defaults to `none` in the Docker template. Set it to
 `docker-local` only for trusted single-tenant installs where the API or worker

@@ -1386,6 +1386,43 @@ describe("Bek API", () => {
 
     expect(created.status).toBe(201);
     const channel = (await created.json()) as { id: string };
+    const bootstrapAfterCreate = await expectJson<{
+      accessBundles: Array<{
+        attachedPlaceIds: string[];
+        grants: Array<{
+          capability: string;
+          resource: string;
+          decision: string;
+          requiresApproval: boolean;
+        }>;
+      }>;
+    }>(app, "/api/bootstrap");
+    expect(
+      bootstrapAfterCreate.accessBundles.find(
+        (bundle) =>
+          bundle.attachedPlaceIds.includes(channel.id) &&
+          bundle.grants.some(
+            (grant) =>
+              grant.capability === "slack.read" &&
+              grant.resource === "slack:C_PRODUCT" &&
+              grant.decision === "allow" &&
+              grant.requiresApproval === false,
+          ),
+      ),
+    ).toBeDefined();
+
+    const importedChannelRun = await app.request("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: "@bek summarize product channel",
+        placeScopeId: channel.id,
+        capability: "slack.read",
+        resource: "slack:C_PRODUCT",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(importedChannelRun.status).toBe(201);
+
     const updated = await app.request(`/api/channels/${channel.id}`, {
       method: "PATCH",
       body: JSON.stringify({
@@ -1411,6 +1448,30 @@ describe("Bek API", () => {
       headers: { "content-type": "application/json" },
     });
     expect(duplicate.status).toBe(400);
+
+    const externalIdUpdate = await app.request(`/api/channels/${channel.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ externalId: "C_PRODUCT_AI" }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(externalIdUpdate.status).toBe(200);
+    const bootstrapAfterExternalIdUpdate = await expectJson<{
+      accessBundles: Array<{
+        attachedPlaceIds: string[];
+        grants: Array<{ capability: string; resource: string }>;
+      }>;
+    }>(app, "/api/bootstrap");
+    expect(
+      bootstrapAfterExternalIdUpdate.accessBundles.find(
+        (bundle) =>
+          bundle.attachedPlaceIds.includes(channel.id) &&
+          bundle.grants.some(
+            (grant) =>
+              grant.capability === "slack.read" &&
+              grant.resource === "slack:C_PRODUCT_AI",
+          ),
+      ),
+    ).toBeDefined();
   });
 
   it("rejects invalid channel payloads and protects channel deletion edges", async () => {

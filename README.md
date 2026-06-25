@@ -93,6 +93,11 @@ docker compose up -d
 The default Compose command starts Postgres, Valkey, and MinIO. Use the `app`
 profile for the API/web containers after copying `.env.docker.example` to
 `.env.docker` and replacing the admin token plus Slack/GitHub/vault secrets.
+For any Docker install that is not purely `localhost`, set
+`BEK_WEB_API_URL`, `BEK_ADMIN_ORIGINS`, and `SLACK_REDIRECT_URI` together:
+`BEK_WEB_API_URL` is the public API URL the admin browser calls, the first
+`BEK_ADMIN_ORIGINS` entry is the web origin Slack OAuth returns to after the
+API callback, and `SLACK_REDIRECT_URI` must match the Slack app redirect URL.
 The app profile defaults to `BEK_RUN_ADVANCEMENT=worker_local`,
 `BEK_STORAGE=postgres`, and `BEK_WORKER_QUEUE_BACKEND=postgres`, so the Bek
 snapshot, worker queue/dead-letter/event state, Slack ingress dedupe, and Slack
@@ -132,22 +137,25 @@ Bek's local demo works without Slack, GitHub, model-provider, MCP, or sandbox
 credentials. Real workspace operation requires credentials owned by the
 operator:
 
-| Area            | Required before real use                                                                           |
-| --------------- | -------------------------------------------------------------------------------------------------- |
-| Slack           | Signing secret, OAuth client, public HTTPS callback URL, credential master key or manual bot token |
-| GitHub          | GitHub App ID, private key, webhook secret, installation permissions                               |
-| Model providers | Provider key or private gateway credential                                                         |
-| MCP             | Server registry, tool credentials, schema review process                                           |
-| Sandbox         | Docker local policy or hosted microVM provider credentials                                         |
+| Area            | Required before real use                                                                                                             |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Slack           | Signing secret, OAuth client, public HTTPS callback URL, matched public admin/API origins, credential master key or manual bot token |
+| GitHub          | GitHub App ID, private key, webhook secret, installation permissions                                                                 |
+| Model providers | Provider key or private gateway credential                                                                                           |
+| MCP             | Server registry, tool credentials, schema review process                                                                             |
+| Sandbox         | Docker local policy or hosted microVM provider credentials                                                                           |
 
 Several of these surfaces are contract foundations today, not production
 integrations. The local worker bridge is executable, Postgres mode persists the
 worker queue for restart-safe self-hosting, and self-hosted Slack posting can
-use stored OAuth tokens or `SLACK_BOT_TOKEN`, but hosted production still needs
-daemonized worker fleets, managed credential brokering/KMS, side-effect outbox
-dispatchers, and real repo/sandbox adapters. Signed GitHub webhook ingress is
-wired for normalized delivery persistence, but GitHub writes and installation
-token exchange remain future work. See
+use stored OAuth tokens or `SLACK_BOT_TOKEN`. Set
+`BEK_SLACK_OAUTH_EXCHANGE=true` when you want Bek to exchange Slack OAuth codes
+and store bot tokens; otherwise provide `SLACK_BOT_TOKEN` as the manual
+fallback. Hosted production still needs daemonized worker fleets, managed
+credential brokering/KMS, side-effect outbox dispatchers, and real repo/sandbox
+adapters. Signed GitHub webhook ingress is wired for normalized delivery
+persistence, but GitHub writes and installation token exchange remain future
+work. See
 [Launch Readiness](./docs/launch-readiness.md) before using Bek in a real
 workspace.
 

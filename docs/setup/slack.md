@@ -82,6 +82,8 @@ revocation workflows, or persistent Slack user/principal mapping.
 8. Add OAuth settings for the install flow:
 
    ```bash
+   export BEK_WEB_API_URL=https://YOUR-TUNNEL.example.com
+   export BEK_ADMIN_ORIGINS=http://localhost:5173
    export SLACK_CLIENT_ID=...
    export SLACK_CLIENT_SECRET=...
    export SLACK_STATE_SECRET="$(openssl rand -hex 32)"
@@ -90,10 +92,21 @@ revocation workflows, or persistent Slack user/principal mapping.
    export BEK_SLACK_OAUTH_EXCHANGE=true
    ```
 
-   If `BEK_SLACK_OAUTH_EXCHANGE` is `false`, the callback still verifies the
+   For non-localhost Docker installs, set `BEK_WEB_API_URL`,
+   `BEK_ADMIN_ORIGINS`, and `SLACK_REDIRECT_URI` together. `BEK_WEB_API_URL`
+   is the public API URL used by the admin browser. `SLACK_REDIRECT_URI` must
+   exactly match the Slack app redirect URL and point at the public API
+   callback. `BEK_ADMIN_ORIGINS` is the comma-separated list of allowed admin
+   web origins; the first entry is the web origin Bek redirects the browser
+   back to after Slack OAuth completes.
+
+   `BEK_SLACK_OAUTH_EXCHANGE=true` is required when Bek should exchange Slack
+   OAuth codes and store the bot token in the local encrypted vault. If
+   `BEK_SLACK_OAUTH_EXCHANGE` is `false`, the callback still verifies the
    signed state and code presence, then returns a validated status without
    calling Slack or storing a bot token. If the variable is unset, exchange is
-   enabled only in `NODE_ENV=production`.
+   enabled only in `NODE_ENV=production`. Without stored OAuth tokens, configure
+   `SLACK_BOT_TOKEN` as the manual outbound posting fallback.
 
    Then open the admin console at `/connectors` or `/setup` and use the Slack
    install action. The web action calls `/api/slack/install-url` with admin
@@ -140,7 +153,16 @@ revocation workflows, or persistent Slack user/principal mapping.
    already has a configured place for that channel, and the next cursor. It
    does not return Slack bot tokens or raw provider error strings.
 
-10. Enable outbound posting.
+10. Review the imported channel grant.
+
+    Imported Slack channels use the workspace's real channel IDs, so seeded
+    demo IDs such as `C_CHECKOUT` do not grant access to them. When you add or
+    import a channel, Bek creates a channel-specific `slack.read` grant and
+    attached bundle for that real channel ID. Open the channel in `/channels`
+    and move or extend the grant set before testing `@bek` if the channel should
+    use a broader team bundle.
+
+11. Enable outbound posting.
 
     The preferred local/self-hosted path is the stored OAuth bot token from step 8. As a manual fallback, set the Bot User OAuth Token directly:
 
@@ -171,7 +193,7 @@ revocation workflows, or persistent Slack user/principal mapping.
     `?include=details` only when an operator intentionally needs rendered Slack
     target/payload debugging.
 
-11. Configure slash commands and interactivity:
+12. Configure slash commands and interactivity:
 
 ```txt
 Slash command request URL: https://YOUR-TUNNEL.example.com/api/slack/commands
@@ -226,7 +248,10 @@ Real Slack channel IDs will differ. Use `/channels` discovery or
 `botIsMember=true`, and persist the Slack team ID on the Bek channel place.
 If operators use the raw `POST /api/channels` endpoint, pass `externalTeamId`
 so Bek rejects callbacks from a different Slack team even if a channel ID
-collides.
+collides. After import, verify the imported place has the channel-specific
+`slack.read` grant Bek created, then move or extend that access if the channel
+should use a broader team bundle; seeded demo channel IDs do not authorize real
+Slack channel IDs.
 
 ## Required Admin Decisions
 

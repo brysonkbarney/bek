@@ -254,6 +254,57 @@ export function createApp(
     return latestRun(store, run.id);
   }
 
+  function ensureSlackReadAccessForChannel(channel: PlaceScope) {
+    const resource = `slack:${channel.externalId}`;
+    const snapshot = store.read();
+    const attachedBundles = snapshot.accessBundles.filter((bundle) =>
+      bundle.attachedPlaceIds.includes(channel.id),
+    );
+    if (
+      attachedBundles.some((bundle) =>
+        bundle.grants.some((grant) => isSlackReadAllowGrant(grant, resource)),
+      )
+    ) {
+      return;
+    }
+
+    let targetBundleId = attachedBundles[0]?.id;
+    if (!targetBundleId) {
+      const bundle = store.createAccessBundle({
+        name: `Slack access for ${channel.name}`,
+        description: `Allows @bek to read ${channel.name} when mentioned or invoked from Slack.`,
+        attachedPlaceIds: [channel.id],
+      });
+      targetBundleId = bundle.id;
+    }
+    const targetBundle = store
+      .read()
+      .accessBundles.find((bundle) => bundle.id === targetBundleId);
+    if (
+      targetBundle?.grants.some((grant) =>
+        isSlackReadAllowGrant(grant, resource),
+      )
+    ) {
+      return;
+    }
+    store.createGrant(targetBundleId, {
+      capability: "slack.read",
+      resource,
+      decision: "allow",
+      risk: "read_internal",
+      requiresApproval: false,
+    });
+  }
+
+  function isSlackReadAllowGrant(grant: CapabilityGrant, resource: string) {
+    return (
+      grant.capability === "slack.read" &&
+      grant.resource === resource &&
+      grant.decision === "allow" &&
+      !grant.requiresApproval
+    );
+  }
+
   function decideApprovalAndQueue(
     approvalId: string,
     decision: "approved" | "denied",
@@ -1041,6 +1092,7 @@ export function createApp(
       ...placeInput,
       ...(externalTeamId ? { metadata: { teamId: externalTeamId } } : {}),
     });
+    ensureSlackReadAccessForChannel(channel);
     await store.flushChanges();
     return c.json(channel, 201);
   });
@@ -1069,6 +1121,7 @@ export function createApp(
       ...placeInput,
       ...(externalTeamId ? { metadata: { teamId: externalTeamId } } : {}),
     });
+    ensureSlackReadAccessForChannel(channel);
     await store.flushChanges();
     return c.json(channel);
   });
