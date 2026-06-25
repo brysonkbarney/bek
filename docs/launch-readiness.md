@@ -17,6 +17,8 @@ Bek should launch in stages. The current repo is good enough to show the product
   pinned to the configured admin origin.
 - MCP servers can be registered, listed, status-updated, and audited through
   the API and Connectors page, with new registrations defaulting to `pending`.
+- New `mcp.tool` access grants are rejected unless the grant resource references
+  a registered MCP server.
 - Tests cover policy deny precedence, wildcard scoping, Slack signature tamper/replay, approval tamper/self-approval/double approval/expiry, API behavior, model routing, MCP manifest generation, and redaction.
 - DB, runtime, sandbox, model-router, MCP, Slack, core, API, and web package contracts exist.
 - Release candidates should pass `pnpm format:check` and `pnpm check` before

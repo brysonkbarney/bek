@@ -438,9 +438,21 @@ try {
     "Access bundle place attach should include the smoke channel.",
   );
 
+  const mcpServerId = `smoke-${smokeSuffix}`;
+  const mcpToolResource = `mcp:${mcpServerId}/tool-${smokeSuffix}`;
+  const mcpConnector = await postJson("/api/connectors/mcp", {
+    serverId: mcpServerId,
+    displayName: `Smoke MCP ${smokeSuffix}`,
+    transport: "stdio",
+    origin: "node ./smoke-mcp.js",
+    tags: ["smoke"],
+  });
+  assert(mcpConnector.id === `connector_mcp_${mcpServerId}`, "MCP connector registration should use a stable id.");
+  assert(mcpConnector.status === "pending", "MCP connector registration should start pending by default.");
+
   const grant = await postJson(`/api/access-bundles/${bundle.id}/grants`, {
     capability: "mcp.tool",
-    resource: `mcp:smoke/${smokeSuffix}`,
+    resource: mcpToolResource,
     decision: "ask",
     risk: "write_external",
     requiresApproval: true,
@@ -452,7 +464,7 @@ try {
     `/api/access-bundles/${bundle.id}/grants`,
     postJsonInit({
       capability: "mcp.tool",
-      resource: `mcp:smoke/${smokeSuffix}`,
+      resource: mcpToolResource,
       decision: "ask",
       risk: "write_external",
       requiresApproval: true,
@@ -522,17 +534,6 @@ try {
     linkedPrincipal.externalId === `T123:U_SMOKE_${smokeSuffix}`,
     "Principal external identity link should persist.",
   );
-
-  const mcpServerId = `smoke-${smokeSuffix}`;
-  const mcpConnector = await postJson("/api/connectors/mcp", {
-    serverId: mcpServerId,
-    displayName: `Smoke MCP ${smokeSuffix}`,
-    transport: "stdio",
-    origin: "node ./smoke-mcp.js",
-    tags: ["smoke"],
-  });
-  assert(mcpConnector.id === `connector_mcp_${mcpServerId}`, "MCP connector registration should use a stable id.");
-  assert(mcpConnector.status === "pending", "MCP connector registration should start pending by default.");
 
   const patchedMcpConnector = await patchJson(`/api/connectors/mcp/${mcpServerId}`, {
     status: "active",

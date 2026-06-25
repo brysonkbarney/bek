@@ -73,6 +73,11 @@ Before production use, attach the reviewed `mcp.tool` resources to access
 bundles and preserve the schema hash, risk classification, grant, approval, and
 audit evidence used to justify activation.
 
+Bek rejects new `mcp.tool` grants unless the resource uses an explicit
+`mcp:<server>/<tool>` or `mcp:<server>.<tool>` shape and `<server>` already has
+an MCP connector registration in the workspace. This keeps access bundles from
+claiming governance over unregistered tool servers.
+
 Example policy shape:
 
 | Capability | Resource                | Decision | Risk             |

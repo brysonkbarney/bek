@@ -2125,6 +2125,7 @@ export function createApp(
   });
   app.post("/api/access-bundles/:bundleId/grants", async (c) => {
     const body = grantSchema.parse(await c.req.json());
+    ensureMcpGrantReferencesRegisteredServer(store.read(), body);
     const grant = store.createGrant(c.req.param("bundleId"), body);
     recordAdminAuditEvent(c, {
       action: "access_grant.created",
@@ -2145,6 +2146,12 @@ export function createApp(
       c.req.param("grantId"),
     );
     const body = updateGrantSchema.parse(await c.req.json());
+    if (before) {
+      ensureMcpGrantReferencesRegisteredServer(store.read(), {
+        capability: body.capability ?? before.capability,
+        resource: body.resource ?? before.resource,
+      });
+    }
     const grant = store.updateGrant(
       c.req.param("bundleId"),
       c.req.param("grantId"),
@@ -3906,6 +3913,42 @@ function findMcpConnectorInstall(
       (install.externalId === serverId ||
         stringMetadata(install.metadata, "serverId") === serverId),
   );
+}
+
+function ensureMcpGrantReferencesRegisteredServer(
+  snapshot: BekSnapshot,
+  grant: {
+    capability?: CapabilityGrant["capability"] | undefined;
+    resource?: string | undefined;
+  },
+) {
+  if (grant.capability !== "mcp.tool") {
+    return;
+  }
+  const parsed = parseMcpGrantResource(grant.resource);
+  if (!parsed) {
+    throw new Error("MCP grants must use mcp:<server>/<tool> resources.");
+  }
+  if (!findMcpConnectorInstall(snapshot, parsed.serverId)) {
+    throw new Error(
+      `MCP grants must reference a registered MCP server (${parsed.serverId}).`,
+    );
+  }
+}
+
+function parseMcpGrantResource(
+  resource: string | undefined,
+): { serverId: string; toolName: string } | undefined {
+  const match =
+    /^mcp:([A-Za-z0-9_-]+)(?:\/([A-Za-z0-9_.:-]+)|\.([A-Za-z0-9_.:-]+))$/.exec(
+      resource?.trim() ?? "",
+    );
+  if (!match) {
+    return undefined;
+  }
+  const serverId = match[1];
+  const toolName = match[2] ?? match[3];
+  return serverId && toolName ? { serverId, toolName } : undefined;
 }
 
 function validateMcpOrigin(

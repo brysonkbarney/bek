@@ -32,7 +32,7 @@ This repository is a working OSS product spine for Bek. It runs locally without 
 - `worker_local` run advancement for local/API/Slack flows, including runtime events, policy approvals, runtime-requested approvals, resume after approval, and final run cost/status. The worker queue can run memory-backed for zero-config demos or Postgres-backed for restart-safe self-hosting.
 - Model-router and MCP-gateway packages with provider-neutral
   routing/tool-manifest tests, plus admin-facing MCP server registration and
-  status/audit rows.
+  status/audit rows with access-grant binding to registered MCP servers.
 - Runtime and sandbox contract packages for AI SDK, OpenCode, Docker, Vercel Sandbox, and E2B style adapters.
 - Drizzle/Postgres schema and snapshot repository for the launch data model.
 - Docker Compose profiles for Postgres, Valkey, MinIO, API/web containers, and

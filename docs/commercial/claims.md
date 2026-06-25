@@ -27,6 +27,7 @@ sound ambitious, but the claims need to match the code that exists today.
 - MCP server registration/listing/status updates exist in the API and
   Connectors page; new registrations default to `pending`, and Postgres-backed
   deployments persist registration/update audit rows.
+- Bek rejects new `mcp.tool` grants that point at unregistered MCP servers.
 - Bek is designed to support many models, runtimes, MCP tools, repos, and
   sandboxes behind one visible teammate.
 - Hosted Bek is planned as a managed design-partner/waitlist offering.

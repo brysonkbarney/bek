@@ -169,6 +169,8 @@ the current OSS spine.
 - [ ] Register only MCP servers operated by the team or explicitly trusted.
 - [ ] Keep newly registered MCP servers in `pending` until schema discovery,
       tool risk classification, and access-bundle grants have been reviewed.
+- [ ] Add `mcp.tool` grants only after the target MCP server has a workspace
+      registration; use explicit `mcp:<server>/<tool>` resources.
 - [ ] Treat server names, tool descriptions, schemas, arguments, and outputs as
       untrusted.
 - [ ] Require approval for `write_external` or `privileged` tools; treat

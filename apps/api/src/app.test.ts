@@ -2182,6 +2182,18 @@ describe("Bek API", () => {
       attachedPlaceIds: [channel.id],
     });
 
+    const mcpRegistration = await app.request("/api/connectors/mcp", {
+      method: "POST",
+      body: JSON.stringify({
+        serverId: "linear",
+        displayName: "Linear",
+        transport: "stdio",
+        origin: "npx @linear/mcp-server",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(mcpRegistration.status).toBe(201);
+
     const grantRes = await app.request(
       `/api/access-bundles/${bundle.id}/grants`,
       {
@@ -2530,6 +2542,44 @@ describe("Bek API", () => {
     );
     expect(invalidGrant.status).toBe(400);
 
+    const unregisteredMcpGrant = await app.request(
+      `/api/access-bundles/${bundle.id}/grants`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          capability: "mcp.tool",
+          resource: "mcp:missing/create_issue",
+          decision: "ask",
+          risk: "write_external",
+          requiresApproval: true,
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(unregisteredMcpGrant.status).toBe(400);
+    await expect(unregisteredMcpGrant.json()).resolves.toMatchObject({
+      error: "MCP grants must reference a registered MCP server (missing).",
+    });
+
+    const malformedMcpGrant = await app.request(
+      `/api/access-bundles/${bundle.id}/grants`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          capability: "mcp.tool",
+          resource: "mcp:missing",
+          decision: "ask",
+          risk: "write_external",
+          requiresApproval: true,
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(malformedMcpGrant.status).toBe(400);
+    await expect(malformedMcpGrant.json()).resolves.toMatchObject({
+      error: "MCP grants must use mcp:<server>/<tool> resources.",
+    });
+
     const wildcardGitHubGrant = await app.request(
       `/api/access-bundles/${bundle.id}/grants`,
       {
@@ -2565,6 +2615,22 @@ describe("Bek API", () => {
     );
     expect(grantRes.status).toBe(201);
     const grant = (await grantRes.json()) as { id: string };
+
+    const patchToUnregisteredMcp = await app.request(
+      `/api/access-bundles/${bundle.id}/grants/${grant.id}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          capability: "mcp.tool",
+          resource: "mcp:missing/create_issue",
+          decision: "ask",
+          risk: "write_external",
+          requiresApproval: true,
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(patchToUnregisteredMcp.status).toBe(400);
 
     const duplicateGrant = await app.request(
       `/api/access-bundles/${bundle.id}/grants`,
