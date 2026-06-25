@@ -9,7 +9,8 @@
 - Access bundle policy.
 - Approval object model.
 - Slack event helpers.
-- Test suite and CI.
+- Test suite, CI, secret scanning, and tag-based GHCR image release workflow
+  with SBOM/provenance attestations.
 
 ## 0.2 Real Slack Workspace
 

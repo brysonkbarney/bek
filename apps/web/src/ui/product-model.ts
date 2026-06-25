@@ -27,11 +27,30 @@ import type {
 } from "../api";
 
 type AdminRoute =
+  | "/"
   | "/channels"
   | "/access-bundles"
   | "/connectors"
   | "/models"
+  | "/runs"
   | "/settings";
+
+export interface SetupAction {
+  label: string;
+  route: AdminRoute;
+}
+
+export interface SetupOperation {
+  id: string;
+  phase: string;
+  title: string;
+  detail: string;
+  status: string;
+  complete: boolean;
+  facts: string[];
+  primaryAction: SetupAction;
+  secondaryAction?: SetupAction;
+}
 
 export const navigationItems = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
@@ -218,6 +237,154 @@ export function setupProgress(status: SetupStatus): {
 export function setupReadyForWorkspace(status: SetupStatus): boolean {
   const progress = setupProgress(status);
   return status.readyForWorkspace && progress.complete === progress.total;
+}
+
+export function setupOperationsFromStatus(
+  status: SetupStatus,
+  input: { adminAuthDetail: string; adminAuthenticated: boolean },
+): SetupOperation[] {
+  const slackReady = Boolean(
+    status.slackInstalled &&
+    status.slackInstallStatus === "active" &&
+    status.slackTokenStored,
+  );
+  const channelReady = status.slackChannels > 0;
+  const accessReady = status.accessBundles > 0;
+  const modelReady = status.modelPolicies > 0;
+  const runtimeReady = status.runtimeProfiles > 0;
+  const githubReady = status.githubGrantCount > 0;
+  const workspace = status.slackWorkspaceName ?? status.slackWorkspaceId;
+  const operations: SetupOperation[] = [
+    {
+      id: "admin-auth",
+      phase: "1",
+      title: "Unlock the admin console",
+      detail: input.adminAuthenticated
+        ? input.adminAuthDetail
+        : "Add an admin token before changing workspace setup.",
+      status: input.adminAuthenticated ? "ready" : "needs action",
+      complete: input.adminAuthenticated,
+      facts: [
+        "Bootstrap API reachable",
+        `${status.pendingApprovals} pending approval${
+          status.pendingApprovals === 1 ? "" : "s"
+        }`,
+      ],
+      primaryAction: { label: "Open settings", route: "/settings" },
+    },
+    {
+      id: "local-demo",
+      phase: "2",
+      title: "Confirm local demo readiness",
+      detail: status.readyForLocalDemo
+        ? "Seed data is ready for a local run-through."
+        : "Seed the local demo before relying on the workspace flow.",
+      status: status.readyForLocalDemo ? "ready" : "needs action",
+      complete: status.readyForLocalDemo,
+      facts: [
+        `${status.slackChannels} channel scope${
+          status.slackChannels === 1 ? "" : "s"
+        }`,
+        `${status.accessBundles} access bundle${
+          status.accessBundles === 1 ? "" : "s"
+        }`,
+      ],
+      primaryAction: { label: "Open runs", route: "/runs" },
+      secondaryAction: { label: "Review channels", route: "/channels" },
+    },
+    {
+      id: "slack-install",
+      phase: "3",
+      title: "Install Bek in Slack",
+      detail: slackInstallSetupDetail(status),
+      status: slackReady ? "ready" : "needs action",
+      complete: slackReady,
+      facts: [
+        workspace ? `Workspace: ${workspace}` : "Workspace: not installed",
+        `Install: ${status.slackInstallStatus ?? "missing"}`,
+        `Token: ${status.slackTokenStored ? "stored" : "missing"}`,
+      ],
+      primaryAction: {
+        label: slackReady ? "Review Slack" : "Connect Slack",
+        route: "/connectors",
+      },
+      secondaryAction: { label: "Manage channels", route: "/channels" },
+    },
+    {
+      id: "place-access",
+      phase: "4",
+      title: "Scope channels and access",
+      detail:
+        channelReady && accessReady
+          ? "@bek has a governed place to work from."
+          : "Add at least one pilot channel and attach an access bundle.",
+      status: channelReady && accessReady ? "ready" : "needs action",
+      complete: channelReady && accessReady,
+      facts: [
+        `${status.slackChannels} Slack channel${
+          status.slackChannels === 1 ? "" : "s"
+        }`,
+        `${status.accessBundles} access bundle${
+          status.accessBundles === 1 ? "" : "s"
+        }`,
+      ],
+      primaryAction: {
+        label: channelReady ? "Review access" : "Add channel",
+        route: channelReady ? "/access-bundles" : "/channels",
+      },
+      secondaryAction: {
+        label: channelReady ? "Review channels" : "Open access",
+        route: channelReady ? "/channels" : "/access-bundles",
+      },
+    },
+    {
+      id: "model-runtime",
+      phase: "5",
+      title: "Choose model and runtime policy",
+      detail:
+        modelReady && runtimeReady
+          ? "Model routing and runtime execution are configured."
+          : "Configure both model routing and a runtime profile before workspace use.",
+      status: modelReady && runtimeReady ? "ready" : "needs action",
+      complete: modelReady && runtimeReady,
+      facts: [
+        `${status.modelPolicies} model polic${
+          status.modelPolicies === 1 ? "y" : "ies"
+        }`,
+        `${status.runtimeProfiles} runtime profile${
+          status.runtimeProfiles === 1 ? "" : "s"
+        }`,
+      ],
+      primaryAction: {
+        label: modelReady ? "Review runtime" : "Tune models",
+        route: modelReady ? "/connectors" : "/models",
+      },
+      secondaryAction: {
+        label: modelReady ? "Tune models" : "Review runtime",
+        route: modelReady ? "/models" : "/connectors",
+      },
+    },
+  ];
+
+  if (githubReady) {
+    operations.push({
+      id: "github-preview",
+      phase: "Preview",
+      title: "GitHub policy preview",
+      detail: "Repo work is visible through existing access-bundle grants.",
+      status: "visible",
+      complete: true,
+      facts: [
+        `${status.githubGrantCount} GitHub grant${
+          status.githubGrantCount === 1 ? "" : "s"
+        }`,
+        "Governed through access policy",
+      ],
+      primaryAction: { label: "Review grants", route: "/access-bundles" },
+    });
+  }
+
+  return operations;
 }
 
 export function findPlace(

@@ -34,7 +34,10 @@ Bek should launch in stages. The current repo is good enough to show the product
 
 Bek can be public as an OSS release candidate when the repo has:
 
-- GitHub repo initialized with CI, CodeQL, dependency review, issue templates, PR template, security policy, roadmap, conduct docs, and license.
+- GitHub repo initialized with CI, CodeQL, dependency review, secret scanning,
+  issue templates, PR template, security policy, roadmap, conduct docs,
+  AGPL license text, and tag release workflow for GHCR images with
+  SBOM/provenance attestations.
 - Local quickstart that reliably starts API and web.
 - Browser-verified admin console.
 - Smoke script that creates a run, creates an approval, approves it, and confirms the run state.

@@ -20,7 +20,8 @@ Bek is open-source infrastructure for agent teammates. The project should be a p
 
 ## Reporting
 
-Report conduct issues privately to the maintainers. Before public launch, replace this sentence with the project's published conduct contact.
+Report conduct issues privately to `conduct@bek.dev`. Include links,
+screenshots, or other context when it is safe to share them.
 
 Security vulnerabilities should follow `SECURITY.md` and be reported privately, not through a public issue.
 

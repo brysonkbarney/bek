@@ -28,14 +28,14 @@ The user asked for 25 subagents. We will run them in batches because the local a
 | 14  | Durable worker/orchestrator foundation     | done    |
 | 15  | GitHub repo workflow foundation            | done    |
 | 16  | Frontend accessibility/responsive review   | done    |
-| 17  | Model router/cost review                   | pending |
+| 17  | Model router/cost review                   | done    |
 | 18  | Memory/knowledge review                    | pending |
-| 19  | Audit/observability review                 | pending |
-| 20  | Tenant isolation review                    | pending |
+| 19  | Audit/observability review                 | running |
+| 20  | Tenant isolation review                    | done    |
 | 21  | Prompt-injection red-team                  | pending |
-| 22  | Sandbox provider implementation review     | pending |
-| 23  | CI/supply-chain review                     | pending |
-| 24  | Hosted/cloud packaging review              | pending |
+| 22  | Sandbox provider implementation review     | done    |
+| 23  | CI/supply-chain review                     | done    |
+| 24  | Hosted/cloud packaging review              | running |
 | 25  | Sales/demo/readiness review                | pending |
 
 ## Current Findings Folded In
@@ -53,3 +53,22 @@ The user asked for 25 subagents. We will run them in batches because the local a
 - GitHub now has provider-neutral config validation, webhook HMAC verification, repo resource parsing, and approval-ready PR proposal objects with no network calls.
 - The admin console has been through an accessibility/responsive pass with skip links, landmarks, captions, focus states, disabled states, and route usability improvements.
 - Worker foundations now cover queue items, deterministic in-memory leases, heartbeat, retry, cancel, approval resume, and event emission without coupling to the API process.
+- Slack outbound delivery inspection now returns summaries by default and exposes redacted details only through explicit operator debugging.
+- Admin API routes now fail closed unless a bearer token is configured or an explicit local-only bypass is enabled outside production.
+- Slack user mappings prefer team-scoped identities; legacy unscoped mappings are local/demo compatibility only.
+- Core/API redaction now covers broader credential, passphrase, signing-secret, access-key, and credential-reference field names.
+- MCP registrations default to pending, unsupported schemas quarantine, and MCP proxy requests validate supported JSON Schema input before transport.
+- Model routing fails closed when a supplied registry excludes every configured candidate, and over-budget worker runs pause for `budget.increase` approval before adapter/sandbox execution.
+- The Worker page now includes a Slack Outbox operating panel with summary counts, refresh, and drain controls.
+- `pnpm check` now includes format, lint, typecheck, tests, build, and smoke; the repo targets Node.js 24 LTS.
+
+## Current Build Wave
+
+| Agent           | Scope                                   | Status  |
+| --------------- | --------------------------------------- | ------- |
+| Hubble the 2nd  | Hosted multi-tenant implementation path | running |
+| Parfit the 2nd  | Docker/runtime packaging                | running |
+| Carson the 2nd  | OSS release and supply-chain readiness  | running |
+| Boole the 2nd   | Slack channel discovery API             | running |
+| Dirac the 2nd   | Setup/onboarding console                | running |
+| Feynman the 2nd | Approval context and safety             | running |

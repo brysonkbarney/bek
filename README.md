@@ -54,6 +54,10 @@ Run verification:
 pnpm check
 ```
 
+Release candidates should be tagged only after CI passes. Tag releases publish
+`api`, `web`, and `worker` images to GHCR with BuildKit SBOM and provenance
+attestations, and scheduled secret scanning runs in GitHub Actions.
+
 Run the API smoke test:
 
 ```bash
@@ -184,4 +188,4 @@ Bek internally routes work to the right capability:
 
 The current codebase is licensed as `AGPL-3.0-only`.
 
-See [LICENSE](./LICENSE).
+See [LICENSE](./LICENSE) and the full license text in [COPYING](./COPYING).

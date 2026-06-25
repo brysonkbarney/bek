@@ -10,6 +10,8 @@ import {
   GitPullRequest,
   KeyRound,
   LockKeyhole,
+  Plus,
+  RefreshCw,
   Route,
   Server,
   ShieldCheck,
@@ -22,15 +24,19 @@ import {
   createChannel,
   createGrant,
   decideApproval,
+  discoverSlackChannels,
   fetchBootstrap,
   fetchRunDetail,
   fetchSlackInstallStart,
   fetchSetupStatus,
+  hasBuildTimeAdminToken,
+  hasStoredAdminToken,
   updateModelPolicy,
   updateChannel,
   type AccessBundle,
   type ApprovalRequest,
   type Bootstrap,
+  type DiscoveredSlackChannel,
   type ModelPolicy,
   type Run,
   type RunEvent,
@@ -43,10 +49,9 @@ import {
   formatDateTime,
   formatMoney,
   grantsByDecision,
-  setupChecklistFromStatus,
-  setupProgress,
-  setupReadyForWorkspace,
+  setupOperationsFromStatus,
   visibleHandleAntiPatterns,
+  type SetupOperation,
 } from "./product-model";
 import {
   CostCell,
@@ -115,16 +120,65 @@ export function SetupPage() {
   if (error || setupError || !data || !setupStatus)
     return <div className="state error">Bek API is not reachable.</div>;
 
-  const progress = setupProgress(setupStatus);
-  const checklist = setupChecklistFromStatus(setupStatus);
-  const setupReady = setupReadyForWorkspace(setupStatus);
+  const adminAuthDetail = hasBuildTimeAdminToken()
+    ? "Using a build-time admin token."
+    : hasStoredAdminToken()
+      ? "Using a browser-stored admin token."
+      : "Admin API accepted this session.";
+  const operations = setupOperationsFromStatus(setupStatus, {
+    adminAuthDetail,
+    adminAuthenticated: true,
+  });
+  const requiredOperations = operations.filter(
+    (operation) => operation.id !== "github-preview",
+  );
+  const progress = {
+    complete: requiredOperations.filter((operation) => operation.complete)
+      .length,
+    total: requiredOperations.length,
+  };
+  const requiredOperationsReady = progress.complete === progress.total;
+  const setupReady = setupStatus.readyForWorkspace && requiredOperationsReady;
+  const workspaceReviewOperation: SetupOperation | undefined =
+    !setupStatus.readyForWorkspace
+      ? {
+          id: "workspace-readiness",
+          phase: "Review",
+          title: "Review workspace readiness",
+          detail:
+            "The visible setup operations are complete, but the API has not marked the workspace ready yet.",
+          status: "needs review",
+          complete: false,
+          facts: ["readyForWorkspace is false"],
+          primaryAction: { label: "Open settings", route: "/settings" },
+          secondaryAction: { label: "Review access", route: "/access-bundles" },
+        }
+      : undefined;
+  const nextOperation =
+    requiredOperations.find((operation) => !operation.complete) ??
+    workspaceReviewOperation;
+  const featuredOperation: SetupOperation = nextOperation ?? {
+    id: "workspace-ready",
+    phase: "Ready",
+    title: "Workspace setup is ready",
+    detail:
+      "Slack, policy, models, and runtime configuration are ready for governed workspace use.",
+    status: "ready",
+    complete: true,
+    facts: ["All required setup facts are complete"],
+    primaryAction: { label: "Open overview", route: "/" },
+    secondaryAction: { label: "Open runs", route: "/runs" },
+  };
+  const githubPreview = operations.find(
+    (operation) => operation.id === "github-preview",
+  );
 
   return (
     <div className="page">
       <PageHeader
-        eyebrow="First install"
-        title="One Slack teammate, then governed access behind it."
-        description="Bek should feel like a coworker: tag @bek once, then let policy decide which tools, repos, runtimes, and models are available in that place."
+        eyebrow="Setup"
+        title="Bring @bek online one real operation at a time."
+        description="Use the facts already reported by the API to unlock admin access, validate the local demo, connect Slack, and finish the policy needed for workspace use."
       />
       <section className="metrics">
         <MetricCard
@@ -145,7 +199,7 @@ export function SetupPage() {
             setupReady
               ? "Workspace ready"
               : setupStatus.readyForLocalDemo
-                ? "Seeded demo usable"
+                ? "Local demo ready"
                 : "Finish required steps"
           }
         />
@@ -156,47 +210,37 @@ export function SetupPage() {
           detail="Human gate for risky work"
         />
       </section>
-      <section className="grid">
+      <section className="setup-overview">
         <Panel
-          title="Setup status"
+          title={setupReady ? "Ready for workspace" : "Next operation"}
           action={<StatusBadge value={setupReady ? "ready" : "needs setup"} />}
         >
-          <ol className="setup-steps">
-            {checklist.map((step, index) => (
-              <li
-                className={step.complete ? "setup-step complete" : "setup-step"}
-                key={step.id}
+          <div className="setup-next-action">
+            <span className="setup-phase">{featuredOperation.phase}</span>
+            <div>
+              <strong>{featuredOperation.title}</strong>
+              <p className="muted">{featuredOperation.detail}</p>
+            </div>
+            <div className="row-actions">
+              <Link
+                to={featuredOperation.primaryAction.route}
+                className="primary"
               >
-                <span className="setup-step-icon" aria-hidden="true">
-                  {step.complete ? <Check size={16} /> : <Clock size={16} />}
-                </span>
-                <div>
-                  <strong>
-                    {index + 1}. {step.label}
-                  </strong>
-                  <span>{step.detail}</span>
-                </div>
+                {featuredOperation.primaryAction.label}
+                <ExternalLink size={14} aria-hidden="true" />
+              </Link>
+              {featuredOperation.secondaryAction ? (
                 <Link
-                  to={step.route}
-                  className="inline-link"
-                  aria-label={`Open ${step.label}`}
+                  to={featuredOperation.secondaryAction.route}
+                  className="secondary"
                 >
-                  {step.route === "/connectors"
-                    ? "Open Connectors"
-                    : step.route === "/channels"
-                      ? "Open Channels"
-                      : step.route === "/access-bundles"
-                        ? "Open Access"
-                        : step.route === "/models"
-                          ? "Open Models"
-                          : "Open Settings"}
-                  <ExternalLink size={13} aria-hidden="true" />
+                  {featuredOperation.secondaryAction.label}
                 </Link>
-              </li>
-            ))}
-          </ol>
+              ) : null}
+            </div>
+          </div>
         </Panel>
-        <Panel title="Not Bek">
+        <Panel title="Guardrails">
           <div className="bundle-list">
             {visibleHandleAntiPatterns.map((item) => (
               <div className="bundle danger-outline" key={item}>
@@ -210,7 +254,86 @@ export function SetupPage() {
           </div>
         </Panel>
       </section>
+      <Panel title="Operations checklist">
+        <div className="setup-operation-list">
+          {operations
+            .filter((operation) => operation.id !== "github-preview")
+            .map((operation) => (
+              <SetupOperationCard operation={operation} key={operation.id} />
+            ))}
+        </div>
+      </Panel>
+      {githubPreview ? (
+        <Panel
+          title="GitHub preview"
+          action={<StatusBadge value={githubPreview.status} />}
+        >
+          <div className="setup-preview">
+            <GitPullRequest size={22} aria-hidden="true" />
+            <div>
+              <strong>{githubPreview.title}</strong>
+              <p className="muted">{githubPreview.detail}</p>
+              <div className="chips">
+                {githubPreview.facts.map((fact) => (
+                  <span className="chip" key={fact}>
+                    {fact}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <Link to={githubPreview.primaryAction.route} className="secondary">
+              {githubPreview.primaryAction.label}
+              <ExternalLink size={14} aria-hidden="true" />
+            </Link>
+          </div>
+        </Panel>
+      ) : null}
     </div>
+  );
+}
+
+function SetupOperationCard({ operation }: { operation: SetupOperation }) {
+  return (
+    <article
+      className={
+        operation.complete
+          ? "setup-operation complete"
+          : "setup-operation attention"
+      }
+    >
+      <div className="setup-operation-marker" aria-hidden="true">
+        {operation.complete ? <Check size={16} /> : <Clock size={16} />}
+      </div>
+      <div className="setup-operation-body">
+        <div className="setup-operation-heading">
+          <span className="setup-phase">{operation.phase}</span>
+          <StatusBadge value={operation.status} />
+        </div>
+        <strong>{operation.title}</strong>
+        <p className="muted">{operation.detail}</p>
+        <div className="chips">
+          {operation.facts.map((fact) => (
+            <span
+              className={operation.complete ? "chip" : "chip warning-chip"}
+              key={fact}
+            >
+              {fact}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="setup-operation-actions">
+        <Link to={operation.primaryAction.route} className="inline-link">
+          {operation.primaryAction.label}
+          <ExternalLink size={13} aria-hidden="true" />
+        </Link>
+        {operation.secondaryAction ? (
+          <Link to={operation.secondaryAction.route} className="inline-link">
+            {operation.secondaryAction.label}
+          </Link>
+        ) : null}
+      </div>
+    </article>
   );
 }
 
@@ -224,6 +347,9 @@ export function ChannelsPage() {
   const [externalId, setExternalId] = useState("");
   const [externalTeamId, setExternalTeamId] = useState("");
   const [sensitivity, setSensitivity] = useState("internal");
+  const discoveryMutation = useMutation({
+    mutationFn: () => discoverSlackChannels({ limit: 100 }),
+  });
   const createChannelMutation = useMutation({
     mutationFn: createChannel,
     onSuccess: () => {
@@ -254,6 +380,55 @@ export function ChannelsPage() {
         eyebrow="Channel scopes"
         title="Decide what @bek can do in each place."
       />
+      <Panel
+        title="Discover Slack Channels"
+        action={
+          <button
+            className="secondary"
+            disabled={discoveryMutation.isPending}
+            aria-busy={discoveryMutation.isPending}
+            onClick={() => discoveryMutation.mutate()}
+          >
+            <RefreshCw size={16} aria-hidden="true" />
+            {discoveryMutation.isPending ? "Discovering..." : "Discover"}
+          </button>
+        }
+      >
+        {discoveryMutation.isError ? (
+          <WarningCallout>
+            {errorMessage(
+              discoveryMutation.error,
+              "Bek could not discover Slack channels.",
+            )}
+          </WarningCallout>
+        ) : null}
+        {discoveryMutation.data ? (
+          <SlackDiscoveryResults
+            channels={discoveryMutation.data.channels}
+            data={data}
+            isCreating={createChannelMutation.isPending}
+            teamId={
+              discoveryMutation.data.teamId ?? installedSlackTeamId ?? null
+            }
+            workspaceName={discoveryMutation.data.workspaceName ?? null}
+            onImport={(channel) => {
+              createChannelMutation.mutate({
+                name: channel.name,
+                externalId: channel.id,
+                ...(discoveryMutation.data.teamId
+                  ? { externalTeamId: discoveryMutation.data.teamId }
+                  : {}),
+                sensitivity: channel.isPrivate ? "confidential" : "internal",
+              });
+            }}
+          />
+        ) : discoveryMutation.isError ? null : (
+          <EmptyState
+            title="No discovery run"
+            body="Install Slack or set SLACK_BOT_TOKEN to import channels from the workspace."
+          />
+        )}
+      </Panel>
       <Panel title="Add Slack Channel Scope">
         {createChannelMutation.isError ? (
           <WarningCallout>
@@ -387,6 +562,116 @@ export function ChannelsPage() {
       </section>
     </div>
   );
+}
+
+function SlackDiscoveryResults({
+  channels,
+  data,
+  isCreating,
+  teamId,
+  workspaceName,
+  onImport,
+}: {
+  channels: DiscoveredSlackChannel[];
+  data: Bootstrap;
+  isCreating: boolean;
+  teamId: string | null;
+  workspaceName: string | null;
+  onImport: (channel: DiscoveredSlackChannel) => void;
+}) {
+  const configuredExternalIds = new Set(
+    data.places.flatMap((place) => {
+      const teamId = slackPlaceTeamId(place);
+      return teamId
+        ? [place.externalId, `${teamId}:${place.externalId}`]
+        : [place.externalId];
+    }),
+  );
+  const discoveryLabel = workspaceName ?? teamId ?? "Slack workspace";
+  return (
+    <div className="discovery-results">
+      <div className="split-row">
+        <div>
+          <strong>{discoveryLabel}</strong>
+          <span className="muted">{channels.length} channels found</span>
+        </div>
+      </div>
+      {channels.length === 0 ? (
+        <EmptyState
+          title="No channels found"
+          body="Bek did not receive any visible public or private channels."
+        />
+      ) : (
+        <div className="table-scroll">
+          <table>
+            <caption className="sr-only">Discovered Slack channels</caption>
+            <thead>
+              <tr>
+                <th scope="col">Channel</th>
+                <th scope="col">Visibility</th>
+                <th scope="col">Members</th>
+                <th scope="col">Status</th>
+                <th scope="col">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {channels.map((channel) => {
+                const placeKey = teamId
+                  ? `${teamId}:${channel.id}`
+                  : channel.id;
+                const alreadyConfigured =
+                  channel.configured || configuredExternalIds.has(placeKey);
+                return (
+                  <tr key={channel.id}>
+                    <td data-label="Channel">
+                      <strong>{channel.name}</strong>
+                      <div className="muted">{channel.id}</div>
+                    </td>
+                    <td data-label="Visibility">
+                      <StatusBadge
+                        value={channel.isPrivate ? "private" : "public"}
+                      />
+                    </td>
+                    <td data-label="Members">
+                      {channel.numMembers === null
+                        ? "Unknown"
+                        : channel.numMembers}
+                    </td>
+                    <td data-label="Status">
+                      {alreadyConfigured ? (
+                        <StatusBadge value="configured" />
+                      ) : channel.botIsMember ? (
+                        <StatusBadge value="ready" />
+                      ) : (
+                        <StatusBadge value="not joined" />
+                      )}
+                    </td>
+                    <td data-label="Action">
+                      <button
+                        className="secondary"
+                        disabled={alreadyConfigured || isCreating}
+                        onClick={() => onImport(channel)}
+                      >
+                        <Plus size={16} aria-hidden="true" />
+                        {alreadyConfigured ? "Added" : "Add"}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function slackPlaceTeamId(place: Bootstrap["places"][number]) {
+  const rawTeamId = place.metadata?.teamId ?? place.metadata?.slackTeamId;
+  return typeof rawTeamId === "string" && rawTeamId.trim()
+    ? rawTeamId.trim()
+    : undefined;
 }
 
 export function AccessBundlesPage() {
@@ -1119,18 +1404,26 @@ export function AccessBundleDetailPage() {
 
 export function ApprovalsPage() {
   const queryClient = useQueryClient();
+  const [confirmationApprovalId, setConfirmationApprovalId] = useState<
+    string | undefined
+  >();
   const { data, isLoading, error } = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
   });
   const decisionMutation = useMutation({
     mutationFn: decideApproval,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["bootstrap"] }),
+    onSuccess: () => {
+      setConfirmationApprovalId(undefined);
+      return queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+    },
   });
 
   if (isLoading) return <div className="state">Loading approvals...</div>;
   if (error || !data)
     return <div className="state error">Bek API is not reachable.</div>;
+
+  const approvalContexts = sortedApprovalContexts(data);
 
   return (
     <div className="page">
@@ -1150,43 +1443,62 @@ export function ApprovalsPage() {
         {decisionMutation.isSuccess ? (
           <SuccessCallout>Approval decision saved.</SuccessCallout>
         ) : null}
-        {data.approvals.length === 0 ? (
+        {approvalContexts.length === 0 ? (
           <EmptyState
             title="No approvals yet"
             body="Trigger the demo PR run to see a write_external approval."
           />
         ) : (
           <div className="table-scroll">
-            <table className="responsive-table">
+            <table className="responsive-table wide-table">
               <caption className="sr-only">Bek approval requests</caption>
               <thead>
                 <tr>
                   <th scope="col">Action</th>
                   <th scope="col">Risk</th>
                   <th scope="col">Status</th>
+                  <th scope="col">Run</th>
+                  <th scope="col">Place</th>
+                  <th scope="col">Requester</th>
+                  <th scope="col">Payload Hash</th>
                   <th scope="col">Expires</th>
                   <th scope="col">Decision</th>
                 </tr>
               </thead>
               <tbody>
-                {data.approvals.map((approval) => (
+                {approvalContexts.map((context) => (
                   <ApprovalRow
-                    approval={approval}
+                    context={context}
+                    confirmationPending={
+                      confirmationApprovalId === context.approval.id
+                    }
                     isDisabled={decisionMutation.isPending}
                     pendingDecision={
-                      decisionMutation.variables?.approvalId === approval.id
+                      decisionMutation.variables?.approvalId ===
+                      context.approval.id
                         ? decisionMutation.variables.decision
                         : undefined
                     }
-                    onDecision={(decision) =>
+                    onCancelConfirmation={() =>
+                      setConfirmationApprovalId(undefined)
+                    }
+                    onDecision={(decision) => {
+                      if (
+                        decision === "approve" &&
+                        isHighRiskApproval(context.approval) &&
+                        confirmationApprovalId !== context.approval.id
+                      ) {
+                        setConfirmationApprovalId(context.approval.id);
+                        return;
+                      }
                       decisionMutation.mutate({
-                        approvalId: approval.id,
+                        approvalId: context.approval.id,
                         decision,
                         principalId: "principal_admin",
-                        payloadHash: approval.payloadHash,
-                      })
-                    }
-                    key={approval.id}
+                        payloadHash: context.approval.payloadHash,
+                      });
+                    }}
+                    key={context.approval.id}
                   />
                 ))}
               </tbody>
@@ -1198,19 +1510,32 @@ export function ApprovalsPage() {
   );
 }
 
+type ApprovalContext = {
+  approval: ApprovalRequest;
+  run: Run | undefined;
+  place: Bootstrap["places"][number] | undefined;
+  requester: NonNullable<Bootstrap["principals"]>[number] | undefined;
+};
+
 function ApprovalRow({
-  approval,
+  context,
+  confirmationPending,
   isDisabled,
   pendingDecision,
+  onCancelConfirmation,
   onDecision,
 }: {
-  approval: ApprovalRequest;
+  context: ApprovalContext;
+  confirmationPending: boolean;
   isDisabled: boolean;
   pendingDecision: "approve" | "deny" | undefined;
+  onCancelConfirmation: () => void;
   onDecision: (decision: "approve" | "deny") => void;
 }) {
+  const { approval, run, place, requester } = context;
   const approvePending = pendingDecision === "approve";
   const denyPending = pendingDecision === "deny";
+  const highRisk = isHighRiskApproval(approval);
   return (
     <tr>
       <td data-label="Action">{approval.action}</td>
@@ -1220,45 +1545,165 @@ function ApprovalRow({
       <td data-label="Status">
         <StatusBadge value={approval.status} />
       </td>
+      <td data-label="Run">
+        {run ? (
+          <div>
+            <RunLink run={run} />
+            <div className="muted">{run.status.replaceAll("_", " ")}</div>
+          </div>
+        ) : (
+          <span className="muted">{approval.runId}</span>
+        )}
+      </td>
+      <td data-label="Place">
+        {place ? (
+          <div>
+            <strong>{place.name}</strong>
+            <div className="muted">
+              {place.provider}:{place.externalId}
+            </div>
+          </div>
+        ) : (
+          <span className="muted">Unknown place</span>
+        )}
+      </td>
+      <td data-label="Requester">
+        {requester ? (
+          <div>
+            <strong>{requester.displayName}</strong>
+            <div className="muted">{requester.id}</div>
+          </div>
+        ) : (
+          <span className="muted">{approval.requestedByPrincipalId}</span>
+        )}
+      </td>
+      <td data-label="Payload Hash">
+        <code>{shortHash(approval.payloadHash)}</code>
+      </td>
       <td data-label="Expires">{formatDateTime(approval.expiresAt)}</td>
       <td data-label="Decision">
         {approval.status === "pending" ? (
-          <div className="row-actions">
-            <button
-              className={`icon-button${approvePending ? " pending" : ""}`}
-              aria-label={
-                approvePending
-                  ? `Approving ${approval.action}`
-                  : `Approve ${approval.action}`
-              }
-              aria-busy={approvePending}
-              disabled={isDisabled}
-              title="Approve"
-              onClick={() => onDecision("approve")}
-            >
-              <Check size={16} aria-hidden="true" />
-            </button>
-            <button
-              className={`icon-button danger${denyPending ? " pending" : ""}`}
-              aria-label={
-                denyPending
-                  ? `Denying ${approval.action}`
-                  : `Deny ${approval.action}`
-              }
-              aria-busy={denyPending}
-              disabled={isDisabled}
-              title="Deny"
-              onClick={() => onDecision("deny")}
-            >
-              <CircleSlash size={16} aria-hidden="true" />
-            </button>
-          </div>
+          confirmationPending ? (
+            <div>
+              <p className="muted">
+                Confirm {approval.action} for run {run?.id ?? approval.runId}{" "}
+                with hash <code>{shortHash(approval.payloadHash)}</code>.
+              </p>
+              <div className="row-actions">
+                <button
+                  className={`icon-button${approvePending ? " pending" : ""}`}
+                  aria-label={
+                    approvePending
+                      ? `Confirming ${approval.action}`
+                      : `Confirm approval for ${approval.action}`
+                  }
+                  aria-busy={approvePending}
+                  disabled={isDisabled}
+                  title="Confirm approval"
+                  onClick={() => onDecision("approve")}
+                >
+                  <Check size={16} aria-hidden="true" />
+                </button>
+                <button
+                  className="icon-button"
+                  aria-label={`Cancel approval confirmation for ${approval.action}`}
+                  disabled={isDisabled}
+                  title="Cancel confirmation"
+                  onClick={onCancelConfirmation}
+                >
+                  <CircleSlash size={16} aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="row-actions">
+              <button
+                className={`icon-button${approvePending ? " pending" : ""}`}
+                aria-label={
+                  approvePending
+                    ? `Approving ${approval.action}`
+                    : highRisk
+                      ? `Review approval for ${approval.action}`
+                      : `Approve ${approval.action}`
+                }
+                aria-busy={approvePending}
+                disabled={isDisabled}
+                title={highRisk ? "Review approval" : "Approve"}
+                onClick={() => onDecision("approve")}
+              >
+                <Check size={16} aria-hidden="true" />
+              </button>
+              <button
+                className={`icon-button danger${denyPending ? " pending" : ""}`}
+                aria-label={
+                  denyPending
+                    ? `Denying ${approval.action}`
+                    : `Deny ${approval.action}`
+                }
+                aria-busy={denyPending}
+                disabled={isDisabled}
+                title="Deny"
+                onClick={() => onDecision("deny")}
+              >
+                <CircleSlash size={16} aria-hidden="true" />
+              </button>
+            </div>
+          )
         ) : (
           <span className="muted">decided</span>
         )}
       </td>
     </tr>
   );
+}
+
+function sortedApprovalContexts(data: Bootstrap): ApprovalContext[] {
+  const principals = data.principals ?? [];
+  return data.approvals
+    .map((approval) => {
+      const run = data.runs.find(
+        (candidate) => candidate.id === approval.runId,
+      );
+      return {
+        approval,
+        run,
+        place: run ? findRunPlace(data, run) : undefined,
+        requester: principals.find(
+          (principal) => principal.id === approval.requestedByPrincipalId,
+        ),
+      };
+    })
+    .sort((left, right) => {
+      const statusDelta =
+        approvalStatusSortRank(left.approval.status) -
+        approvalStatusSortRank(right.approval.status);
+      if (statusDelta !== 0) return statusDelta;
+      const leftTime = Date.parse(
+        left.approval.status === "pending"
+          ? left.approval.expiresAt
+          : left.approval.createdAt,
+      );
+      const rightTime = Date.parse(
+        right.approval.status === "pending"
+          ? right.approval.expiresAt
+          : right.approval.createdAt,
+      );
+      return left.approval.status === "pending"
+        ? leftTime - rightTime
+        : rightTime - leftTime;
+    });
+}
+
+function approvalStatusSortRank(status: ApprovalRequest["status"]): number {
+  return status === "pending" ? 0 : 1;
+}
+
+function isHighRiskApproval(approval: ApprovalRequest): boolean {
+  return approval.risk === "write_external" || approval.risk === "privileged";
+}
+
+function shortHash(hash: string): string {
+  return hash.length > 24 ? `${hash.slice(0, 12)}...${hash.slice(-8)}` : hash;
 }
 
 export function ConnectorsPage() {

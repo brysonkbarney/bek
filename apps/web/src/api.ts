@@ -67,6 +67,7 @@ function browserStorage(): Storage | undefined {
 
 export interface Bootstrap {
   org: { name: string; plan: string };
+  principals?: Principal[];
   agent: {
     name: string;
     handle: string;
@@ -121,6 +122,27 @@ export interface SlackInstallStart {
   tokenStorageConfigured: boolean;
 }
 
+export interface DiscoveredSlackChannel {
+  id: string;
+  name: string;
+  isPrivate: boolean;
+  isArchived: boolean;
+  botIsMember: boolean;
+  configured: boolean;
+  configuredPlaceId: string | null;
+  sensitivity: string | null;
+  numMembers: number | null;
+}
+
+export interface SlackChannelDiscovery {
+  ok: true;
+  source: "injected" | "stored_oauth" | "env";
+  teamId: string | null;
+  workspaceName: string | null;
+  channels: DiscoveredSlackChannel[];
+  nextCursor: string | null;
+}
+
 export interface Run {
   id: string;
   placeScopeId: string;
@@ -129,10 +151,18 @@ export interface Run {
   prompt: string;
   status: string;
   trigger: string;
+  requesterPrincipalId?: string;
   estimatedCostCents: number;
   actualCostCents: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface Principal {
+  id: string;
+  kind: string;
+  displayName: string;
+  email?: string;
 }
 
 export interface PlaceScope {
@@ -227,6 +257,8 @@ export interface ApprovalRequest {
   status: "pending" | "approved" | "denied" | "expired";
   risk: string;
   payloadHash: string;
+  requestedByPrincipalId: string;
+  decidedByPrincipalId?: string;
   createdAt: string;
   expiresAt: string;
   decidedAt?: string;
@@ -415,6 +447,38 @@ export async function fetchSlackInstallStart(
   returnTo = "/connectors",
 ): Promise<SlackInstallStart> {
   return jsonRequest<SlackInstallStart>(slackInstallStartPath(returnTo));
+}
+
+export function slackChannelDiscoveryPath(
+  input: {
+    cursor?: string;
+    limit?: number;
+    types?: string;
+    excludeArchived?: boolean;
+  } = {},
+): string {
+  const params = new URLSearchParams();
+  if (input.cursor) params.set("cursor", input.cursor);
+  if (input.limit) params.set("limit", String(input.limit));
+  if (input.types) params.set("types", input.types);
+  if (input.excludeArchived !== undefined) {
+    params.set("excludeArchived", String(input.excludeArchived));
+  }
+  const query = params.toString();
+  return query
+    ? `/api/slack/channels/discover?${query}`
+    : "/api/slack/channels/discover";
+}
+
+export async function discoverSlackChannels(
+  input: {
+    cursor?: string;
+    limit?: number;
+    types?: string;
+    excludeArchived?: boolean;
+  } = {},
+): Promise<SlackChannelDiscovery> {
+  return jsonRequest<SlackChannelDiscovery>(slackChannelDiscoveryPath(input));
 }
 
 export async function updateAgent(input: {

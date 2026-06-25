@@ -11,15 +11,15 @@ The root `docker-compose.yml` supports three paths:
 
 ## Services
 
-| Service   | Profile  | Image/target              | Host port      | Purpose                                                   |
-| --------- | -------- | ------------------------- | -------------- | --------------------------------------------------------- |
-| Postgres  | default  | `pgvector/pgvector:pg16`  | `54329`        | Durable Bek snapshot storage and future vector storage.   |
-| Valkey    | default  | `valkey/valkey:8`         | `63799`        | Reserved for queueing, locks, rate limits, and cache.     |
-| MinIO     | default  | `minio/minio`             | `9000`, `9001` | Reserved S3-compatible artifact storage.                  |
-| `migrate` | `app`    | local `bek-api` target    | none           | Runs Drizzle migrations before the API starts.            |
-| `api`     | `app`    | local `bek-api` target    | `4317`         | Bek API, Slack callbacks, admin API, and health endpoint. |
-| `web`     | `app`    | local `bek-web` target    | `5173`         | Built Vite admin console served with `vite preview`.      |
-| `worker`  | `worker` | local `bek-worker` target | none           | Runs the deterministic local worker runner.               |
+| Service   | Profile  | Image/target               | Host port      | Purpose                                                   |
+| --------- | -------- | -------------------------- | -------------- | --------------------------------------------------------- |
+| Postgres  | default  | `pgvector/pgvector:pg16`   | `54329`        | Durable Bek snapshot storage and future vector storage.   |
+| Valkey    | default  | `valkey/valkey:8`          | `63799`        | Reserved for queueing, locks, rate limits, and cache.     |
+| MinIO     | default  | `minio/minio`              | `9000`, `9001` | Reserved S3-compatible artifact storage.                  |
+| `migrate` | `app`    | local `bek-migrate` target | none           | Runs Drizzle migrations before the API starts.            |
+| `api`     | `app`    | local `bek-api` runtime    | `4317`         | Bek API, Slack callbacks, admin API, and health endpoint. |
+| `web`     | `app`    | local `bek-web` runtime    | `5173`         | Built Vite admin console served as static assets.         |
+| `worker`  | `worker` | local `bek-worker` runtime | none           | Runs the deterministic local worker runner.               |
 
 ## Environment
 
@@ -84,6 +84,12 @@ The `migrate` service runs `pnpm db:migrate` before the API starts. With
 `BEK_STORAGE=postgres`, the API auto-seeds the demo organization on first boot
 unless `BEK_DB_AUTO_SEED=false`.
 
+The API and worker runtime images run the compiled JavaScript deploy output as a
+non-root user. The migration image keeps the full workspace toolchain because
+Drizzle migrations are still invoked through the workspace package scripts. The
+web runtime does not use `vite preview`; it serves the built `dist` directory
+with a small Node static server and SPA fallback.
+
 The API container healthcheck uses `/ready`, which flushes pending in-process
 state and verifies configured persistence dependencies before Compose marks the
 service healthy.
@@ -94,6 +100,14 @@ through the worker bridge while worker records, leases, dead letters, and
 worker events persist in Postgres. This is useful for restart-safe self-hosted
 evaluation; production still needs daemonized workers, lease sweepers,
 automated outbox dispatch, redrive UI/operations, and operational metrics.
+
+The current API process serves one Bek org at a time. In Postgres mode that org
+is selected by `BEK_ORG_ID`; the default template uses `org_demo`. To isolate
+multiple teams before hosted multi-tenant support exists, run separate API/web
+stacks with distinct `BEK_ORG_ID`, database/schema or database credentials,
+admin tokens, public callback URLs, Slack apps or workspaces, and credential
+vault keys. Do not point multiple customer Slack workspaces at one API process
+and expect tenant isolation.
 
 For upgrades or schema checks, run the migration service explicitly before
 starting the app profile:
@@ -226,6 +240,14 @@ underlying bucket alongside Postgres.
 - The API can persist the seeded Bek snapshot and local worker queue state in
   Postgres, but Valkey queues, MinIO artifacts, and object-store-backed run
   outputs are not wired end to end.
+- Container runtime deploys normalize the current workspace packages from
+  source-TypeScript exports to built JavaScript inside the image. Local
+  development intentionally still uses the TSX-first package exports, so
+  `pnpm smoke`, `pnpm dev:api`, and `pnpm dev:web` remain the supported local
+  quickstart commands rather than direct `node dist/*.js` execution on the host.
+- The `migrate` image uses the full build stage so `pnpm db:migrate` can run
+  Drizzle from the existing workspace package layout. The API, web, and worker
+  runtime containers are the production-shaped non-root images.
 - `packages/worker` includes the deterministic queue contract and local runner,
   but not yet a long-running separate worker daemon with transactional
   multi-drainer claims, redrive UI, or autoscaling.

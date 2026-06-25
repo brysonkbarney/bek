@@ -16,11 +16,38 @@ export interface SlackPostEphemeralInput extends SlackMessagePayload {
   user: string;
 }
 
+export interface SlackListChannelsInput {
+  cursor?: string | undefined;
+  limit?: number | undefined;
+  types?: string | undefined;
+  excludeArchived?: boolean | undefined;
+}
+
+export interface SlackDiscoveredChannel {
+  id: string;
+  name: string;
+  isPrivate: boolean;
+  isArchived: boolean;
+  isMember: boolean;
+  numMembers?: number | undefined;
+}
+
 export type SlackWebApiMessageResult =
   | {
       ok: true;
       channel: string;
       ts: string;
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
+export type SlackWebApiChannelListResult =
+  | {
+      ok: true;
+      channels: SlackDiscoveredChannel[];
+      nextCursor?: string | undefined;
     }
   | {
       ok: false;
@@ -35,6 +62,9 @@ export interface SlackWebApiClient {
   postEphemeral(
     input: SlackPostEphemeralInput,
   ): Promise<SlackWebApiMessageResult>;
+  listChannels(
+    input?: SlackListChannelsInput,
+  ): Promise<SlackWebApiChannelListResult>;
 }
 
 export interface SlackWebApiHttpClientOptions {
@@ -73,6 +103,85 @@ export class SlackWebApiHttpClient implements SlackWebApiClient {
     input: SlackPostEphemeralInput,
   ): Promise<SlackWebApiMessageResult> {
     return this.call("chat.postEphemeral", input);
+  }
+
+  async listChannels(
+    input: SlackListChannelsInput = {},
+  ): Promise<SlackWebApiChannelListResult> {
+    if (!this.token) {
+      return { ok: false, error: "Slack bot token is missing." };
+    }
+
+    const params = new URLSearchParams();
+    params.set("exclude_archived", String(input.excludeArchived ?? false));
+    params.set("limit", String(input.limit ?? 100));
+    params.set("types", input.types ?? "public_channel,private_channel");
+    if (input.cursor) {
+      params.set("cursor", input.cursor);
+    }
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(
+        `${this.baseUrl}/conversations.list?${params.toString()}`,
+        {
+          method: "GET",
+          headers: {
+            authorization: `Bearer ${this.token}`,
+          },
+        },
+      );
+    } catch (error) {
+      return {
+        ok: false,
+        error:
+          error instanceof Error
+            ? `Slack Web API conversations.list failed: ${error.message}`
+            : "Slack Web API conversations.list failed.",
+      };
+    }
+
+    let raw: unknown;
+    try {
+      raw = await response.json();
+    } catch {
+      return {
+        ok: false,
+        error: `Slack Web API conversations.list returned non-JSON HTTP ${response.status}.`,
+      };
+    }
+    if (!isRecord(raw)) {
+      return {
+        ok: false,
+        error: "Slack Web API conversations.list returned an invalid response.",
+      };
+    }
+    if (!response.ok || raw.ok !== true) {
+      return {
+        ok: false,
+        error: slackWebApiError(raw, response.status),
+      };
+    }
+    if (!Array.isArray(raw.channels)) {
+      return {
+        ok: false,
+        error:
+          "Slack Web API conversations.list returned an invalid channel list.",
+      };
+    }
+
+    return {
+      ok: true,
+      channels: raw.channels.flatMap(slackDiscoveredChannel),
+      ...optionalString(
+        "nextCursor",
+        stringValue(
+          isRecord(raw.response_metadata)
+            ? raw.response_metadata.next_cursor
+            : undefined,
+        ),
+      ),
+    };
   }
 
   private async call(
@@ -143,12 +252,15 @@ export class SlackWebApiHttpClient implements SlackWebApiClient {
 export interface FakeSlackWebApiClientOptions {
   failWith?: string;
   tsPrefix?: string;
+  channels?: SlackDiscoveredChannel[];
+  nextCursor?: string | undefined;
 }
 
 export class FakeSlackWebApiClient implements SlackWebApiClient {
   readonly postMessageCalls: SlackPostMessageInput[] = [];
   readonly updateMessageCalls: SlackUpdateMessageInput[] = [];
   readonly postEphemeralCalls: SlackPostEphemeralInput[] = [];
+  readonly listChannelsCalls: SlackListChannelsInput[] = [];
 
   private counter = 0;
 
@@ -178,10 +290,25 @@ export class FakeSlackWebApiClient implements SlackWebApiClient {
     return this.result(input.channel);
   }
 
+  async listChannels(
+    input: SlackListChannelsInput = {},
+  ): Promise<SlackWebApiChannelListResult> {
+    this.listChannelsCalls.push(structuredClone(input));
+    if (this.options.failWith) {
+      return { ok: false, error: this.options.failWith };
+    }
+    return {
+      ok: true,
+      channels: structuredClone(this.options.channels ?? []),
+      ...optionalString("nextCursor", this.options.nextCursor),
+    };
+  }
+
   reset(): void {
     this.postMessageCalls.length = 0;
     this.updateMessageCalls.length = 0;
     this.postEphemeralCalls.length = 0;
+    this.listChannelsCalls.length = 0;
     this.counter = 0;
   }
 
@@ -217,4 +344,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function slackDiscoveredChannel(value: unknown): SlackDiscoveredChannel[] {
+  if (!isRecord(value)) {
+    return [];
+  }
+  const id = stringValue(value.id);
+  const name = stringValue(value.name);
+  if (!id || !name) {
+    return [];
+  }
+  const channel: SlackDiscoveredChannel = {
+    id,
+    name,
+    isPrivate: value.is_private === true || value.is_group === true,
+    isArchived: value.is_archived === true,
+    isMember: value.is_member === true,
+  };
+  if (
+    typeof value.num_members === "number" &&
+    Number.isFinite(value.num_members)
+  ) {
+    channel.numMembers = value.num_members;
+  }
+  return [channel];
+}
+
+function optionalString<K extends string>(
+  key: K,
+  value: string | undefined,
+): Partial<Record<K, string>> {
+  return value ? ({ [key]: value } as Partial<Record<K, string>>) : {};
 }

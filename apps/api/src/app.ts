@@ -45,6 +45,9 @@ import {
   parseSlackCommand,
   parseSlackInteraction,
   redactSlackInstallRecord,
+  SlackWebApiHttpClient,
+  type SlackDiscoveredChannel,
+  type SlackListChannelsInput,
   type SlackApprovalInteraction,
   type SlackInstallRecord,
   type SlackWebApiClient,
@@ -55,6 +58,7 @@ import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
 import {
+  createLocalCredentialVaultFromEnv,
   requireLocalCredentialVault,
   type LocalCredentialVault,
 } from "./credential-vault";
@@ -107,6 +111,14 @@ type ReadinessStepResult =
       latencyMs: number;
       error: string;
     };
+type SlackDiscoveryClientSource = "injected" | "stored_oauth" | "env";
+
+interface ResolvedSlackDiscoveryClient {
+  client: SlackWebApiClient;
+  source: SlackDiscoveryClientSource;
+  teamId?: string | undefined;
+  workspaceName?: string | undefined;
+}
 
 export function createApp(
   store = new BekStore(),
@@ -599,6 +611,47 @@ export function createApp(
     return { install: connectorInstall, credential };
   }
 
+  function resolveSlackDiscoveryClient():
+    | ResolvedSlackDiscoveryClient
+    | undefined {
+    if (options.slackClient) {
+      return {
+        client: options.slackClient,
+        source: "injected",
+      };
+    }
+
+    const snapshot = store.read();
+    const install = latestSlackInstall(snapshot);
+    if (install?.status === "active") {
+      const credential = latestSlackCredential(
+        snapshot,
+        install.id,
+        install.externalId,
+      );
+      if (credential) {
+        const vault = createLocalCredentialVaultFromEnv();
+        const token = vault?.decryptSlackBotToken({ credential });
+        if (token) {
+          return {
+            client: new SlackWebApiHttpClient({ token }),
+            source: "stored_oauth",
+            teamId: install.externalId,
+            workspaceName: install.displayName,
+          };
+        }
+      }
+    }
+
+    const fallbackToken = process.env.SLACK_BOT_TOKEN?.trim();
+    return fallbackToken
+      ? {
+          client: new SlackWebApiHttpClient({ token: fallbackToken }),
+          source: "env",
+        }
+      : undefined;
+  }
+
   app.get("/health", (c) =>
     c.json({
       ok: true,
@@ -718,6 +771,58 @@ export function createApp(
   app.get("/api/connectors/slack", (c) =>
     c.json(slackInstallSummaries(store.read())),
   );
+  app.get("/api/slack/channels/discover", async (c) => {
+    const resolvedClient = resolveSlackDiscoveryClient();
+    if (!resolvedClient) {
+      return c.json(
+        {
+          ok: false,
+          error:
+            "Slack bot token is not configured. Install Slack with token storage enabled or set SLACK_BOT_TOKEN.",
+        },
+        409,
+      );
+    }
+
+    const query = slackChannelDiscoveryQuerySchema.parse({
+      cursor: c.req.query("cursor"),
+      limit: c.req.query("limit"),
+      types: c.req.query("types"),
+      excludeArchived: c.req.query("excludeArchived"),
+    });
+    const result = await resolvedClient.client.listChannels(
+      compactSlackChannelDiscoveryInput({
+        cursor: query.cursor,
+        limit: query.limit ?? 100,
+        types: query.types ?? "public_channel,private_channel",
+        excludeArchived: query.excludeArchived ?? true,
+      }),
+    );
+    if (!result.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: sanitizeSlackDiscoveryError(result.error),
+          source: resolvedClient.source,
+          teamId: resolvedClient.teamId ?? null,
+          workspaceName: resolvedClient.workspaceName ?? null,
+        },
+        502,
+      );
+    }
+
+    const snapshot = store.read();
+    return c.json({
+      ok: true,
+      source: resolvedClient.source,
+      teamId: resolvedClient.teamId ?? null,
+      workspaceName: resolvedClient.workspaceName ?? null,
+      channels: result.channels.map((channel) =>
+        publicDiscoveredSlackChannel(snapshot, channel, resolvedClient.teamId),
+      ),
+      nextCursor: result.nextCursor ?? null,
+    });
+  });
   app.get("/api/setup/github", (c) =>
     c.json(
       githubSetupPreview(
@@ -1972,6 +2077,34 @@ const drainOutboundSchema = z
   })
   .strict();
 
+const slackChannelDiscoveryQuerySchema = z
+  .object({
+    cursor: z.string().min(1).max(500).optional(),
+    limit: z
+      .preprocess(
+        (value) =>
+          typeof value === "string" && value.trim() ? Number(value) : undefined,
+        z.number().int().min(1).max(200).default(100),
+      )
+      .optional(),
+    types: z
+      .string()
+      .min(1)
+      .max(120)
+      .regex(/^[a-z_,]+$/)
+      .optional()
+      .default("public_channel,private_channel"),
+    excludeArchived: z
+      .preprocess((value) => {
+        if (value === undefined) {
+          return true;
+        }
+        return value === "true" || value === "1";
+      }, z.boolean())
+      .optional(),
+  })
+  .strict();
+
 const cancelRunSchema = z
   .object({
     reason: z.string().min(1).max(500).optional(),
@@ -2338,6 +2471,39 @@ function slackInstallSummaries(snapshot: BekSnapshot) {
         tokenPresent: Boolean(credential),
       };
     });
+}
+
+function publicDiscoveredSlackChannel(
+  snapshot: BekSnapshot,
+  channel: SlackDiscoveredChannel,
+  teamId?: string | undefined,
+) {
+  const configuredPlace = resolveSlackPlace(snapshot, channel.id, teamId);
+  return {
+    id: channel.id,
+    name: channel.name.startsWith("#") ? channel.name : `#${channel.name}`,
+    isPrivate: channel.isPrivate,
+    isArchived: channel.isArchived,
+    botIsMember: channel.isMember,
+    configured: Boolean(configuredPlace),
+    configuredPlaceId: configuredPlace?.id ?? null,
+    sensitivity: configuredPlace?.sensitivity ?? null,
+    numMembers: channel.numMembers ?? null,
+  };
+}
+
+function sanitizeSlackDiscoveryError(error: string): string {
+  const redacted = redactSecrets(error).replace(/\s+/g, " ").trim();
+  const fallback = redacted || "Slack channel discovery failed.";
+  return fallback.length > 300 ? `${fallback.slice(0, 300)}...` : fallback;
+}
+
+function compactSlackChannelDiscoveryInput(
+  input: SlackListChannelsInput,
+): SlackListChannelsInput {
+  return Object.fromEntries(
+    Object.entries(input).filter(([, value]) => value !== undefined),
+  ) as SlackListChannelsInput;
 }
 
 type GitHubGrantCapability = Extract<

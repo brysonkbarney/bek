@@ -27,6 +27,13 @@ apps/api
   approvals
   policy evaluation
 
+Current deployments are single-tenant per API process. In Postgres mode the API
+loads the org selected by `BEK_ORG_ID`; self-hosters that need isolated teams
+today should run separate API processes with separate org IDs, callback URLs,
+admin tokens, and credential-vault keys. Hosted multi-tenant Bek must add
+request-time tenant resolution before sharing one API process across customer
+workspaces.
+
 packages/core
   domain types
   one-handle invariant
@@ -53,19 +60,22 @@ packages/mcp-gateway
 
 ## Next Architecture Milestones
 
-1. Harden Postgres persistence from snapshot writes toward row-level commands,
+1. Add hosted tenant resolution for Slack `team_id`, GitHub installation IDs,
+   and admin sessions, then dispatch every request through the correct org
+   store.
+2. Harden Postgres persistence from snapshot writes toward row-level commands,
    locks, migrations, and multi-process idempotency.
-2. Harden worker-local into durable queue-backed workers with claim, heartbeat,
+3. Harden worker-local into durable queue-backed workers with claim, heartbeat,
    retry, cancellation, approval resume, and run settlement across processes.
-3. Harden local credential-vault persistence toward managed KMS/broker custody
+4. Harden local credential-vault persistence toward managed KMS/broker custody
    and durable outbound Slack delivery retries.
-4. Add GitHub App installation and repo grants.
-5. Connect local Docker sandbox execution into the worker runtime path.
-6. Add OpenCode adapter.
-7. Add MCP registry and tool proxy.
-8. Add hosted credential broker leases for GitHub, model, MCP, and sandbox
+5. Add GitHub App installation and repo grants.
+6. Connect local Docker sandbox execution into the worker runtime path.
+7. Add OpenCode adapter.
+8. Add MCP registry and tool proxy.
+9. Add hosted credential broker leases for GitHub, model, MCP, and sandbox
    credentials.
-9. Wire audit export and eval dataset generation into the admin/API surfaces.
+10. Wire audit export and eval dataset generation into the admin/API surfaces.
 
 ## Non-Negotiable Invariants
 

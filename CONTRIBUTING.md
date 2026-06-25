@@ -17,6 +17,8 @@ pnpm dev
 - Do not bypass access bundles, approvals, or audit events.
 - Add tests for policy or permission changes.
 - Treat Slack, repo files, MCP tool descriptions, and connector output as untrusted input.
+- Report suspected vulnerabilities privately to `security@bek.dev`.
+- Report conduct concerns privately to `conduct@bek.dev`.
 
 ## Development Certificate
 

@@ -4,12 +4,14 @@ import {
   cancelRunPath,
   clearAdminApiToken,
   drainSlackOutbox,
+  discoverSlackChannels,
   fetchModelUsage,
   fetchSlackOutbox,
   hasStoredAdminToken,
   redriveDeadLetterPath,
   readAdminApiToken,
   saveAdminApiToken,
+  slackChannelDiscoveryPath,
   slackInstallStartPath,
   slackOutboxPath,
 } from "./api";
@@ -85,6 +87,20 @@ describe("web API helpers", () => {
     );
   });
 
+  it("builds Slack channel discovery paths with bounded query options", () => {
+    expect(slackChannelDiscoveryPath()).toBe("/api/slack/channels/discover");
+    expect(
+      slackChannelDiscoveryPath({
+        cursor: "next-page",
+        limit: 50,
+        types: "public_channel,private_channel",
+        excludeArchived: false,
+      }),
+    ).toBe(
+      "/api/slack/channels/discover?cursor=next-page&limit=50&types=public_channel%2Cprivate_channel&excludeArchived=false",
+    );
+  });
+
   it("fetches model usage totals with admin auth", async () => {
     const storage = createMemoryStorage();
     vi.stubGlobal("window", { localStorage: storage });
@@ -151,6 +167,49 @@ describe("web API helpers", () => {
 
     await expect(fetchSlackOutbox({ includeDetails: true })).resolves.toEqual(
       outbox,
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("fetches discovered Slack channels with admin auth", async () => {
+    const storage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveAdminApiToken("runtime-token");
+    const discovery = {
+      ok: true as const,
+      source: "stored_oauth" as const,
+      teamId: "T123",
+      workspaceName: "Redo",
+      channels: [
+        {
+          id: "C123",
+          name: "#checkout-eng",
+          isPrivate: false,
+          isArchived: false,
+          botIsMember: true,
+          configured: false,
+          configuredPlaceId: null,
+          sensitivity: null,
+          numMembers: 12,
+        },
+      ],
+      nextCursor: null,
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(String(input)).toBe(
+        "http://localhost:4317/api/slack/channels/discover?limit=25",
+      );
+      expect(init?.headers).toEqual({ authorization: "Bearer runtime-token" });
+      return new Response(JSON.stringify(discovery), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(discoverSlackChannels({ limit: 25 })).resolves.toEqual(
+      discovery,
     );
     expect(fetchMock).toHaveBeenCalledOnce();
   });

@@ -96,6 +96,12 @@ class BlockingSlackWebApiClient implements SlackWebApiClient {
   async postEphemeral(): Promise<SlackWebApiMessageResult> {
     return new Promise<SlackWebApiMessageResult>(() => {});
   }
+
+  async listChannels() {
+    return new Promise<Awaited<ReturnType<SlackWebApiClient["listChannels"]>>>(
+      () => {},
+    );
+  }
 }
 
 function signedSlackHeaders(
@@ -2920,6 +2926,207 @@ describe("Bek API", () => {
       headers: { authorization: "Bearer test-admin-token" },
     });
     expect(allowed.status).toBe(302);
+  });
+
+  it("discovers Slack channels through a protected admin endpoint", async () => {
+    process.env.BEK_ADMIN_API_TOKEN = "test-admin-token";
+    process.env.SLACK_BOT_TOKEN = "xoxb-raw-env-token-should-not-leak";
+    const slackClient = new FakeSlackWebApiClient({
+      channels: [
+        {
+          id: "C_CHECKOUT",
+          name: "checkout-eng",
+          isPrivate: false,
+          isArchived: false,
+          isMember: true,
+          numMembers: 12,
+        },
+        {
+          id: "G_PRIVATE",
+          name: "leadership",
+          isPrivate: true,
+          isArchived: false,
+          isMember: false,
+        },
+      ],
+      nextCursor: "next-page",
+    });
+    const app = createApp(new BekStore(), { slackClient });
+
+    const denied = await app.request("/api/slack/channels/discover");
+    expect(denied.status).toBe(401);
+
+    const allowed = await app.request("/api/slack/channels/discover?limit=25", {
+      headers: { authorization: "Bearer test-admin-token" },
+    });
+    const text = await allowed.text();
+    const json = JSON.parse(text) as {
+      ok: boolean;
+      source: string;
+      channels: Array<{
+        id: string;
+        name: string;
+        botIsMember: boolean;
+        configured: boolean;
+        configuredPlaceId: string | null;
+      }>;
+      nextCursor: string | null;
+    };
+
+    expect(allowed.status).toBe(200);
+    expect(text).not.toContain("xoxb-raw-env-token-should-not-leak");
+    expect(slackClient.listChannelsCalls).toEqual([
+      {
+        limit: 25,
+        types: "public_channel,private_channel",
+        excludeArchived: true,
+      },
+    ]);
+    expect(json).toMatchObject({
+      ok: true,
+      source: "injected",
+      nextCursor: "next-page",
+      channels: [
+        {
+          id: "C_CHECKOUT",
+          name: "#checkout-eng",
+          botIsMember: true,
+          configured: true,
+          configuredPlaceId: "place_checkout",
+        },
+        {
+          id: "G_PRIVATE",
+          name: "#leadership",
+          botIsMember: false,
+          configured: false,
+          configuredPlaceId: null,
+        },
+      ],
+    });
+  });
+
+  it("redacts Slack channel discovery provider errors", async () => {
+    const rawToken = "xoxb-discovery-secret-token-12345";
+    const slackClient = new FakeSlackWebApiClient({
+      failWith: `invalid_auth for Bearer ${rawToken}`,
+    });
+    const res = await createApp(new BekStore(), { slackClient }).request(
+      "/api/slack/channels/discover",
+    );
+    const text = await res.text();
+    const json = JSON.parse(text) as { error: string };
+
+    expect(res.status).toBe(502);
+    expect(text).not.toContain(rawToken);
+    expect(json.error).toBe("invalid_auth for Bearer [redacted:slack-token]");
+  });
+
+  it("uses the fallback Slack bot token for channel discovery without returning it", async () => {
+    const rawToken = "xoxb-fallback-discovery-token-12345";
+    process.env.SLACK_BOT_TOKEN = rawToken;
+    let usedFallbackToken = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      expect(String(url)).toContain(
+        "https://slack.com/api/conversations.list?",
+      );
+      usedFallbackToken =
+        (init?.headers as Record<string, string> | undefined)?.authorization ===
+        `Bearer ${rawToken}`;
+      return Response.json({
+        ok: true,
+        channels: [
+          {
+            id: "C_DISCOVERED",
+            name: "discovered",
+            is_private: false,
+            is_archived: false,
+            is_member: true,
+          },
+        ],
+        response_metadata: { next_cursor: "" },
+      });
+    });
+
+    const res = await createApp().request("/api/slack/channels/discover");
+    const text = await res.text();
+    const json = JSON.parse(text) as {
+      source: string;
+      channels: Array<{ id: string; botIsMember: boolean }>;
+    };
+
+    expect(res.status).toBe(200);
+    expect(usedFallbackToken).toBe(true);
+    expect(text).not.toContain(rawToken);
+    expect(json).toMatchObject({
+      source: "env",
+      channels: [{ id: "C_DISCOVERED", botIsMember: true }],
+    });
+  });
+
+  it("uses stored Slack OAuth bot tokens for channel discovery", async () => {
+    configureFakeSlackOAuth();
+    process.env.BEK_SLACK_OAUTH_EXCHANGE = "true";
+    process.env.BEK_CREDENTIAL_MASTER_KEY = testCredentialMasterKey;
+    const storedToken = "xoxb-stored-discovery-token-12345";
+    let usedStoredToken = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const urlText = String(url);
+      if (urlText === "https://slack.com/api/oauth.v2.access") {
+        return Response.json({
+          ok: true,
+          app_id: "A123",
+          access_token: storedToken,
+          scope: "app_mentions:read,commands,chat:write,channels:read",
+          bot_user_id: "U_BEK",
+          team: { id: "T123", name: "Redo" },
+          authed_user: { id: "U_ADMIN" },
+        });
+      }
+      if (urlText.startsWith("https://slack.com/api/conversations.list?")) {
+        usedStoredToken =
+          (init?.headers as Record<string, string> | undefined)
+            ?.authorization === `Bearer ${storedToken}`;
+        return Response.json({
+          ok: true,
+          channels: [
+            {
+              id: "C_STORED",
+              name: "stored-token-channel",
+              is_private: false,
+              is_archived: false,
+              is_member: true,
+            },
+          ],
+        });
+      }
+      return Response.json({ ok: false, error: "unexpected_url" });
+    });
+    const app = createApp(new BekStore());
+    const state = createSlackOAuthState({
+      stateSecret: process.env.SLACK_STATE_SECRET!,
+      nonce: "test-nonce",
+      nowSeconds: Math.floor(Date.now() / 1000),
+    });
+
+    const install = await app.request(
+      `/api/slack/oauth/callback?code=fake-code&state=${encodeURIComponent(
+        state,
+      )}`,
+    );
+    expect(install.status).toBe(200);
+
+    const res = await app.request("/api/slack/channels/discover");
+    const text = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(usedStoredToken).toBe(true);
+    expect(text).not.toContain(storedToken);
+    expect(JSON.parse(text)).toMatchObject({
+      source: "stored_oauth",
+      teamId: "T123",
+      workspaceName: "Redo",
+      channels: [{ id: "C_STORED", botIsMember: true }],
+    });
   });
 
   it("returns a protected Slack install URL for the admin console", async () => {

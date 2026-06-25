@@ -59,6 +59,25 @@ managed Slack install token storage, persistent storage, provider adapters,
 sandbox hardening, usage ledger, tenant isolation, credential broker
 integration, and security review.
 
+The current open-source runtime is intentionally single-tenant per API process.
+That is acceptable for local demos and self-hosted pilots, but not for a shared
+hosted control plane. Hosted Bek must resolve the tenant for every request
+before touching state:
+
+- Slack callbacks: resolve Slack `team_id` to an org before event, command,
+  interactivity, ingress-dedupe, run, approval, or outbound writes.
+- Slack OAuth: bind signed install state to an org and initiating admin, then
+  reject returned workspaces already owned by another org.
+- GitHub webhooks: resolve GitHub App installation IDs to orgs before webhook
+  dedupe or run/proposal writes.
+- Admin APIs: derive org and principal from a real session, not a global bearer
+  token or browser-supplied principal ID.
+- Workers and outbox drains: claim work by org, load that org's snapshot, and
+  reject Slack targets whose team does not match the org's active install.
+
+Until those pieces exist, hosted Bek should be marketed as a waitlist/design
+partner offering rather than a self-serve multi-tenant product.
+
 ## Hosted Beta Entry Criteria
 
 - Slack OAuth exchange stores bot tokens securely; message posting and approval
@@ -69,5 +88,8 @@ integration, and security review.
 - Model usage is accounted by org, channel, run, provider, model, and phase.
 - Sandbox execution uses hosted microVM isolation with default-deny egress.
 - Admin API has real identity, RBAC, and tenant isolation tests.
+- Tenant isolation tests cover admin reads/writes, Slack ingress/OAuth,
+  GitHub webhooks, worker settlement, and outbound Slack delivery across at
+  least two orgs.
 - Security review covers the entry points in
   [Threat Model Entry Points](../security/threat-model-entry-points.md).

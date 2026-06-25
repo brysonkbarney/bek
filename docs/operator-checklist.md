@@ -22,6 +22,10 @@ the current OSS spine.
       approval decision, worker drain when enabled, Slack outbox
       summary/drain, model usage, and audit events without Slack or GitHub
       credentials.
+- [ ] Before approving risky work in the admin console, verify the request is
+      still pending and that action, run, place, requester, expiry, and payload
+      hash match the work you intend to unblock; expect a second confirmation
+      step for `write_external` and `privileged` approvals.
 - [ ] Keep the local demo unsigned Slack mode disabled unless testing local
       payloads deliberately.
 
@@ -67,6 +71,10 @@ the current OSS spine.
       stored bot token before inviting Bek into pilot channels.
 - [ ] Use `SLACK_BOT_TOKEN` with `chat:write` only as a manual fallback when no
       stored OAuth token is available.
+- [ ] Use `/channels` discovery, or call `GET /api/slack/channels/discover`
+      with admin auth, to confirm the pilot channel ID, `botIsMember=true`,
+      and whether Bek already has a configured channel place. Use `limit` and
+      `cursor` for bounded paging when calling the raw API.
 - [ ] Verify an `@bek` mention posts a reply in the originating thread.
 - [ ] Verify an approval button click reaches `/api/slack/interactivity`, maps
       the Slack user to a Bek principal, and posts the decision/final answer.

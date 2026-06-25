@@ -765,6 +765,119 @@ select {
   text-decoration: none;
 }
 
+.setup-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
+  gap: 14px;
+}
+
+.setup-next-action {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.setup-next-action p,
+.setup-operation p,
+.setup-preview p {
+  margin: 4px 0 0;
+}
+
+.setup-next-action .row-actions {
+  grid-column: 2;
+  margin-top: 2px;
+}
+
+.setup-phase {
+  display: inline-grid;
+  min-width: 34px;
+  min-height: 28px;
+  place-items: center;
+  border-radius: 8px;
+  background: #eef6f1;
+  color: #17613f;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.setup-operation-list {
+  display: grid;
+  gap: 12px;
+}
+
+.setup-operation {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 14px;
+  border: 1px solid #e1e8e4;
+  border-radius: 8px;
+  background: #fbfdfb;
+}
+
+.setup-operation.complete {
+  border-color: #bfe4ca;
+  background: #f3fbf5;
+}
+
+.setup-operation.attention {
+  border-color: #ead49c;
+  background: #fffdf6;
+}
+
+.setup-operation-marker {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 999px;
+  background: #edf3ef;
+  color: #52645e;
+}
+
+.setup-operation.complete .setup-operation-marker {
+  background: #dff6e7;
+  color: #17613f;
+}
+
+.setup-operation.attention .setup-operation-marker {
+  background: #fff3c9;
+  color: #795c0f;
+}
+
+.setup-operation-body {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.setup-operation-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.setup-operation-actions {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+  min-width: max-content;
+}
+
+.setup-preview {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.setup-preview > svg {
+  color: #17613f;
+}
+
 .setup-steps {
   display: grid;
   gap: 10px;
@@ -1004,6 +1117,7 @@ select {
   .metrics,
   .worker-metrics,
   .grid,
+  .setup-overview,
   .settings-grid,
   .channel-grid,
   .connector-grid,
@@ -1029,6 +1143,17 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .setup-operation,
+  .setup-preview {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .setup-operation-actions,
+  .setup-preview .secondary {
+    grid-column: 2;
+    justify-items: start;
+  }
+
   .wide-field {
     grid-column: auto;
   }
@@ -1041,6 +1166,14 @@ select {
 
   .setup-step .inline-link {
     grid-column: 2;
+  }
+
+  .setup-next-action {
+    grid-template-columns: 1fr;
+  }
+
+  .setup-next-action .row-actions {
+    grid-column: auto;
   }
 
   .responsive-table {

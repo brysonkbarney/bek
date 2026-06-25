@@ -4,8 +4,13 @@ Bek is an agent control plane. Security bugs can become data leaks or unintended
 
 Please report vulnerabilities privately to the maintainers before public disclosure.
 If GitHub private vulnerability reporting is enabled for the repository, use
-that path. Otherwise contact the maintainers privately and avoid posting
-exploit details in public issues, discussions, or pull requests.
+that path. Otherwise email `security@bek.dev` and avoid posting exploit details
+in public issues, discussions, or pull requests.
+
+Please include the affected version or commit, a concise reproduction, impact,
+and any known mitigations. The maintainers aim to acknowledge reports within
+three business days and coordinate disclosure timing with the reporter whenever
+practical.
 
 ## Security Invariants
 

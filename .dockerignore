@@ -1,6 +1,7 @@
 .git
 .turbo
 **/.turbo
+.pnpm-store
 .vite
 **/.vite
 coverage
@@ -10,7 +11,10 @@ dist
 **/dist
 node_modules
 **/node_modules
+tmp
+out
 *.log
+*.sql
 .DS_Store
 
 .env

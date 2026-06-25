@@ -117,10 +117,10 @@ services:
 
   migrate:
     profiles: ["app"]
-    image: bek-api:local
+    image: bek-migrate:local
     build:
       <<: *bek-build
-      target: api
+      target: migrate
     command: ["pnpm", "db:migrate"]
     depends_on:
       postgres:
@@ -166,8 +166,6 @@ services:
         condition: service_healthy
     environment:
       BEK_WEB_PORT: ${BEK_WEB_PORT:-5173}
-      VITE_BEK_API_URL: ${VITE_BEK_API_URL:-http://localhost:4317}
-      VITE_BEK_ADMIN_API_TOKEN: ${VITE_BEK_ADMIN_API_TOKEN:-}
     ports:
       - "${BEK_WEB_PORT:-5173}:${BEK_WEB_PORT:-5173}"
     healthcheck:

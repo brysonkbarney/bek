@@ -3,6 +3,7 @@ import type { Bootstrap, SetupStatus } from "../api";
 import {
   connectorSummaries,
   setupChecklistFromStatus,
+  setupOperationsFromStatus,
   setupProgress,
   setupReadyForWorkspace,
   workerQueueSummary,
@@ -29,6 +30,7 @@ const readySetup: SetupStatus = {
 
 const emptyBootstrap: Bootstrap = {
   org: { name: "Acme", plan: "oss" },
+  principals: [],
   agent: {
     name: "Bek",
     handle: "@bek",
@@ -51,6 +53,10 @@ const emptyBootstrap: Bootstrap = {
 describe("admin product helpers", () => {
   it("turns setup status into actionable checklist progress", () => {
     const checklist = setupChecklistFromStatus(readySetup);
+    const operations = setupOperationsFromStatus(readySetup, {
+      adminAuthDetail: "Using a browser-stored admin token.",
+      adminAuthenticated: true,
+    });
 
     expect(setupProgress(readySetup)).toEqual({
       complete: checklist.length,
@@ -62,6 +68,53 @@ describe("admin product helpers", () => {
       complete: true,
       route: "/settings",
     });
+    expect(operations.find((step) => step.id === "admin-auth")).toMatchObject({
+      complete: true,
+      detail: "Using a browser-stored admin token.",
+      primaryAction: { route: "/settings" },
+    });
+    expect(operations.find((step) => step.id === "github-preview")).toEqual(
+      expect.objectContaining({
+        status: "visible",
+        facts: expect.arrayContaining(["1 GitHub grant"]),
+      }),
+    );
+  });
+
+  it("keeps setup operations tied to real incomplete API facts", () => {
+    const operations = setupOperationsFromStatus(
+      {
+        ...readySetup,
+        readyForLocalDemo: false,
+        slackInstalled: false,
+        slackInstallStatus: null,
+        slackTokenStored: false,
+        slackChannels: 0,
+        accessBundles: 0,
+        modelPolicies: 0,
+        runtimeProfiles: 0,
+        githubGrantCount: 0,
+      },
+      {
+        adminAuthDetail: "Admin API accepted this session.",
+        adminAuthenticated: true,
+      },
+    );
+
+    expect(operations.find((step) => step.id === "local-demo")).toMatchObject({
+      complete: false,
+      primaryAction: { label: "Open runs", route: "/runs" },
+    });
+    expect(
+      operations.find((step) => step.id === "slack-install"),
+    ).toMatchObject({
+      complete: false,
+      status: "needs action",
+      primaryAction: { label: "Connect Slack", route: "/connectors" },
+    });
+    expect(operations.find((step) => step.id === "github-preview")).toBe(
+      undefined,
+    );
   });
 
   it("explains Slack install states that are not ready yet", () => {
