@@ -15,7 +15,7 @@ sound ambitious, but the claims need to match the code that exists today.
   PR intent to run timeline and audit-style review.
 - Slack foundations exist for signed events, slash commands, approval
   interactivity, OAuth state/exchange, channel discovery, stored bot tokens,
-  and thread replies in local/self-hosted pilots.
+  access-summary mentions, and thread replies in local/self-hosted pilots.
 - A single-tenant self-hosted pilot can use Postgres-backed state, signed Slack
   callbacks, stored OAuth tokens or `SLACK_BOT_TOKEN`, and in-process
   worker-local run advancement when operated with handholding.

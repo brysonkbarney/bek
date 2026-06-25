@@ -5745,6 +5745,68 @@ describe("Bek API", () => {
     });
   });
 
+  it("answers Slack access summary prompts without creating a run", async () => {
+    process.env.BEK_SLACK_BACKGROUND_DRAIN = "false";
+    mapSlackTestUser();
+    const store = new BekStore();
+    const slackClient = new FakeSlackWebApiClient();
+    const app = createApp(store, { slackClient });
+    const initialRunCount = store.read().runs.length;
+    const rawBody = JSON.stringify({
+      team_id: "T123",
+      event_id: "EvAccessSummary",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek what can you access here?",
+        ts: "1710000000.000011",
+      },
+    });
+
+    const res = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: true,
+      accessSummary: true,
+      grantCount: 4,
+    });
+    expect(store.read().runs).toHaveLength(initialRunCount);
+    const delivery = store.read().outboundDeliveries[0];
+    expect(delivery).toMatchObject({
+      kind: "slack.run_outcome",
+      status: "queued",
+      target: expect.objectContaining({
+        channelId: "C_CHECKOUT",
+        threadTs: "1710000000.000011",
+        messageKind: "access_summary",
+      }),
+    });
+    expect(delivery?.runId).toBeUndefined();
+    expect(JSON.stringify(delivery?.payload)).toContain("github.pr");
+
+    const drain = await app.request("/api/outbound/slack/drain", {
+      method: "POST",
+      body: JSON.stringify({}),
+      headers: { "content-type": "application/json" },
+    });
+    expect(drain.status).toBe(200);
+    expect(slackClient.postMessageCalls).toHaveLength(1);
+    expect(slackClient.postMessageCalls[0]).toMatchObject({
+      channel: "C_CHECKOUT",
+      thread_ts: "1710000000.000011",
+      text: expect.stringContaining("governed grants"),
+    });
+    expect(JSON.stringify(slackClient.postMessageCalls[0]!.blocks)).toContain(
+      "sandbox.exec",
+    );
+  });
+
   it("posts worker completion output for Slack-created runs", async () => {
     process.env.BEK_SLACK_BACKGROUND_DRAIN = "false";
     mapSlackTestUser();

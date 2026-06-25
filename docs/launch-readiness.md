@@ -12,6 +12,8 @@ Bek should launch in stages. The current repo is good enough to show the product
 - Slack outbound posting can use stored OAuth bot tokens or `SLACK_BOT_TOKEN`
   to post thread replies, approval buttons, approval decisions, final answers,
   and delivery diagnostics back into the run timeline.
+- Slack `@bek what can you access here?` mentions return a channel-scoped
+  access-bundle grant summary without creating an agent run.
 - Slack OAuth return targets are normalized to admin-console-relative paths
   before state signing and before callback redirects, so install callbacks stay
   pinned to the configured admin origin.

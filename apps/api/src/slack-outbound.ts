@@ -80,8 +80,13 @@ export interface SlackOutboundDeliveryResult {
 }
 
 export interface SlackPreparedOutboundMessage {
-  kind: "queued" | "approval_needed" | "approval_decision" | "final_answer";
-  runId: string;
+  kind:
+    | "queued"
+    | "approval_needed"
+    | "approval_decision"
+    | "final_answer"
+    | "access_summary";
+  runId?: string | undefined;
   approvalId?: string | undefined;
   target: SlackOutboundTarget;
   message: SlackMessagePayload;
@@ -314,8 +319,10 @@ export class SlackOutboundDelivery {
     if (!client) {
       return slackOutboundSkipped("Slack bot token is not configured.");
     }
-    const run = findRun(this.store.read(), input.runId);
-    if (!run) {
+    const run = input.runId
+      ? findRun(this.store.read(), input.runId)
+      : undefined;
+    if (input.runId && !run) {
       return slackOutboundSkipped("Run not found for Slack outbound delivery.");
     }
 
@@ -323,7 +330,9 @@ export class SlackOutboundDelivery {
       client,
       slackPostMessageInput(resolvedTarget, input.message),
     );
-    this.recordDeliveryResult(run, input.kind, resolvedTarget, delivery);
+    if (run) {
+      this.recordDeliveryResult(run, input.kind, resolvedTarget, delivery);
+    }
     const finalAttempt = delivery.attempts.at(-1);
     return {
       attempted: true,

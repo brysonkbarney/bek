@@ -36,6 +36,18 @@ export interface SlackFinalAnswerMessageInput {
   title?: string;
 }
 
+export interface SlackAccessSummaryGrant {
+  capability: string;
+  resource: string;
+  decision: string;
+  risk: string;
+}
+
+export interface SlackAccessSummaryMessageInput {
+  channelName?: string | undefined;
+  grants: SlackAccessSummaryGrant[];
+}
+
 export function renderSlackRunQueuedMessage(
   input: SlackRunQueuedMessageInput,
 ): SlackMessagePayload {
@@ -148,6 +160,46 @@ export function renderSlackFinalAnswerMessage(
         ),
       },
       contextBlock([`Run \`${escapeSlackText(input.runId)}\``]),
+    ],
+    unfurl_links: false,
+    unfurl_media: false,
+  };
+}
+
+export function renderSlackAccessSummaryMessage(
+  input: SlackAccessSummaryMessageInput,
+): SlackMessagePayload {
+  const visibleGrants = input.grants.slice(0, 12);
+  const remaining = Math.max(input.grants.length - visibleGrants.length, 0);
+  const lines =
+    visibleGrants.length > 0
+      ? visibleGrants.map(
+          (grant) =>
+            `- \`${escapeSlackText(grant.capability)}\` ${escapeSlackText(
+              grant.decision,
+            )}/${escapeSlackText(grant.risk)}: \`${escapeSlackText(
+              grant.resource,
+            )}\``,
+        )
+      : ["No grants are attached to this place yet."];
+  if (remaining > 0) {
+    lines.push(`- ${remaining} more grants are configured.`);
+  }
+  const title = input.channelName
+    ? `Bek access in ${input.channelName}`
+    : "Bek access here";
+
+  return {
+    text:
+      input.grants.length > 0
+        ? `Bek has ${input.grants.length} governed grants here.`
+        : "Bek has no configured grants here.",
+    blocks: [
+      {
+        type: "section",
+        text: slackMarkdown(`*${escapeSlackText(title)}*\n${lines.join("\n")}`),
+      },
+      contextBlock(["Access bundles decide what @bek can use in each place."]),
     ],
     unfurl_links: false,
     unfurl_media: false,

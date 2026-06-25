@@ -28,6 +28,8 @@ This repository is a working OSS product spine for Bek. It runs locally without 
 - React + TanStack admin app with setup, channels, access bundles, runs, approvals, connectors, model policy, memory stance, audit, and settings.
 - Core TypeScript domain package with policy, approval, redaction, run, and security tests.
 - Slack helpers with fail-closed signature verification, OAuth state, OAuth code exchange, local encrypted install-token storage, slash-command parsing, direct-message handling, channel membership/lifecycle handling, approval interactions, message rendering, and Web API posting through vaulted OAuth tokens or `SLACK_BOT_TOKEN`.
+- Slack `@bek what can you access here?` mentions return a channel-scoped grant
+  summary without creating an agent run.
 - Signed GitHub webhook ingress with delivery dedupe and normalized installation, pull request, and check-run metadata; approved GitHub worker execution is opt-in with fake and real modes.
 - `worker_local` run advancement for local/API/Slack flows, including runtime events, policy approvals, runtime-requested approvals, resume after approval, and final run cost/status. The worker queue can run memory-backed for zero-config demos or Postgres-backed for restart-safe self-hosting.
 - Model-router and MCP-gateway packages with provider-neutral

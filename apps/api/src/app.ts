@@ -50,7 +50,9 @@ import {
   parseSlackCommand,
   parseSlackInteraction,
   redactSlackInstallRecord,
+  renderSlackAccessSummaryMessage,
   SlackWebApiHttpClient,
+  type SlackAccessSummaryGrant,
   type SlackDiscoveredChannel,
   type SlackListChannelsInput,
   type SlackApprovalInteraction,
@@ -3242,6 +3244,39 @@ export function createApp(
         markSlackNoRetry(c);
         return c.json(withSlackRetryMetadata(response, retry));
       }
+      if (event.type === "mention" && isSlackAccessSummaryPrompt(event.text)) {
+        const grants = slackAccessSummaryGrants(snapshot, place);
+        const message: SlackPreparedOutboundMessage = {
+          kind: "access_summary",
+          target: {
+            channelId: event.channelId,
+            threadTs: event.threadTs,
+            teamId: event.teamId,
+          },
+          message: renderSlackAccessSummaryMessage({
+            channelName: place.name,
+            grants,
+          }),
+        };
+        const delivery = enqueueSlackPreparedMessage(message);
+        const response = {
+          ok: true,
+          accessSummary: true,
+          grantCount: grants.length,
+          outboundDeliveryId: delivery.id,
+        };
+        if (eventKey) {
+          store.recordIngressDelivery({
+            key: eventKey,
+            kind: "slack.event",
+            status: "processed",
+            response: { ...response },
+          });
+        }
+        await flushChangesWithDeliveryRollback(eventKey);
+        scheduleSlackBackgroundWork();
+        return c.json(withSlackRetryMetadata(response, retry));
+      }
       const run = createRunAndQueue({
         placeScopeId: place.id,
         prompt:
@@ -5355,7 +5390,7 @@ function slackOutboundDeliveryKey(
     "slack",
     "outbound",
     message.kind,
-    message.runId,
+    message.runId ?? "no-run",
     approvalId ?? "run",
     stringValue(target.channelId) ?? "unknown-channel",
     stringValue(target.threadTs) ?? "root",
@@ -5378,12 +5413,15 @@ function preparedSlackMessageFromOutboundDelivery(
 ): SlackPreparedOutboundMessage | undefined {
   const kind = slackPreparedMessageKind(delivery.target.messageKind);
   const target = slackTargetFromRecord(delivery.target);
-  if (!kind || !delivery.runId || !target.channelId) {
+  if (!kind || !target.channelId) {
+    return undefined;
+  }
+  if (kind !== "access_summary" && !delivery.runId) {
     return undefined;
   }
   return {
     kind,
-    runId: delivery.runId,
+    ...(delivery.runId ? { runId: delivery.runId } : {}),
     target,
     message:
       delivery.payload as unknown as SlackPreparedOutboundMessage["message"],
@@ -5396,7 +5434,8 @@ function slackPreparedMessageKind(
   return value === "queued" ||
     value === "approval_needed" ||
     value === "approval_decision" ||
-    value === "final_answer"
+    value === "final_answer" ||
+    value === "access_summary"
     ? value
     : undefined;
 }
@@ -5409,6 +5448,50 @@ function slackTargetFromRecord(
     threadTs: stringValue(value.threadTs),
     teamId: stringValue(value.teamId),
   };
+}
+
+function isSlackAccessSummaryPrompt(text: string | undefined): boolean {
+  const normalized = (text ?? "")
+    .toLowerCase()
+    .replace(/<@[a-z0-9][a-z0-9._-]*>/gi, " ")
+    .replace(/@bek/g, " ")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return (
+    normalized.includes("what can you access here") ||
+    normalized.includes("what do you have access to") ||
+    normalized.includes("what can you do here") ||
+    normalized.includes("show access here")
+  );
+}
+
+function slackAccessSummaryGrants(
+  snapshot: BekSnapshot,
+  place: PlaceScope,
+): SlackAccessSummaryGrant[] {
+  const seen = new Set<string>();
+  return bundlesForPlace(snapshot.accessBundles, place)
+    .flatMap((bundle) => bundle.grants)
+    .filter((grant) => {
+      const key = `${grant.capability}:${grant.resource}:${grant.decision}:${grant.risk}`;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .sort((left, right) =>
+      `${left.capability}:${left.resource}`.localeCompare(
+        `${right.capability}:${right.resource}`,
+      ),
+    )
+    .map((grant) => ({
+      capability: grant.capability,
+      resource: grant.resource,
+      decision: grant.decision,
+      risk: grant.risk,
+    }));
 }
 
 function stringValue(value: unknown): string | undefined {
