@@ -6,6 +6,11 @@ import {
   type GitHubRepoResource,
 } from "./resources";
 import type {
+  GitHubBranchResult,
+  GitHubCommitResult,
+  GitHubDraftPullRequestResult,
+} from "./types";
+import type {
   GitHubBranchWorkflowPlan,
   GitHubCommitFileChange,
   GitHubCommitWorkflowPlan,
@@ -24,37 +29,6 @@ export interface FakeGitHubRepositorySeed {
   repository: string | GitHubRepoRef;
   defaultBranch?: string | undefined;
   branches?: Record<string, string> | undefined;
-}
-
-export interface GitHubBranchResult {
-  repository: GitHubRepoResource;
-  branch: string;
-  commitSha: string;
-  createdFrom: string;
-}
-
-export interface GitHubCommitResult {
-  repository: GitHubRepoResource;
-  branch: string;
-  commitSha: string;
-  parentSha: string;
-  message: string;
-  changes: GitHubCommitFileChange[];
-}
-
-export interface GitHubDraftPullRequestResult {
-  repository: GitHubRepoResource;
-  number: number;
-  id: number;
-  title: string;
-  body: string;
-  baseBranch: string;
-  headBranch: string;
-  draft: boolean;
-  maintainerCanModify: boolean;
-  labels: string[];
-  reviewers: string[];
-  htmlUrl: string;
 }
 
 export interface GitHubFakeRepositoryState {

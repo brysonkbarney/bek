@@ -10,15 +10,25 @@ The current foundation provides signed ingress and local workflow helpers:
 - GitHub webhook `X-Hub-Signature-256` verification.
 - Canonical repo resource parsing with `github:owner/repo`.
 - Installation token request/provider interfaces plus a fake provider for local workers.
+- A GitHub App installation token provider that can exchange app credentials for
+  repo-scoped installation tokens when a caller wires it into an approved
+  execution path.
 - Installation token lease validation for installation id, repo scope, permissions, and TTL.
 - Pull request proposal objects and PR approval hash inputs that can be evaluated by bundle policy and approval flows before any GitHub write.
 - Local branch, commit, and draft PR workflow plan objects.
 - A draft PR workflow execution contract that leases a token, validates it, passes the secret token only to the execution client, and returns redacted lease metadata.
 - A fake in-memory GitHub client for tests and local product flows.
+- A fetch-based GitHub REST workflow client for creating branches, writing git
+  trees/commits, updating refs, opening draft pull requests, and applying
+  requested labels/reviewers with installation tokens.
 - An admin setup preview route that validates GitHub App env, parses repo grants, and previews repo-scoped installation token requests without calling GitHub.
 - Signed webhook ingress at `POST /api/github/webhooks` with delivery dedupe, `ping` acknowledgement, ignored unsupported events, and normalized `installation`, `installation_repositories`, `pull_request`, and `check_run` persistence.
 
-It does not call GitHub, exchange real installation tokens, clone repositories, push branches, open pull requests against GitHub, or create runs from GitHub webhooks yet.
+The setup route and worker runtime still do not call GitHub, clone repositories,
+push branches, open pull requests from Slack runs, or create runs from GitHub
+webhooks yet. Real GitHub network execution exists as package-level primitives
+that still need approved worker wiring, durable credential custody, and audit
+coverage before paid production use.
 
 ## GitHub App Settings
 
@@ -39,7 +49,9 @@ Recommended webhook events:
 
 ## Environment Variables
 
-Use these variables for the app runtime or worker that will eventually receive webhooks and perform approved GitHub operations:
+Use these variables for the app runtime or worker that validates webhooks,
+previews setup, and will perform approved GitHub operations once the worker
+execution path is wired:
 
 ```bash
 GITHUB_APP_ID=12345
@@ -145,7 +157,8 @@ Suggested capability policy:
 
 Opening a pull request should use a proposal object first. The proposal carries `capability: "github.pr"`, the canonical repo resource, and an approval requirement. A worker should only call GitHub after bundle policy allows the resource and any required human approval is approved.
 
-Draft PR workflows should use the local workflow plan helpers before any worker talks to a real provider:
+Draft PR workflows should use the workflow plan helpers before any worker talks
+to a real provider:
 
 1. Mint a repo-scoped installation token through a `GitHubInstallationTokenProvider`.
 2. Validate the token lease against the workflow token request, including installation id, canonical repo resource, required permissions, and remaining TTL.
@@ -154,13 +167,17 @@ Draft PR workflows should use the local workflow plan helpers before any worker 
 5. Create a draft PR proposal and PR approval hash input.
 6. Execute the plan through the draft PR workflow execution contract after bundle policy and human approval have passed. The execution result should keep only redacted token lease metadata, not the token secret.
 
-The fake provider, fake client, and execution contract are intentionally local-only until a real GitHub client is wired in. They exist so API, worker, and policy flows can exercise branch/commit/PR behavior without network calls or durable secrets.
+The fake provider and fake client remain useful for local deterministic flows.
+The real token provider and REST client are available in `@bek/github`, but API
+and worker code should only consume them once the approved execution path can
+provide repo-scoped credentials, isolated runtime context, and audit events.
 
 ## Launch Blockers
 
 - GitHub App installation persistence and secret broker integration.
-- Real installation token exchange and repo-scoped token brokering.
-- Real GitHub execution client that uses validated installation tokens to clone, push branches, and open or update pull requests.
+- Wire the real installation token provider and REST workflow client into the
+  approved worker execution path.
+- Hosted repo-scoped token brokering with revocation, rotation, and audit.
 - GitHub webhook-to-policy routing for repo-specific run creation.
 - Real branch push workflow in an isolated runtime.
 - PR creation/update worker that consumes approved proposal payloads and hash inputs.

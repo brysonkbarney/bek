@@ -2,7 +2,7 @@ import type {
   GitHubBranchResult,
   GitHubCommitResult,
   GitHubDraftPullRequestResult,
-} from "./fake-client";
+} from "./types";
 import {
   assertGitHubInstallationTokenLease,
   type GitHubInstallationToken,

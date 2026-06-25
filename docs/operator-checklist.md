@@ -119,8 +119,10 @@ the current OSS spine.
 - [ ] Grant repos with canonical resources such as `github:owner/repo`.
 - [ ] Require approval for `github.branch` and `github.pr` until the workflow is
       proven safe.
-- [ ] Blocked: implement real GitHub App installation token exchange.
-- [ ] Blocked: implement isolated branch push and draft PR creation.
+- [ ] Blocked: wire the real installation token provider and REST workflow
+      client into approved worker execution.
+- [ ] Blocked: implement isolated branch push and draft PR creation from Slack
+      runs.
 - [ ] Blocked: persist audit events for token minting, branch writes, PR writes,
       and webhook handling.
 
