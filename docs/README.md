@@ -17,6 +17,7 @@ budgets, and approvals behind it.
 | Understand architecture    | [Architecture](./architecture.md)                                                   |
 | Review worker/runtime plan | [Worker](./architecture/worker.md) and [runtime](./architecture/runtime-sandbox.md) |
 | Check launch readiness     | [Launch readiness](./launch-readiness.md)                                           |
+| Track remaining build work | [Build checklist](./build-checklist.md)                                             |
 | Operate a workspace        | [Operator checklist](./operator-checklist.md)                                       |
 | Review security scope      | [Security entry points](./security/threat-model-entry-points.md)                    |
 | Compare alternatives       | [Alternatives](./comparison/alternatives.md)                                        |
