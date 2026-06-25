@@ -1,4 +1,8 @@
-import { createSeedSnapshot, type ApprovalRequest } from "@bek/core";
+import {
+  createSeedSnapshot,
+  type ApprovalRequest,
+  type CapabilityGrant,
+} from "@bek/core";
 import {
   createRunWorkItem,
   type RuntimeAdapter,
@@ -83,6 +87,29 @@ function snapshotWithQueuedRun(input: {
   };
   snapshot.runs.unshift(run);
   return { snapshot, run };
+}
+
+function updateSandboxGrant(
+  snapshot: ReturnType<typeof createSeedSnapshot>,
+  patch: Partial<
+    Pick<CapabilityGrant, "decision" | "requiresApproval" | "risk" | "resource">
+  >,
+): void {
+  const grant = snapshot.accessBundles
+    .flatMap((bundle) => bundle.grants)
+    .find((candidate) => candidate.id === "grant_sandbox");
+  if (!grant) {
+    throw new Error("Expected seeded sandbox grant.");
+  }
+  Object.assign(grant, patch);
+}
+
+function removeSandboxGrant(snapshot: ReturnType<typeof createSeedSnapshot>) {
+  for (const bundle of snapshot.accessBundles) {
+    bundle.grants = bundle.grants.filter(
+      (grant) => grant.id !== "grant_sandbox",
+    );
+  }
 }
 
 function completedResult(): RuntimeResult {
@@ -1030,6 +1057,12 @@ describe("worker runtime service", () => {
       runId: "run_sandbox_service",
       runtimeProfileId: "runtime_code",
     });
+    updateSandboxGrant(snapshot, {
+      decision: "allow",
+      requiresApproval: false,
+      risk: "privileged",
+      resource: "sandbox:noop",
+    });
     const queue = new InMemoryWorkerQueue({
       now: () => baseNow,
       idFactory: createSequentialIdFactory(),
@@ -1102,6 +1135,161 @@ describe("worker runtime service", () => {
         risk: "read_internal",
       }),
     ).rejects.toThrow(/destroyed/);
+  });
+
+  it("denies sandbox runtime adapters when sandbox.exec is not granted", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_sandbox_denied",
+      runtimeProfileId: "runtime_code",
+    });
+    removeSandboxGrant(snapshot);
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_sandbox_denied",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+    const sandboxProvider = new FakeSandboxProvider({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [createSandboxRuntimeAdapter({ provider: sandboxProvider })],
+      sandboxProvider,
+      workerId: "worker_sandbox_denied",
+      now: () => baseNow,
+      retryPolicy: { maxAttempts: 1 },
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected sandbox denial to settle.");
+    }
+    expect(decision.result).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("Sandbox execution denied"),
+    });
+    expect(sandboxProvider.read().leases).toHaveLength(0);
+    expect(sandboxProvider.read().commands).toHaveLength(0);
+    expect(queue.read().events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "tool.denied",
+          message: expect.stringContaining("No grant allows sandbox.exec"),
+        }),
+      ]),
+    );
+  });
+
+  it("pauses sandbox runtime adapters for sandbox.exec approval before leasing", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_sandbox_approval",
+      runtimeProfileId: "runtime_code",
+    });
+    updateSandboxGrant(snapshot, { resource: "sandbox:noop" });
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_sandbox_approval",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+    const sandboxProvider = new FakeSandboxProvider({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [createSandboxRuntimeAdapter({ provider: sandboxProvider })],
+      sandboxProvider,
+      workerId: "worker_sandbox_approval",
+      now: () => baseNow,
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected sandbox approval pause.");
+    }
+    expect(decision.result.status).toBe("awaiting_approval");
+    expect(decision.settlement.decision).toBe("paused_for_approval");
+    expect(sandboxProvider.read().leases).toHaveLength(0);
+    expect(sandboxProvider.read().commands).toHaveLength(0);
+    expect(queue.read().events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "tool.requested",
+          data: expect.objectContaining({
+            action: "sandbox.exec",
+            resource: "sandbox:noop",
+            kind: "sandbox.start",
+          }),
+        }),
+        expect.objectContaining({
+          type: "worker.approval_waiting",
+          data: expect.objectContaining({ action: "sandbox.exec" }),
+        }),
+      ]),
+    );
+
+    const pausedRecord = queue
+      .read()
+      .records.find((record) => record.item.runId === run.id);
+    const gate = pausedRecord?.approval;
+    if (!gate) {
+      throw new Error("Expected paused sandbox approval gate.");
+    }
+    const resume = queue.resumeAfterApproval({
+      approval: {
+        id: gate.approvalId,
+        orgId: run.orgId,
+        runId: run.id,
+        action: gate.action,
+        risk: gate.risk,
+        status: "approved",
+        payloadHash: gate.payloadHash,
+        requestedByPrincipalId: run.requesterPrincipalId,
+        decidedByPrincipalId: "principal_admin",
+        createdAt: gate.createdAt,
+        expiresAt: gate.expiresAt,
+        decidedAt: "2026-06-24T18:01:00.000Z",
+      },
+      now: "2026-06-24T18:01:00.000Z",
+    });
+    expect(resume.decision).toBe("resume_enqueued");
+
+    const resumed = await service.processNext({
+      now: "2026-06-24T18:01:01.000Z",
+    });
+
+    expect(resumed.decision).toBe("processed");
+    if (resumed.decision !== "processed") {
+      throw new Error("Expected approved sandbox run to process.");
+    }
+    expect(resumed.result.status).toBe("completed");
+    expect(sandboxProvider.read().leases).toHaveLength(1);
+    expect(sandboxProvider.read().commands).toHaveLength(1);
   });
 
   it("pauses through the service and resumes the same attempt after approval", async () => {

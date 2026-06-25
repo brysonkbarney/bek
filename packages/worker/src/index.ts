@@ -31,6 +31,7 @@ import {
 import {
   bundlesForPlace,
   createApprovalRequest,
+  evaluatePolicy,
   redactSecrets,
   redactUnknown,
   type AccessBundle,
@@ -1321,6 +1322,12 @@ export interface WorkerRuntimeContext {
   grants: CapabilityGrant[];
 }
 
+interface SandboxPreparation {
+  sandbox?: RuntimeSandboxContext | undefined;
+  result?: RuntimeResult | undefined;
+  approval?: ApprovalRequest | undefined;
+}
+
 export interface WorkerRuntimeServiceOptions {
   queue: WorkerQueueContract;
   state: WorkerRuntimeStateSource;
@@ -1543,11 +1550,18 @@ export class WorkerRuntimeService {
       };
     }
 
-    const sandbox = await this.createSandboxContext(
+    const sandboxPreparation = await this.createSandboxContext(
       claim.lease.id,
       claim.record,
       context,
     );
+    if (sandboxPreparation.result) {
+      return {
+        result: sandboxPreparation.result,
+        approval: sandboxPreparation.approval,
+      };
+    }
+    const sandbox = sandboxPreparation.sandbox;
 
     try {
       const runtimeInput = this.createRuntimeInput(
@@ -1742,10 +1756,84 @@ export class WorkerRuntimeService {
     workerLeaseId: string,
     record: WorkerWorkRecord,
     context: WorkerRuntimeContext,
-  ): Promise<RuntimeSandboxContext | undefined> {
+  ): Promise<SandboxPreparation> {
     const provider = this.sandboxProvider;
     if (!provider || !runtimeProfileRequiresSandbox(context.runtimeProfile)) {
-      return undefined;
+      return {};
+    }
+
+    const resource = sandboxResourceForProvider(provider);
+    const decision = evaluatePolicy(context.accessBundles, {
+      placeScopeId: context.place.id,
+      capability: "sandbox.exec",
+      resource,
+    });
+
+    if (decision.decision === "deny") {
+      this.queue.emitRuntimeEvent({
+        leaseId: workerLeaseId,
+        event: {
+          type: "tool.denied",
+          message: decision.reason,
+          data: {
+            action: "sandbox.exec",
+            resource,
+            providerKind: provider.kind,
+            runtimeProfileId: context.runtimeProfile.id,
+            risk: decision.risk,
+          },
+        },
+        now: this.time(),
+      });
+      return {
+        result: {
+          status: "failed",
+          artifactRefs: [],
+          actualCostCents: 0,
+          error: `Sandbox execution denied: ${decision.reason}`,
+        },
+      };
+    }
+
+    if (decision.requiresApproval && !isApprovedSandboxExec(record)) {
+      const now = this.time();
+      const approval = createApprovalRequest(
+        record.item.orgId,
+        record.item.runId,
+        context.run.requesterPrincipalId,
+        "sandbox.exec",
+        {
+          providerId: provider.id,
+          providerKind: provider.kind,
+          resource,
+          runtimeProfileId: context.runtimeProfile.id,
+          grantId: decision.matchingGrant?.id,
+        },
+        decision.risk,
+        now,
+        addMs(now, this.approvalExpiresInMs),
+      );
+      this.queue.emitRuntimeEvent({
+        leaseId: workerLeaseId,
+        event: {
+          type: "tool.requested",
+          message: decision.reason,
+          data: {
+            approvalId: approval.id,
+            action: approval.action,
+            kind: "sandbox.start",
+            resource,
+            providerKind: provider.kind,
+            runtimeProfileId: context.runtimeProfile.id,
+            risk: approval.risk,
+          },
+        },
+        now,
+      });
+      return {
+        result: sandboxApprovalRequiredResult(provider, decision.reason),
+        approval,
+      };
     }
 
     const policy =
@@ -1753,7 +1841,7 @@ export class WorkerRuntimeService {
         record,
         context,
         provider,
-      })) ?? defaultSandboxPolicyForContext(context, provider);
+      })) ?? defaultSandboxPolicyForContext(provider, decision.risk);
 
     this.queue.emitRuntimeEvent({
       leaseId: workerLeaseId,
@@ -1791,7 +1879,7 @@ export class WorkerRuntimeService {
       now: this.time(),
     });
 
-    return { policy, lease };
+    return { sandbox: { policy, lease } };
   }
 
   private async coerceCancelledResult(
@@ -2447,16 +2535,37 @@ function runtimeProfileRequiresSandbox(profile: RuntimeProfile): boolean {
 }
 
 function defaultSandboxPolicyForContext(
-  context: WorkerRuntimeContext,
   provider: SandboxProvider,
+  risk: CapabilityGrant["risk"],
 ): SandboxPolicy {
-  const sandboxGrant = context.grants.find(
-    (grant) => grant.capability === "sandbox.exec" && grant.decision !== "deny",
-  );
   return createDefaultSandboxPolicy({
     providerKind: provider.kind,
-    risk: sandboxGrant?.risk ?? "privileged",
+    risk,
   });
+}
+
+function sandboxResourceForProvider(provider: SandboxProvider): string {
+  return `sandbox:${provider.kind}`;
+}
+
+function isApprovedSandboxExec(record: WorkerWorkRecord): boolean {
+  return (
+    record.item.reason === "approval_granted" &&
+    record.approval?.action === "sandbox.exec" &&
+    record.approval.status === "approved"
+  );
+}
+
+function sandboxApprovalRequiredResult(
+  provider: SandboxProvider,
+  reason: string,
+): RuntimeResult {
+  return {
+    status: "awaiting_approval",
+    finalText: `Sandbox approval required before starting ${provider.kind}: ${reason}`,
+    artifactRefs: [],
+    actualCostCents: 0,
+  };
 }
 
 function sandboxFinalText(result: {

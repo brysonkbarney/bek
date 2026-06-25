@@ -123,6 +123,10 @@ assert exact claim, heartbeat, retry, and resume decisions.
   the runtime.
 - Runtime-requested approvals are upserted into core approvals from the worker
   pause record, so mid-run checkpoints show up in the same admin approval UI.
+- Sandbox-backed runtimes must pass a worker-side `sandbox.exec` policy check
+  for `sandbox:<provider-kind>` before any provider lease is created. Missing or
+  denied grants fail before sandbox start; `ask` grants pause the same work item
+  for approval without leasing or executing a sandbox.
 - Slack run outcomes and approval decisions are queued as durable outbound
   deliveries before Slack Web API posting.
 - `GET /api/worker/queue` exposes the local worker queue snapshot, including

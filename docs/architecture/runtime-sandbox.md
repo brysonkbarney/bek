@@ -248,6 +248,10 @@ construction and provider behavior:
   `SandboxProvider`. When `BEK_SANDBOX_PROVIDER=docker-local` is set, the API's
   local worker controller wires this adapter to the `opencode-sandbox` runtime
   profile.
+- The worker evaluates `sandbox.exec` for `sandbox:<provider-kind>` before it
+  creates a provider lease. Missing or denied grants fail before sandbox start;
+  `ask` grants create an approval checkpoint and do not lease a sandbox until
+  the approval is granted.
 - The Docker provider is not a hosted multitenant isolation claim. Use it for
   local OSS development, trusted single-tenant self-hosting, and CI-style
   validation; use a microVM provider for hosted untrusted code.
