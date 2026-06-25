@@ -31,6 +31,7 @@ import {
   decideApproval,
   detachBundleFromPlace,
   discoverSlackChannels,
+  fetchAuditEvents,
   fetchBootstrap,
   fetchGitHubSetup,
   fetchRunDetail,
@@ -45,6 +46,7 @@ import {
   updateModelPolicy,
   updateChannel,
   type AccessBundle,
+  type AuditLogEntry,
   type ApprovalRequest,
   type Bootstrap,
   type CapabilityGrant,
@@ -2869,8 +2871,8 @@ export function MemoryPage() {
 
 export function AuditPage() {
   const { data, isLoading, error } = useQuery({
-    queryKey: ["bootstrap"],
-    queryFn: fetchBootstrap,
+    queryKey: ["audit-events"],
+    queryFn: fetchAuditEvents,
   });
 
   if (isLoading) return <div className="state">Loading audit log...</div>;
@@ -2884,7 +2886,7 @@ export function AuditPage() {
         title="Every policy decision and action should leave a trail."
       />
       <Panel>
-        <EventTimeline events={data.events} />
+        <EventTimeline events={data} />
       </Panel>
     </div>
   );
@@ -3012,7 +3014,7 @@ export function RunsTable({
   );
 }
 
-function EventTimeline({ events }: { events: RunEvent[] }) {
+function EventTimeline({ events }: { events: AuditLogEntry[] }) {
   if (events.length === 0) {
     return (
       <EmptyState
@@ -3025,11 +3027,31 @@ function EventTimeline({ events }: { events: RunEvent[] }) {
     <ol className="timeline">
       {events.map((event) => (
         <li key={event.id}>
-          <StatusBadge value={event.type} />
-          <span>{event.message}</span>
+          <StatusBadge value={auditEventLabel(event)} />
+          <span className="timeline-copy">
+            <span>{event.message}</span>
+            {"action" in event ? (
+              <small>
+                {[
+                  event.resourceType,
+                  event.resourceId,
+                  event.actorPrincipalId
+                    ? `actor ${event.actorPrincipalId}`
+                    : undefined,
+                  event.runId ? `run ${event.runId}` : undefined,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </small>
+            ) : null}
+          </span>
           <small>{formatDateTime(event.createdAt)}</small>
         </li>
       ))}
     </ol>
   );
+}
+
+function auditEventLabel(event: AuditLogEntry): string {
+  return "action" in event ? event.action : event.type;
 }

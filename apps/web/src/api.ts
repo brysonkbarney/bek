@@ -469,6 +469,23 @@ export interface RunEvent {
   data?: Record<string, unknown>;
 }
 
+export interface AuditEvent {
+  id: string;
+  orgId: string;
+  actorPrincipalId?: string;
+  runId?: string;
+  action: string;
+  resourceType: string;
+  resourceId?: string;
+  decision?: "allow" | "ask" | "deny";
+  risk?: string;
+  message: string;
+  data?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export type AuditLogEntry = AuditEvent | RunEvent;
+
 export interface ApprovalRequest {
   id: string;
   runId: string;
@@ -672,6 +689,10 @@ export async function fetchGitHubSetup(
 
 export async function fetchModelUsage(): Promise<ModelUsage> {
   return jsonRequest<ModelUsage>("/api/model-usage");
+}
+
+export async function fetchAuditEvents(): Promise<AuditLogEntry[]> {
+  return jsonRequest<AuditLogEntry[]>("/api/audit-events");
 }
 
 export function slackInstallStartPath(returnTo = "/connectors"): string {

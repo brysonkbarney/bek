@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import type {
+  AuditLogEntry,
   Bootstrap,
   GitHubSetupPreview,
   ModelUsage,
@@ -399,6 +400,22 @@ const runDetailFixture = {
   approvals: bootstrapFixture.approvals,
 } satisfies RunDetail;
 
+const auditEventsFixture = [
+  {
+    id: "audit_access_grant",
+    orgId: "org_demo",
+    actorPrincipalId: "principal_admin",
+    action: "access_grant.updated",
+    resourceType: "access_grant",
+    resourceId: "grant_checkout_pr",
+    decision: "ask",
+    risk: "write_external",
+    message: "Access grant updated.",
+    createdAt: now,
+  },
+  ...bootstrapFixture.events,
+] satisfies AuditLogEntry[];
+
 test("loads the admin overview and navigates representative routes", async ({
   page,
 }) => {
@@ -519,6 +536,11 @@ test("loads the admin overview and navigates representative routes", async ({
       name: "Every policy decision and action should leave a trail.",
     }),
   ).toBeVisible();
+  await expect(page.getByText("access grant.updated")).toBeVisible();
+  await expect(page.getByText("Access grant updated.")).toBeVisible();
+  await expect(
+    page.getByText("access_grant · grant_checkout_pr · actor principal_admin"),
+  ).toBeVisible();
 
   await nav.getByRole("link", { name: "Settings", exact: true }).click();
   await expect(
@@ -629,6 +651,7 @@ function responseFor(path: string): unknown {
   if (path === "/api/setup/status") return setupStatusFixture;
   if (path === "/api/setup/github") return githubSetupFixture;
   if (path === "/api/model-usage") return modelUsageFixture;
+  if (path === "/api/audit-events") return auditEventsFixture;
   if (path === "/api/runs/run_123") return runDetailFixture;
   if (path === "/api/worker/queue") return workerQueueFixture;
   if (path === "/api/outbound/slack") return slackOutboxFixture;

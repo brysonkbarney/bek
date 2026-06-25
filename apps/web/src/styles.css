@@ -997,6 +997,12 @@ select {
   color: #64756f;
 }
 
+.timeline-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
 .grant-columns {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

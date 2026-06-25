@@ -9,6 +9,7 @@ import {
   drainSlackOutbox,
   discoverSlackChannels,
   fetchBootstrap,
+  fetchAuditEvents,
   fetchGitHubSetup,
   fetchModelUsage,
   fetchSlackManifest,
@@ -480,6 +481,46 @@ describe("web API helpers", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(fetchModelUsage()).resolves.toEqual(usage);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("fetches durable audit events with admin auth", async () => {
+    const storage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveAdminApiToken("runtime-token");
+    const auditEvents = [
+      {
+        id: "audit_123",
+        orgId: "org_demo",
+        actorPrincipalId: "principal_admin",
+        action: "access_grant.updated",
+        resourceType: "access_grant",
+        resourceId: "grant_checkout_pr",
+        decision: "ask" as const,
+        risk: "write_external",
+        message: "Access grant updated.",
+        createdAt: "2026-06-24T18:00:00.000Z",
+      },
+      {
+        id: "event_123",
+        runId: "run_123",
+        type: "run.created",
+        message: "Run created.",
+        createdAt: "2026-06-24T18:00:00.000Z",
+      },
+    ];
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(String(input)).toBe("http://localhost:4317/api/audit-events");
+      expect(init?.headers).toEqual({ authorization: "Bearer runtime-token" });
+      return new Response(JSON.stringify(auditEvents), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchAuditEvents()).resolves.toEqual(auditEvents);
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
