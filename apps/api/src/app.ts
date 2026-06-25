@@ -17,6 +17,7 @@ import type {
   Principal,
   Run,
   RunEvent,
+  RuntimeProfile,
 } from "@bek/core";
 import {
   createGitHubDraftPullRequestWorkflowPlan,
@@ -79,6 +80,8 @@ import {
 } from "./worker-runtime";
 import {
   createModelProviderRegistryFromEnv,
+  resolveSandboxProviderStatusFromEnv,
+  type SandboxProviderStatus,
   type WorkerGitHubDraftPullRequestExecutionOptions,
 } from "@bek/worker";
 import {
@@ -124,6 +127,13 @@ type ReadinessStepResult =
       latencyMs: number;
       error: string;
     };
+interface RuntimeSetupReadiness {
+  ready: boolean;
+  executableProfiles: number;
+  sandboxedProfiles: number;
+  errors: string[];
+  sandboxProvider: SandboxProviderStatus;
+}
 type SlackDiscoveryClientSource = "injected" | "stored_oauth" | "env";
 type AdminAuthMethod = "bearer_token" | "local_bypass";
 
@@ -1576,6 +1586,7 @@ export function createApp(
     const githubBindingReadiness = githubRepoGrantBindingReadiness(snapshot);
     const singleVisibleAgent = snapshot.agent.handle === "@bek";
     const modelPricing = modelPricingReadiness(snapshot);
+    const runtimeReadiness = runtimeSetupReadiness(snapshot);
     const readyForLocalDemo =
       singleVisibleAgent &&
       slackChannels.length > 0 &&
@@ -1593,7 +1604,7 @@ export function createApp(
       slackInstall?.status === "active" &&
       Boolean(slackCredential) &&
       slackScopeReadiness.missing.length === 0 &&
-      snapshot.runtimeProfiles.length > 0 &&
+      runtimeReadiness.ready &&
       githubExecutionReadyForWorkspace;
     return c.json({
       visibleHandle: snapshot.agent.handle,
@@ -1618,6 +1629,16 @@ export function createApp(
       missingPricedModels: modelPricing.missing,
       modelPricingError: modelPricing.error,
       runtimeProfiles: snapshot.runtimeProfiles.length,
+      runtimeExecutableProfiles: runtimeReadiness.executableProfiles,
+      runtimeExecutionReady: runtimeReadiness.ready,
+      runtimeExecutionErrors: runtimeReadiness.errors,
+      sandboxedRuntimeProfiles: runtimeReadiness.sandboxedProfiles,
+      sandboxProviderMode: runtimeReadiness.sandboxProvider.mode,
+      sandboxProviderEnabled: runtimeReadiness.sandboxProvider.enabled,
+      sandboxProviderReady: runtimeReadiness.sandboxProvider.ready,
+      sandboxProviderNetworkCalls:
+        runtimeReadiness.sandboxProvider.networkCalls,
+      sandboxProviderErrors: runtimeReadiness.sandboxProvider.errors,
       githubGrantCount,
       githubExecutionMode: githubExecution.status.mode,
       githubExecutionEnabled: githubExecution.status.enabled,
@@ -4237,6 +4258,91 @@ function modelPolicyIds(snapshot: BekSnapshot): string[] {
       ]),
     ),
   ].sort();
+}
+
+function runtimeSetupReadiness(snapshot: BekSnapshot): RuntimeSetupReadiness {
+  const sandboxProvider = resolveSandboxProviderStatusFromEnv();
+  const readiness = snapshot.runtimeProfiles.map((profile) =>
+    runtimeProfileSetupReadiness(profile, sandboxProvider),
+  );
+  const errors = [
+    ...sandboxProvider.errors,
+    ...readiness.flatMap((result) => result.errors),
+  ];
+  return {
+    ready: snapshot.runtimeProfiles.length > 0 && errors.length === 0,
+    executableProfiles: readiness.filter((result) => result.executable).length,
+    sandboxedProfiles: readiness.filter((result) => result.sandboxed).length,
+    errors,
+    sandboxProvider,
+  };
+}
+
+function runtimeProfileSetupReadiness(
+  profile: RuntimeProfile,
+  sandboxProvider: SandboxProviderStatus,
+): { executable: boolean; sandboxed: boolean; errors: string[] } {
+  const sandboxed = runtimeProfileNeedsExecutableSandbox(profile);
+  if (
+    profile.runtimeKind === "ai_sdk" &&
+    profile.adapter === "ai-sdk-local-stub"
+  ) {
+    return { executable: true, sandboxed, errors: [] };
+  }
+  if (
+    profile.runtimeKind === "langgraph" &&
+    profile.adapter === "langgraph-local-stub"
+  ) {
+    return { executable: true, sandboxed, errors: [] };
+  }
+  if (
+    profile.runtimeKind === "external" &&
+    profile.adapter === "external-local-stub"
+  ) {
+    return { executable: true, sandboxed, errors: [] };
+  }
+  if (
+    profile.runtimeKind === "opencode" &&
+    profile.adapter === "opencode-sandbox"
+  ) {
+    if (sandboxProvider.ready) {
+      return { executable: true, sandboxed, errors: [] };
+    }
+    return {
+      executable: false,
+      sandboxed,
+      errors: [
+        `Runtime profile ${profile.id} uses opencode-sandbox, but BEK_SANDBOX_PROVIDER is ${sandboxProviderSetupLabel(
+          sandboxProvider,
+        )}.`,
+      ],
+    };
+  }
+  return {
+    executable: false,
+    sandboxed,
+    errors: [
+      `Runtime profile ${profile.id} uses unsupported local adapter ${profile.adapter}.`,
+    ],
+  };
+}
+
+function runtimeProfileNeedsExecutableSandbox(
+  profile: RuntimeProfile,
+): boolean {
+  return (
+    profile.runtimeKind === "opencode" || profile.adapter.includes("sandbox")
+  );
+}
+
+function sandboxProviderSetupLabel(status: SandboxProviderStatus): string {
+  if (status.mode === "none") {
+    return "not configured";
+  }
+  if (status.mode === "unsupported") {
+    return "unsupported";
+  }
+  return `not ready (${status.mode})`;
 }
 
 function modelGatewayModeFromEnv(): string {

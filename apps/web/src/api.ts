@@ -187,6 +187,15 @@ export interface SetupStatus {
   missingPricedModels?: string[];
   modelPricingError?: string | null;
   runtimeProfiles: number;
+  runtimeExecutableProfiles?: number;
+  runtimeExecutionReady?: boolean;
+  runtimeExecutionErrors?: string[];
+  sandboxedRuntimeProfiles?: number;
+  sandboxProviderMode?: string;
+  sandboxProviderEnabled?: boolean;
+  sandboxProviderReady?: boolean;
+  sandboxProviderNetworkCalls?: string;
+  sandboxProviderErrors?: string[];
   githubGrantCount: number;
   githubExecutionMode?: string;
   githubExecutionEnabled?: boolean;
@@ -198,6 +207,112 @@ export interface SetupStatus {
   pendingApprovals: number;
   readyForLocalDemo: boolean;
   readyForWorkspace: boolean;
+}
+
+export type GitHubInstallationPermissionAccess = "read" | "write";
+
+export interface GitHubRepoResource {
+  provider: "github";
+  owner: string;
+  repo: string;
+  fullName: string;
+  resource: string;
+  url: string;
+  repositoryId?: number;
+}
+
+export type GitHubInstallationTokenPermissions = Partial<
+  Record<
+    "checks" | "contents" | "metadata" | "pull_requests",
+    GitHubInstallationPermissionAccess
+  >
+>;
+
+export interface GitHubSetupGrant {
+  bundleId: string;
+  bundleName: string;
+  grantId: string;
+  capability: "github.read" | "github.branch" | "github.pr";
+  resource: string;
+  decision: CapabilityGrant["decision"];
+  risk: CapabilityGrant["risk"];
+  requiresApproval: boolean;
+}
+
+export interface GitHubInvalidSetupGrant extends GitHubSetupGrant {
+  errors: string[];
+}
+
+export interface GitHubInstallationTokenRequestPreview {
+  installationId: string;
+  repository?: GitHubRepoResource;
+  repositoryIds?: number[];
+  permissions: GitHubInstallationTokenPermissions;
+}
+
+export interface GitHubDraftPullRequestWorkflowPreview {
+  type: string;
+  visibleAgentHandle: string;
+  resource: string;
+  steps: string[];
+  tokenRequestPermissions: GitHubInstallationTokenPermissions;
+  pullRequestProposal: {
+    type: string;
+    capability: string;
+    resource: string;
+    draft: boolean;
+    baseBranch: string;
+    headBranch: string;
+    approval: {
+      action: string;
+      risk: string;
+      required: boolean;
+    };
+  };
+  approvalHashInput: {
+    type: string;
+    version: number;
+    action: string;
+    resource: string;
+    repository: GitHubRepoResource;
+    installationId: string | null;
+  };
+}
+
+export interface GitHubSetupRepositoryPreview {
+  repository: GitHubRepoResource;
+  grants: GitHubSetupGrant[];
+  requiredPermissions: GitHubInstallationTokenPermissions;
+  installationTokenRequestPreview: GitHubInstallationTokenRequestPreview | null;
+  draftPullRequestWorkflowPreview: GitHubDraftPullRequestWorkflowPreview | null;
+}
+
+export interface GitHubSetupPreview {
+  ok: boolean;
+  appConfig: {
+    ok: boolean;
+    appId: string | null;
+    privateKeyConfigured: boolean;
+    webhookSecretConfigured: boolean;
+    legacyWebhookSecretConfigured: boolean;
+    clientIdConfigured: boolean;
+    clientSecretConfigured: boolean;
+    errors: string[];
+    warnings: string[];
+  };
+  installation: {
+    configured: boolean;
+    source: "query" | "env" | null;
+    installationId: string | null;
+    errors: string[];
+  };
+  githubGrantCount: number;
+  validRepoGrantCount: number;
+  invalidGrantCount: number;
+  repositories: GitHubSetupRepositoryPreview[];
+  invalidGrants: GitHubInvalidSetupGrant[];
+  errors: string[];
+  networkCalls: "none";
 }
 
 export interface SlackInstallStart {
@@ -536,6 +651,23 @@ async function apiError(path: string, res: Response): Promise<BekApiError> {
 
 export async function fetchSetupStatus(): Promise<SetupStatus> {
   return jsonRequest<SetupStatus>("/api/setup/status");
+}
+
+export function githubSetupPath(
+  input: { installationId?: string | undefined } = {},
+): string {
+  const installationId = input.installationId?.trim();
+  if (!installationId) {
+    return "/api/setup/github";
+  }
+  const params = new URLSearchParams({ installationId });
+  return `/api/setup/github?${params.toString()}`;
+}
+
+export async function fetchGitHubSetup(
+  input: { installationId?: string | undefined } = {},
+): Promise<GitHubSetupPreview> {
+  return jsonRequest<GitHubSetupPreview>(githubSetupPath(input));
 }
 
 export async function fetchModelUsage(): Promise<ModelUsage> {

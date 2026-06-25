@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { Bootstrap, SetupStatus } from "../api";
+import type { Bootstrap, GitHubSetupPreview, SetupStatus } from "../api";
 import {
   connectorSummaries,
+  githubConnectorSetupModel,
   setupChecklistFromStatus,
   setupOperationsFromStatus,
   setupProgress,
@@ -26,6 +27,15 @@ const readySetup: SetupStatus = {
   missingPricedModels: [],
   modelPricingError: null,
   runtimeProfiles: 1,
+  runtimeExecutableProfiles: 1,
+  runtimeExecutionReady: true,
+  runtimeExecutionErrors: [],
+  sandboxedRuntimeProfiles: 1,
+  sandboxProviderMode: "docker-local",
+  sandboxProviderEnabled: true,
+  sandboxProviderReady: true,
+  sandboxProviderNetworkCalls: "docker_on_worker_run",
+  sandboxProviderErrors: [],
   githubGrantCount: 1,
   githubExecutionMode: "real",
   githubExecutionEnabled: true,
@@ -37,6 +47,122 @@ const readySetup: SetupStatus = {
   pendingApprovals: 0,
   readyForLocalDemo: true,
   readyForWorkspace: true,
+};
+
+const readyGitHubPreview: GitHubSetupPreview = {
+  ok: true,
+  appConfig: {
+    ok: true,
+    appId: "12345",
+    privateKeyConfigured: true,
+    webhookSecretConfigured: true,
+    legacyWebhookSecretConfigured: false,
+    clientIdConfigured: false,
+    clientSecretConfigured: false,
+    errors: [],
+    warnings: [],
+  },
+  installation: {
+    configured: true,
+    source: "env",
+    installationId: "456",
+    errors: [],
+  },
+  githubGrantCount: 1,
+  validRepoGrantCount: 1,
+  invalidGrantCount: 0,
+  repositories: [
+    {
+      repository: {
+        provider: "github",
+        owner: "redohq",
+        repo: "checkout",
+        fullName: "redohq/checkout",
+        resource: "github:redohq/checkout",
+        url: "https://github.com/redohq/checkout",
+      },
+      grants: [
+        {
+          bundleId: "bundle_repo",
+          bundleName: "Repo access",
+          grantId: "grant_repo",
+          capability: "github.pr",
+          resource: "github:redohq/checkout",
+          decision: "ask",
+          risk: "write_external",
+          requiresApproval: true,
+        },
+      ],
+      requiredPermissions: {
+        contents: "write",
+        metadata: "read",
+        pull_requests: "write",
+      },
+      installationTokenRequestPreview: {
+        installationId: "456",
+        repository: {
+          provider: "github",
+          owner: "redohq",
+          repo: "checkout",
+          fullName: "redohq/checkout",
+          resource: "github:redohq/checkout",
+          url: "https://github.com/redohq/checkout",
+        },
+        permissions: {
+          contents: "write",
+          metadata: "read",
+          pull_requests: "write",
+        },
+      },
+      draftPullRequestWorkflowPreview: {
+        type: "github.draft_pull_request_workflow_plan",
+        visibleAgentHandle: "@bek",
+        resource: "github:redohq/checkout",
+        steps: [
+          "mint_installation_token",
+          "create_branch",
+          "commit_changes",
+          "open_draft_pull_request",
+        ],
+        tokenRequestPermissions: {
+          contents: "write",
+          metadata: "read",
+          pull_requests: "write",
+        },
+        pullRequestProposal: {
+          type: "github.pull_request_proposal",
+          capability: "github.pr",
+          resource: "github:redohq/checkout",
+          draft: true,
+          baseBranch: "main",
+          headBranch: "bek/setup-preview",
+          approval: {
+            action: "github.pr",
+            risk: "write_external",
+            required: true,
+          },
+        },
+        approvalHashInput: {
+          type: "github.pull_request_write_approval",
+          version: 1,
+          action: "github.pr",
+          resource: "github:redohq/checkout",
+          repository: {
+            provider: "github",
+            owner: "redohq",
+            repo: "checkout",
+            fullName: "redohq/checkout",
+            resource: "github:redohq/checkout",
+            url: "https://github.com/redohq/checkout",
+          },
+          installationId: "456",
+        },
+      },
+    },
+  ],
+  invalidGrants: [],
+  errors: [],
+  networkCalls: "none",
 };
 
 const emptyBootstrap: Bootstrap = {
@@ -110,6 +236,15 @@ describe("admin product helpers", () => {
         modelPricingReady: false,
         missingPricedModels: [],
         runtimeProfiles: 0,
+        runtimeExecutableProfiles: 0,
+        runtimeExecutionReady: false,
+        runtimeExecutionErrors: [],
+        sandboxedRuntimeProfiles: 0,
+        sandboxProviderMode: "none",
+        sandboxProviderEnabled: false,
+        sandboxProviderReady: false,
+        sandboxProviderNetworkCalls: "none",
+        sandboxProviderErrors: [],
         githubGrantCount: 0,
       },
       {
@@ -193,6 +328,171 @@ describe("admin product helpers", () => {
         facts: expect.arrayContaining(["Repo bindings: missing 1"]),
       }),
     );
+  });
+
+  it("surfaces GitHub setup preview facts for the connector panel", () => {
+    const setup = githubConnectorSetupModel(readySetup, readyGitHubPreview);
+
+    expect(setup).toMatchObject({
+      status: "ready",
+      execution: {
+        mode: "real",
+        state: "ready",
+        networkCalls: "github_on_approved_worker_run",
+      },
+      appConfig: {
+        status: "ready",
+        appId: "12345",
+        errors: [],
+      },
+      installation: {
+        status: "configured",
+        source: "env",
+        installationId: "456",
+      },
+      grants: {
+        total: 1,
+        valid: 1,
+        invalid: 0,
+      },
+      repoBindings: {
+        status: "ready",
+        missing: [],
+      },
+    });
+    expect(setup.repositories).toEqual([
+      expect.objectContaining({
+        resource: "github:redohq/checkout",
+        requiredPermissions: [
+          "contents: write",
+          "metadata: read",
+          "pull_requests: write",
+        ],
+        installationTokenInstallationId: "456",
+        workflowSteps: expect.arrayContaining(["open_draft_pull_request"]),
+      }),
+    ]);
+  });
+
+  it("keeps GitHub connector setup issues visible without backend changes", () => {
+    const brokenPreview: GitHubSetupPreview = {
+      ...readyGitHubPreview,
+      ok: false,
+      appConfig: {
+        ...readyGitHubPreview.appConfig,
+        ok: false,
+        errors: ["GITHUB_APP_PRIVATE_KEY must be a PEM private key."],
+      },
+      installation: {
+        configured: false,
+        source: null,
+        installationId: null,
+        errors: [
+          "GITHUB_APP_INSTALLATION_ID or installationId query parameter is required for installation-token previews.",
+        ],
+      },
+      githubGrantCount: 2,
+      validRepoGrantCount: 1,
+      invalidGrantCount: 1,
+      invalidGrants: [
+        {
+          bundleId: "bundle_org",
+          bundleName: "Org-wide GitHub",
+          grantId: "grant_org",
+          capability: "github.read",
+          resource: "github:redohq/*",
+          decision: "allow",
+          risk: "read_internal",
+          requiresApproval: false,
+          errors: ["GitHub repo must be a valid repository name."],
+        },
+      ],
+      errors: [
+        "GITHUB_APP_PRIVATE_KEY must be a PEM private key.",
+        "GitHub repo must be a valid repository name.",
+      ],
+    };
+    const setup = githubConnectorSetupModel(
+      {
+        ...readySetup,
+        githubExecutionReady: false,
+        githubExecutionErrors: [
+          "GITHUB_APP_PRIVATE_KEY must be a PEM private key.",
+        ],
+        githubRepoBindingsReady: false,
+        missingGithubRepoBindings: ["github:redohq/checkout"],
+      },
+      brokenPreview,
+    );
+
+    expect(setup.status).toBe("needs binding");
+    expect(setup.appConfig.errors).toEqual([
+      "GITHUB_APP_PRIVATE_KEY must be a PEM private key.",
+    ]);
+    expect(setup.installation).toMatchObject({
+      status: "missing",
+      source: "missing",
+      installationId: "missing",
+    });
+    expect(setup.grants).toMatchObject({
+      total: 2,
+      valid: 1,
+      invalid: 1,
+    });
+    expect(setup.repoBindings).toMatchObject({
+      status: "missing",
+      missing: ["github:redohq/checkout"],
+    });
+    expect(setup.invalidGrants).toEqual([
+      expect.objectContaining({
+        resource: "github:redohq/*",
+        errors: ["GitHub repo must be a valid repository name."],
+      }),
+    ]);
+  });
+
+  it("does not treat opencode-sandbox profiles as executable without a sandbox provider", () => {
+    const setupStatus: SetupStatus = {
+      ...readySetup,
+      runtimeProfiles: 2,
+      runtimeExecutableProfiles: 1,
+      runtimeExecutionReady: false,
+      runtimeExecutionErrors: [
+        "Runtime profile runtime_code uses opencode-sandbox, but BEK_SANDBOX_PROVIDER is not configured.",
+      ],
+      sandboxedRuntimeProfiles: 1,
+      sandboxProviderMode: "none",
+      sandboxProviderEnabled: false,
+      sandboxProviderReady: false,
+      sandboxProviderNetworkCalls: "none",
+      sandboxProviderErrors: [],
+      readyForWorkspace: false,
+    };
+    const checklist = setupChecklistFromStatus(setupStatus);
+    const operations = setupOperationsFromStatus(setupStatus, {
+      adminAuthDetail: "Using a browser-entered admin token.",
+      adminAuthenticated: true,
+    });
+
+    expect(checklist.find((step) => step.id === "runtime-profile")).toEqual(
+      expect.objectContaining({
+        complete: false,
+        detail:
+          "2 runtime profiles configured, but sandboxed execution needs BEK_SANDBOX_PROVIDER.",
+      }),
+    );
+    expect(operations.find((step) => step.id === "model-runtime")).toEqual(
+      expect.objectContaining({
+        complete: false,
+        status: "needs action",
+        facts: expect.arrayContaining([
+          "2 runtime profiles",
+          "Execution: blocked (1/2 executable)",
+          "Sandbox provider: disabled (none)",
+        ]),
+      }),
+    );
+    expect(setupReadyForWorkspace(setupStatus)).toBe(false);
   });
 
   it("explains Slack install states that are not ready yet", () => {

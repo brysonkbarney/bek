@@ -20,6 +20,7 @@ import type {
   ApprovalRequest,
   Bootstrap,
   CapabilityGrant,
+  GitHubSetupPreview,
   PlaceScope,
   Run,
   SetupStatus,
@@ -203,11 +204,9 @@ export function setupChecklistFromStatus(status: SetupStatus): Array<{
     },
     {
       id: "runtime-profile",
-      label: "Register a runtime profile for tool execution",
-      detail: `${status.runtimeProfiles} runtime profile${
-        status.runtimeProfiles === 1 ? "" : "s"
-      } configured`,
-      complete: status.runtimeProfiles > 0,
+      label: "Register executable runtime profiles",
+      detail: runtimeSetupDetail(status),
+      complete: runtimeExecutionReady(status),
       route: "/connectors",
     },
     {
@@ -251,7 +250,7 @@ export function setupOperationsFromStatus(
   const channelReady = status.slackChannels > 0;
   const accessReady = status.accessBundles > 0;
   const modelReady = modelPricingReady(status);
-  const runtimeReady = status.runtimeProfiles > 0;
+  const runtimeReady = runtimeExecutionReady(status);
   const githubPolicyReady = status.githubGrantCount > 0;
   const githubExecutionReady = Boolean(
     status.githubExecutionEnabled && status.githubExecutionReady,
@@ -351,7 +350,9 @@ export function setupOperationsFromStatus(
       detail:
         modelReady && runtimeReady
           ? "Model routing, pricing, and runtime execution are configured."
-          : "Configure both model routing and a runtime profile before workspace use.",
+          : modelReady
+            ? runtimeSetupDetail(status)
+            : "Configure both model routing and executable runtime profiles before workspace use.",
       status: modelReady && runtimeReady ? "ready" : "needs action",
       complete: modelReady && runtimeReady,
       facts: [
@@ -361,6 +362,8 @@ export function setupOperationsFromStatus(
         `${status.runtimeProfiles} runtime profile${
           status.runtimeProfiles === 1 ? "" : "s"
         }`,
+        runtimeExecutionFact(status),
+        sandboxProviderFact(status),
         modelPricingFact(status),
       ],
       primaryAction: {
@@ -426,6 +429,199 @@ export function assertOneVisibleHandle(data: Pick<Bootstrap, "agent">): string {
     throw new Error("Bek v1 must expose one visible Slack handle: @bek.");
   }
   return data.agent.handle;
+}
+
+export interface GitHubConnectorSetupModel {
+  status: string;
+  execution: {
+    mode: string;
+    state: string;
+    detail: string;
+    networkCalls: string;
+    errors: string[];
+  };
+  appConfig: {
+    status: string;
+    appId: string;
+    detail: string;
+    errors: string[];
+    warnings: string[];
+  };
+  installation: {
+    status: string;
+    source: string;
+    installationId: string;
+    detail: string;
+    errors: string[];
+  };
+  grants: {
+    total: number;
+    valid: number;
+    invalid: number;
+    detail: string;
+  };
+  repoBindings: {
+    status: string;
+    detail: string;
+    missing: string[];
+  };
+  repositories: Array<{
+    resource: string;
+    fullName: string;
+    grantCount: number;
+    grantCapabilities: string[];
+    requiredPermissions: string[];
+    installationTokenInstallationId: string;
+    workflowSteps: string[];
+  }>;
+  invalidGrants: Array<{
+    grantId: string;
+    bundleName: string;
+    capability: string;
+    resource: string;
+    errors: string[];
+  }>;
+  errors: string[];
+}
+
+export function githubConnectorSetupModel(
+  status: SetupStatus,
+  setup: GitHubSetupPreview | undefined,
+): GitHubConnectorSetupModel {
+  const mode = status.githubExecutionMode ?? "disabled";
+  const executionErrors = status.githubExecutionErrors?.filter(Boolean) ?? [];
+  const executionState = status.githubExecutionEnabled
+    ? status.githubExecutionReady
+      ? "ready"
+      : "blocked"
+    : "disabled";
+  const missingRepoBindings =
+    status.missingGithubRepoBindings?.filter(Boolean) ?? [];
+  const repoBindingsMissing = githubRepoBindingsMissing(status);
+  const appErrors = setup?.appConfig.errors.filter(Boolean) ?? [];
+  const appWarnings = setup?.appConfig.warnings.filter(Boolean) ?? [];
+  const installationErrors = setup?.installation.errors.filter(Boolean) ?? [];
+  const invalidGrantCount = setup?.invalidGrantCount ?? 0;
+  const totalGrantCount = setup?.githubGrantCount ?? status.githubGrantCount;
+  const validGrantCount =
+    setup?.validRepoGrantCount ??
+    Math.max(totalGrantCount - invalidGrantCount, 0);
+  const setupErrors = setup?.errors.filter(Boolean) ?? [];
+  const previewHasProblems = Boolean(
+    setup &&
+    (!setup.ok ||
+      appErrors.length > 0 ||
+      installationErrors.length > 0 ||
+      invalidGrantCount > 0),
+  );
+
+  return {
+    status: repoBindingsMissing
+      ? "needs binding"
+      : previewHasProblems
+        ? "needs setup"
+        : executionState,
+    execution: {
+      mode,
+      state: executionState,
+      detail: githubExecutionDetail(status),
+      networkCalls:
+        status.githubExecutionNetworkCalls ?? setup?.networkCalls ?? "unknown",
+      errors: executionErrors,
+    },
+    appConfig: {
+      status: setup
+        ? setup.appConfig.ok
+          ? "ready"
+          : "needs setup"
+        : "loading",
+      appId: setup?.appConfig.appId ?? "missing",
+      detail: setup
+        ? [
+            setup.appConfig.privateKeyConfigured
+              ? "private key configured"
+              : "private key missing",
+            setup.appConfig.webhookSecretConfigured
+              ? setup.appConfig.legacyWebhookSecretConfigured
+                ? "legacy webhook secret configured"
+                : "webhook secret configured"
+              : "webhook secret missing",
+          ].join(", ")
+        : "Loading GitHub App config preview.",
+      errors: appErrors,
+      warnings: appWarnings,
+    },
+    installation: {
+      status: setup
+        ? setup.installation.configured && setup.installation.installationId
+          ? "configured"
+          : "missing"
+        : "loading",
+      source: setup?.installation.source ?? "missing",
+      installationId: setup?.installation.installationId ?? "missing",
+      detail: setup
+        ? setup.installation.source
+          ? `Preview source: ${setup.installation.source}`
+          : "No installation preview source configured."
+        : "Loading installation preview.",
+      errors: installationErrors,
+    },
+    grants: {
+      total: totalGrantCount,
+      valid: validGrantCount,
+      invalid: invalidGrantCount,
+      detail:
+        invalidGrantCount > 0
+          ? `${validGrantCount} valid repo grant${
+              validGrantCount === 1 ? "" : "s"
+            }, ${invalidGrantCount} invalid grant${
+              invalidGrantCount === 1 ? "" : "s"
+            }`
+          : `${validGrantCount} valid repo grant${
+              validGrantCount === 1 ? "" : "s"
+            }`,
+    },
+    repoBindings: {
+      status:
+        mode !== "real"
+          ? "not required"
+          : repoBindingsMissing
+            ? "missing"
+            : "ready",
+      detail:
+        mode !== "real"
+          ? "Repo installation bindings are only required in real execution mode."
+          : repoBindingsMissing
+            ? `Missing bindings for ${formatGithubRepoBindings(
+                missingRepoBindings,
+              )}.`
+            : "All repo grants have installation bindings.",
+      missing: missingRepoBindings,
+    },
+    repositories:
+      setup?.repositories.map((repository) => ({
+        resource: repository.repository.resource,
+        fullName: repository.repository.fullName,
+        grantCount: repository.grants.length,
+        grantCapabilities: repository.grants.map((grant) => grant.capability),
+        requiredPermissions: formatGitHubPermissions(
+          repository.requiredPermissions,
+        ),
+        installationTokenInstallationId:
+          repository.installationTokenRequestPreview?.installationId ??
+          "missing",
+        workflowSteps: repository.draftPullRequestWorkflowPreview?.steps ?? [],
+      })) ?? [],
+    invalidGrants:
+      setup?.invalidGrants.map((grant) => ({
+        grantId: grant.grantId,
+        bundleName: grant.bundleName,
+        capability: grant.capability,
+        resource: grant.resource,
+        errors: grant.errors,
+      })) ?? [],
+    errors: setupErrors,
+  };
 }
 
 export function connectorSummaries(data: Bootstrap): Array<{
@@ -528,8 +724,8 @@ export function connectorSummaries(data: Bootstrap): Array<{
       name: "Sandbox",
       status: hasSandbox ? "approval required" : "not configured",
       detail: hasSandbox
-        ? "Code execution is gated by policy."
-        : "Connect Docker, E2B, or Vercel Sandbox.",
+        ? "Code execution is gated by policy; provider readiness is shown in setup."
+        : "Set BEK_SANDBOX_PROVIDER=docker-local before executable sandbox work.",
       metric: `${sandboxGrantCount} grants`,
       route: "/access-bundles",
       actionLabel: "Review policy",
@@ -548,10 +744,10 @@ export function connectorSummaries(data: Bootstrap): Array<{
     {
       id: "runtime",
       name: "Runtime Profiles",
-      status: data.runtimeProfiles.length > 0 ? "ready" : "not configured",
-      detail:
-        data.runtimeProfiles[0]?.adapter ??
-        "Add a local, hosted, or sandboxed runtime adapter.",
+      status: data.runtimeProfiles.length > 0 ? "configured" : "not configured",
+      detail: data.runtimeProfiles[0]
+        ? `${data.runtimeProfiles[0].adapter}; execution readiness is shown in setup.`
+        : "Add a local, hosted, or sandboxed runtime adapter.",
       metric: `${data.runtimeProfiles.length} profiles`,
       route: "/connectors",
       actionLabel: "Review runtime",
@@ -611,6 +807,70 @@ function modelPricingFact(status: SetupStatus): string {
     : `Missing pricing: ${formatPricedModels(status.missingPricedModels)}`;
 }
 
+function runtimeExecutionReady(status: SetupStatus): boolean {
+  if (typeof status.runtimeExecutionReady === "boolean") {
+    return status.runtimeExecutionReady;
+  }
+  return status.runtimeProfiles > 0;
+}
+
+function runtimeSetupDetail(status: SetupStatus): string {
+  if (status.runtimeProfiles === 0) {
+    return "No runtime profiles configured.";
+  }
+  if (runtimeExecutionReady(status)) {
+    const executable =
+      status.runtimeExecutableProfiles ?? status.runtimeProfiles;
+    return `${executable} executable runtime profile${
+      executable === 1 ? "" : "s"
+    } configured.`;
+  }
+  if (
+    (status.sandboxedRuntimeProfiles ?? 0) > 0 &&
+    !status.sandboxProviderReady
+  ) {
+    return `${status.runtimeProfiles} runtime profile${
+      status.runtimeProfiles === 1 ? "" : "s"
+    } configured, but sandboxed execution needs BEK_SANDBOX_PROVIDER.`;
+  }
+  return runtimeExecutionErrorSummary(status);
+}
+
+function runtimeExecutionFact(status: SetupStatus): string {
+  if (status.runtimeProfiles === 0) {
+    return "Execution: no profiles";
+  }
+  if (runtimeExecutionReady(status)) {
+    return "Execution: ready";
+  }
+  const executable = status.runtimeExecutableProfiles ?? 0;
+  return `Execution: blocked (${executable}/${status.runtimeProfiles} executable)`;
+}
+
+function sandboxProviderFact(status: SetupStatus): string {
+  const mode = status.sandboxProviderMode ?? "none";
+  if ((status.sandboxedRuntimeProfiles ?? 0) === 0) {
+    return "Sandbox provider: not required";
+  }
+  if (status.sandboxProviderReady) {
+    return `Sandbox provider: ready (${mode})`;
+  }
+  if (status.sandboxProviderEnabled) {
+    return `Sandbox provider: blocked (${mode})`;
+  }
+  return `Sandbox provider: disabled (${mode})`;
+}
+
+function runtimeExecutionErrorSummary(status: SetupStatus): string {
+  const errors = [
+    ...(status.runtimeExecutionErrors ?? []),
+    ...(status.sandboxProviderErrors ?? []),
+  ].filter(Boolean);
+  return errors.length > 0
+    ? errors.join("; ")
+    : "Runtime execution readiness is blocked.";
+}
+
 function githubExecutionSetupDetail(status: SetupStatus): string {
   if (!githubRepoBindingsReady(status)) {
     return `Repo grants are attached, but real GitHub execution is missing installation bindings for ${formatGithubRepoBindings(
@@ -664,6 +924,35 @@ function formatGithubRepoBindings(resources: string[] | undefined): string {
 function githubExecutionErrorSummary(status: SetupStatus): string {
   const errors = status.githubExecutionErrors?.filter(Boolean) ?? [];
   return errors.length > 0 ? errors.join("; ") : "missing ready checks";
+}
+
+function githubExecutionDetail(status: SetupStatus): string {
+  if (status.githubExecutionEnabled && status.githubExecutionReady) {
+    return "GitHub App execution is ready for approved worker runs.";
+  }
+  if (status.githubExecutionEnabled) {
+    return `GitHub App execution needs repair: ${githubExecutionErrorSummary(
+      status,
+    )}.`;
+  }
+  return "Real GitHub execution is disabled until App credentials are configured.";
+}
+
+function githubRepoBindingsMissing(status: SetupStatus): boolean {
+  return Boolean(
+    status.githubExecutionMode === "real" &&
+    (status.githubRepoBindingsReady === false ||
+      (status.missingGithubRepoBindings?.length ?? 0) > 0),
+  );
+}
+
+function formatGitHubPermissions(
+  permissions: Record<string, string | undefined>,
+): string[] {
+  return Object.entries(permissions)
+    .filter((entry): entry is [string, string] => Boolean(entry[1]))
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, access]) => `${name}: ${access}`);
 }
 
 function formatPricedModels(models: string[] | undefined): string {

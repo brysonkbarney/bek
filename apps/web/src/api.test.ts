@@ -7,10 +7,12 @@ import {
   drainSlackOutbox,
   discoverSlackChannels,
   fetchBootstrap,
+  fetchGitHubSetup,
   fetchModelUsage,
   fetchSlackManifest,
   fetchSlackOutbox,
   hasStoredAdminToken,
+  githubSetupPath,
   linkPrincipalExternalIdentity,
   redriveDeadLetterPath,
   readAdminApiToken,
@@ -234,6 +236,108 @@ describe("web API helpers", () => {
     ).toBe(
       "/api/slack/channels/discover?cursor=next-page&limit=50&types=public_channel%2Cprivate_channel&excludeArchived=false",
     );
+  });
+
+  it("builds GitHub setup preview paths with optional installation ids", () => {
+    expect(githubSetupPath()).toBe("/api/setup/github");
+    expect(githubSetupPath({ installationId: " 456 " })).toBe(
+      "/api/setup/github?installationId=456",
+    );
+  });
+
+  it("fetches the GitHub setup preview with admin auth", async () => {
+    const storage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveAdminApiToken("runtime-token");
+    const preview = {
+      ok: true,
+      appConfig: {
+        ok: true,
+        appId: "12345",
+        privateKeyConfigured: true,
+        webhookSecretConfigured: true,
+        legacyWebhookSecretConfigured: false,
+        clientIdConfigured: false,
+        clientSecretConfigured: false,
+        errors: [],
+        warnings: [],
+      },
+      installation: {
+        configured: true,
+        source: "query" as const,
+        installationId: "456",
+        errors: [],
+      },
+      githubGrantCount: 1,
+      validRepoGrantCount: 1,
+      invalidGrantCount: 0,
+      repositories: [
+        {
+          repository: {
+            provider: "github" as const,
+            owner: "redohq",
+            repo: "checkout",
+            fullName: "redohq/checkout",
+            resource: "github:redohq/checkout",
+            url: "https://github.com/redohq/checkout",
+          },
+          grants: [
+            {
+              bundleId: "bundle_repo",
+              bundleName: "Repo access",
+              grantId: "grant_repo",
+              capability: "github.pr" as const,
+              resource: "github:redohq/checkout",
+              decision: "ask" as const,
+              risk: "write_external",
+              requiresApproval: true,
+            },
+          ],
+          requiredPermissions: {
+            contents: "write" as const,
+            metadata: "read" as const,
+            pull_requests: "write" as const,
+          },
+          installationTokenRequestPreview: {
+            installationId: "456",
+            repository: {
+              provider: "github" as const,
+              owner: "redohq",
+              repo: "checkout",
+              fullName: "redohq/checkout",
+              resource: "github:redohq/checkout",
+              url: "https://github.com/redohq/checkout",
+            },
+            permissions: {
+              contents: "write" as const,
+              metadata: "read" as const,
+              pull_requests: "write" as const,
+            },
+          },
+          draftPullRequestWorkflowPreview: null,
+        },
+      ],
+      invalidGrants: [],
+      errors: [],
+      networkCalls: "none" as const,
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(String(input)).toBe(
+        "http://localhost:4317/api/setup/github?installationId=456",
+      );
+      expect(init?.headers).toEqual({ authorization: "Bearer runtime-token" });
+      return new Response(JSON.stringify(preview), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchGitHubSetup({ installationId: "456" })).resolves.toEqual(
+      preview,
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("fetches model usage totals with admin auth", async () => {

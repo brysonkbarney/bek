@@ -27,6 +27,7 @@ import {
   decideApproval,
   discoverSlackChannels,
   fetchBootstrap,
+  fetchGitHubSetup,
   fetchRunDetail,
   fetchSlackManifest,
   fetchSlackInstallStart,
@@ -40,6 +41,7 @@ import {
   type ApprovalRequest,
   type Bootstrap,
   type DiscoveredSlackChannel,
+  type GitHubSetupPreview,
   type ModelPolicy,
   type Run,
   type RunEvent,
@@ -53,6 +55,7 @@ import {
   formatDateTime,
   formatMoney,
   grantsByDecision,
+  githubConnectorSetupModel,
   setupOperationsFromStatus,
   visibleHandleAntiPatterns,
   type SetupOperation,
@@ -90,6 +93,8 @@ function ConnectorIcon({ id }: { id: string }) {
               : Database;
   return <Icon size={20} aria-hidden="true" />;
 }
+
+type ConnectorSummary = ReturnType<typeof connectorSummaries>[number];
 
 function activeSlackWorkspaceId(data: Bootstrap): string | undefined {
   return data.connectorInstalls.find(
@@ -1704,6 +1709,16 @@ export function ConnectorsPage() {
     queryKey: ["setupStatus"],
     queryFn: fetchSetupStatus,
   });
+  const {
+    data: githubSetup,
+    isLoading: isGitHubSetupLoading,
+    error: githubSetupError,
+    isFetching: isGitHubSetupFetching,
+    refetch: refetchGitHubSetup,
+  } = useQuery({
+    queryKey: ["githubSetup"],
+    queryFn: () => fetchGitHubSetup(),
+  });
   const [pendingSlackInstallUrl, setPendingSlackInstallUrl] = useState("");
   const [copiedSlackManifest, setCopiedSlackManifest] = useState(false);
   const [slackPrincipalId, setSlackPrincipalId] = useState("");
@@ -1741,8 +1756,11 @@ export function ConnectorsPage() {
   const slackSummary = connectorSummaries(data).find(
     (connector) => connector.id === "slack",
   );
+  const githubSummary = connectorSummaries(data).find(
+    (connector) => connector.id === "github",
+  );
   const otherConnectors = connectorSummaries(data).filter(
-    (connector) => connector.id !== "slack",
+    (connector) => connector.id !== "slack" && connector.id !== "github",
   );
   const humanPrincipals = (data.principals ?? []).filter(
     (principal) => principal.kind === "human",
@@ -2049,6 +2067,17 @@ export function ConnectorsPage() {
           </div>
         </Panel>
       ) : null}
+      {githubSummary ? (
+        <GitHubConnectorPanel
+          connector={githubSummary}
+          setupStatus={setupStatus}
+          setupPreview={githubSetup}
+          isLoading={isGitHubSetupLoading}
+          isFetching={isGitHubSetupFetching}
+          error={githubSetupError}
+          onRefresh={() => void refetchGitHubSetup()}
+        />
+      ) : null}
       <section className="connector-grid">
         {otherConnectors.map((connector) => (
           <Panel
@@ -2073,6 +2102,238 @@ export function ConnectorsPage() {
         ))}
       </section>
     </div>
+  );
+}
+
+function GitHubConnectorPanel({
+  connector,
+  setupStatus,
+  setupPreview,
+  isLoading,
+  isFetching,
+  error,
+  onRefresh,
+}: {
+  connector: ConnectorSummary;
+  setupStatus: SetupStatus;
+  setupPreview?: GitHubSetupPreview | undefined;
+  isLoading: boolean;
+  isFetching: boolean;
+  error: unknown;
+  onRefresh: () => void;
+}) {
+  const setup = githubConnectorSetupModel(setupStatus, setupPreview);
+  const setupProblems = [
+    ...setup.execution.errors,
+    ...setup.appConfig.errors,
+    ...setup.installation.errors,
+    ...setup.errors,
+  ];
+  const bindingIsMissing = setup.repoBindings.status === "missing";
+
+  return (
+    <Panel
+      title="GitHub App setup"
+      action={<StatusBadge value={setup.status} />}
+    >
+      {error ? (
+        <WarningCallout>
+          {errorMessage(error, "Bek could not load GitHub setup preview.")}
+        </WarningCallout>
+      ) : null}
+      {setupProblems.length > 0 ? (
+        <WarningCallout>
+          GitHub setup errors: {[...new Set(setupProblems)].join("; ")}
+        </WarningCallout>
+      ) : null}
+      {bindingIsMissing ? (
+        <WarningCallout>{setup.repoBindings.detail}</WarningCallout>
+      ) : null}
+      <div className="connector-card">
+        <div className="connector-icon">
+          <GitPullRequest size={20} aria-hidden="true" />
+        </div>
+        <div>
+          <strong>{connector.metric}</strong>
+          <p className="muted">{connector.detail}</p>
+        </div>
+      </div>
+      <div className="summary-grid connector-detail-grid">
+        <div className="summary-field">
+          <span>Execution mode</span>
+          <strong>{setup.execution.mode}</strong>
+          <small>{setup.execution.detail}</small>
+        </div>
+        <div className="summary-field">
+          <span>Network calls</span>
+          <strong>{setup.execution.networkCalls}</strong>
+          <small>Reported by /api/setup/status</small>
+        </div>
+        <div className="summary-field">
+          <span>App config</span>
+          <strong>{setup.appConfig.status}</strong>
+          <small>{setup.appConfig.detail}</small>
+        </div>
+        <div className="summary-field">
+          <span>Installation preview</span>
+          <strong>{setup.installation.installationId}</strong>
+          <small>{setup.installation.detail}</small>
+        </div>
+        <div className="summary-field">
+          <span>Repo grants</span>
+          <strong>
+            {setup.grants.valid}/{setup.grants.total} valid
+          </strong>
+          <small>{setup.grants.detail}</small>
+        </div>
+        <div className="summary-field">
+          <span>Invalid grants</span>
+          <strong>{setup.grants.invalid}</strong>
+          <small>Cannot become repo-scoped token requests</small>
+        </div>
+        <div className="summary-field wide-field">
+          <span>Repo bindings</span>
+          <strong>{setup.repoBindings.status}</strong>
+          <small>{setup.repoBindings.detail}</small>
+        </div>
+      </div>
+      {setup.appConfig.warnings.length > 0 ? (
+        <div className="chips">
+          {setup.appConfig.warnings.map((warning) => (
+            <span className="chip warning-chip" key={warning}>
+              {warning}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <section
+        className="connector-subsection"
+        aria-labelledby="github-required-permissions-heading"
+      >
+        <div className="split-row">
+          <div>
+            <h3 id="github-required-permissions-heading">
+              Required Permissions
+            </h3>
+            <p className="muted">
+              Repo-scoped token previews from /api/setup/github.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="secondary"
+            disabled={isFetching}
+            aria-busy={isFetching}
+            onClick={onRefresh}
+          >
+            <RefreshCw size={16} aria-hidden="true" />
+            {isFetching ? "Refreshing..." : "Refresh preview"}
+          </button>
+        </div>
+        {isLoading ? (
+          <EmptyState
+            title="Loading GitHub setup"
+            body="Bek is reading repo grants, App config, and installation preview state."
+          />
+        ) : setup.repositories.length === 0 ? (
+          <EmptyState
+            title="No valid repo grants"
+            body="Add a canonical github:owner/repo grant to preview permissions."
+          />
+        ) : (
+          <div className="table-scroll">
+            <table>
+              <caption className="sr-only">
+                GitHub setup required permissions
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Repository</th>
+                  <th scope="col">Grants</th>
+                  <th scope="col">Required permissions</th>
+                  <th scope="col">Installation</th>
+                  <th scope="col">Workflow</th>
+                </tr>
+              </thead>
+              <tbody>
+                {setup.repositories.map((repository) => (
+                  <tr key={repository.resource}>
+                    <td data-label="Repository">
+                      <strong>{repository.fullName}</strong>
+                      <div className="muted">{repository.resource}</div>
+                    </td>
+                    <td data-label="Grants">
+                      <div className="chips">
+                        {repository.grantCapabilities.map(
+                          (capability, index) => (
+                            <span
+                              className="chip"
+                              key={`${repository.resource}-${capability}-${index}`}
+                            >
+                              {capability}
+                            </span>
+                          ),
+                        )}
+                      </div>
+                    </td>
+                    <td data-label="Required permissions">
+                      <div className="chips">
+                        {repository.requiredPermissions.map((permission) => (
+                          <span
+                            className="chip"
+                            key={`${repository.resource}-${permission}`}
+                          >
+                            {permission}
+                          </span>
+                        ))}
+                      </div>
+                    </td>
+                    <td data-label="Installation">
+                      {repository.installationTokenInstallationId}
+                    </td>
+                    <td data-label="Workflow">
+                      {repository.workflowSteps.length > 0
+                        ? repository.workflowSteps.join(" -> ")
+                        : "read/branch token preview"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+      <section
+        className="connector-subsection"
+        aria-labelledby="github-invalid-grants-heading"
+      >
+        <h3 id="github-invalid-grants-heading">Grant Validation</h3>
+        {setup.invalidGrants.length === 0 ? (
+          <EmptyState
+            title="No invalid GitHub grants"
+            body="All GitHub grants in the preview are canonical repo resources."
+          />
+        ) : (
+          <div className="bundle-list">
+            {setup.invalidGrants.map((grant) => (
+              <div className="bundle danger-outline" key={grant.grantId}>
+                <strong>{grant.resource}</strong>
+                <span>
+                  {grant.bundleName} - {grant.capability}
+                </span>
+                <span>{grant.errors.join("; ")}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+      <div className="form-actions connector-actions">
+        <Link to={connector.route} className="secondary">
+          {connector.actionLabel}
+          <ExternalLink size={14} aria-hidden="true" />
+        </Link>
+      </div>
+    </Panel>
   );
 }
 

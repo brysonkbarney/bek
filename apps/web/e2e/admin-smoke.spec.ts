@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import type {
   Bootstrap,
+  GitHubSetupPreview,
   ModelUsage,
   RunDetail,
   SetupStatus,
@@ -84,8 +85,8 @@ const bootstrapFixture = {
     {
       id: "runtime_local",
       name: "Local worker",
-      runtimeKind: "local",
-      adapter: "node",
+      runtimeKind: "ai_sdk",
+      adapter: "ai-sdk-local-stub",
     },
   ],
   budgetPolicies: [
@@ -182,6 +183,15 @@ const setupStatusFixture = {
   missingPricedModels: [],
   modelPricingError: null,
   runtimeProfiles: 1,
+  runtimeExecutableProfiles: 1,
+  runtimeExecutionReady: true,
+  runtimeExecutionErrors: [],
+  sandboxedRuntimeProfiles: 1,
+  sandboxProviderMode: "docker-local",
+  sandboxProviderEnabled: true,
+  sandboxProviderReady: true,
+  sandboxProviderNetworkCalls: "docker_on_worker_run",
+  sandboxProviderErrors: [],
   githubGrantCount: 1,
   githubExecutionMode: "real",
   githubExecutionEnabled: true,
@@ -194,6 +204,126 @@ const setupStatusFixture = {
   readyForLocalDemo: true,
   readyForWorkspace: true,
 } satisfies SetupStatus;
+
+const githubSetupFixture = {
+  ok: true,
+  appConfig: {
+    ok: true,
+    appId: "12345",
+    privateKeyConfigured: true,
+    webhookSecretConfigured: true,
+    legacyWebhookSecretConfigured: false,
+    clientIdConfigured: false,
+    clientSecretConfigured: false,
+    errors: [],
+    warnings: [],
+  },
+  installation: {
+    configured: true,
+    source: "env",
+    installationId: "456",
+    errors: [],
+  },
+  githubGrantCount: 1,
+  validRepoGrantCount: 1,
+  invalidGrantCount: 0,
+  repositories: [
+    {
+      repository: {
+        provider: "github",
+        owner: "redohq",
+        repo: "checkout",
+        fullName: "redohq/checkout",
+        resource: "github:redohq/checkout",
+        url: "https://github.com/redohq/checkout",
+        repositoryId: 112233,
+      },
+      grants: [
+        {
+          bundleId: "bundle_checkout",
+          bundleName: "Checkout Engineering",
+          grantId: "grant_checkout_pr",
+          capability: "github.pr",
+          resource: "github:redohq/checkout",
+          decision: "ask",
+          risk: "write_external",
+          requiresApproval: true,
+        },
+      ],
+      requiredPermissions: {
+        contents: "write",
+        metadata: "read",
+        pull_requests: "write",
+      },
+      installationTokenRequestPreview: {
+        installationId: "456",
+        repository: {
+          provider: "github",
+          owner: "redohq",
+          repo: "checkout",
+          fullName: "redohq/checkout",
+          resource: "github:redohq/checkout",
+          url: "https://github.com/redohq/checkout",
+          repositoryId: 112233,
+        },
+        repositoryIds: [112233],
+        permissions: {
+          contents: "write",
+          metadata: "read",
+          pull_requests: "write",
+        },
+      },
+      draftPullRequestWorkflowPreview: {
+        type: "github.draft_pull_request_workflow_plan",
+        visibleAgentHandle: "@bek",
+        resource: "github:redohq/checkout",
+        steps: [
+          "mint_installation_token",
+          "create_branch",
+          "commit_changes",
+          "open_draft_pull_request",
+        ],
+        tokenRequestPermissions: {
+          contents: "write",
+          metadata: "read",
+          pull_requests: "write",
+        },
+        pullRequestProposal: {
+          type: "github.pull_request_proposal",
+          capability: "github.pr",
+          resource: "github:redohq/checkout",
+          draft: true,
+          baseBranch: "main",
+          headBranch: "bek/setup-preview",
+          approval: {
+            action: "github.pr",
+            risk: "write_external",
+            required: true,
+          },
+        },
+        approvalHashInput: {
+          type: "github.pull_request_write_approval",
+          version: 1,
+          action: "github.pr",
+          resource: "github:redohq/checkout",
+          repository: {
+            provider: "github",
+            owner: "redohq",
+            repo: "checkout",
+            fullName: "redohq/checkout",
+            resource: "github:redohq/checkout",
+            url: "https://github.com/redohq/checkout",
+            repositoryId: 112233,
+          },
+          installationId: "456",
+        },
+      },
+    },
+  ],
+  invalidGrants: [],
+  errors: [],
+  networkCalls: "none",
+} satisfies GitHubSetupPreview;
 
 const modelUsageFixture = {
   runs: 1,
@@ -346,6 +476,13 @@ test("loads the admin overview and navigates representative routes", async ({
     }),
   ).toBeVisible();
   await expect(page.getByText("Redo", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "GitHub App setup" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("redohq/checkout", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("contents: write")).toBeVisible();
 
   await nav.getByRole("link", { name: "Models", exact: true }).click();
   await expect(
@@ -476,6 +613,7 @@ async function installMockAdminApi(
 function responseFor(path: string): unknown {
   if (path === "/api/bootstrap") return bootstrapFixture;
   if (path === "/api/setup/status") return setupStatusFixture;
+  if (path === "/api/setup/github") return githubSetupFixture;
   if (path === "/api/model-usage") return modelUsageFixture;
   if (path === "/api/runs/run_123") return runDetailFixture;
   if (path === "/api/worker/queue") return workerQueueFixture;

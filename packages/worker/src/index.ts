@@ -22,6 +22,7 @@ import {
   createDefaultSandboxPolicy,
   type SandboxPolicy,
   type SandboxProvider,
+  type SandboxProviderKind,
 } from "@bek/sandbox";
 import {
   VercelAiGatewayModelGateway,
@@ -2845,17 +2846,62 @@ export function modelRouteModeFromEnv(
   throw new Error(`Unsupported BEK_MODEL_ROUTING_MODE ${value}.`);
 }
 
+export type SandboxProviderMode = "none" | "docker-local" | "unsupported";
+
+export interface SandboxProviderStatus {
+  mode: SandboxProviderMode;
+  enabled: boolean;
+  ready: boolean;
+  networkCalls: "none" | "docker_on_worker_run";
+  errors: string[];
+  kind?: SandboxProviderKind | undefined;
+}
+
+export function resolveSandboxProviderStatusFromEnv(
+  value = process.env.BEK_SANDBOX_PROVIDER,
+): SandboxProviderStatus {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized || normalized === "none" || normalized === "noop") {
+    return {
+      mode: "none",
+      enabled: false,
+      ready: false,
+      networkCalls: "none",
+      errors: [],
+    };
+  }
+  if (normalized === "docker" || normalized === "docker-local") {
+    return {
+      mode: "docker-local",
+      enabled: true,
+      ready: true,
+      networkCalls: "docker_on_worker_run",
+      errors: [],
+      kind: "docker-local",
+    };
+  }
+  return {
+    mode: "unsupported",
+    enabled: false,
+    ready: false,
+    networkCalls: "none",
+    errors: [`Unsupported BEK_SANDBOX_PROVIDER ${value}.`],
+  };
+}
+
 export function createSandboxProviderFromEnv(
   value = process.env.BEK_SANDBOX_PROVIDER,
 ): SandboxProvider | undefined {
-  const normalized = value?.trim().toLowerCase();
-  if (!normalized || normalized === "none" || normalized === "noop") {
+  const status = resolveSandboxProviderStatusFromEnv(value);
+  if (status.mode === "none") {
     return undefined;
   }
-  if (normalized === "docker" || normalized === "docker-local") {
+  if (status.mode === "docker-local") {
     return new DockerSandboxProvider();
   }
-  throw new Error(`Unsupported BEK_SANDBOX_PROVIDER ${value}.`);
+  throw new Error(
+    status.errors[0] ?? `Unsupported BEK_SANDBOX_PROVIDER ${value}.`,
+  );
 }
 
 function runtimeProfileRequiresSandbox(profile: RuntimeProfile): boolean {

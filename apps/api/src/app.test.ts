@@ -1153,6 +1153,18 @@ describe("Bek API", () => {
       modelPricingReady: true,
       missingPricedModels: [],
       modelPricingError: null,
+      runtimeProfiles: 2,
+      runtimeExecutableProfiles: 1,
+      runtimeExecutionReady: false,
+      runtimeExecutionErrors: [
+        "Runtime profile runtime_code uses opencode-sandbox, but BEK_SANDBOX_PROVIDER is not configured.",
+      ],
+      sandboxedRuntimeProfiles: 1,
+      sandboxProviderMode: "none",
+      sandboxProviderEnabled: false,
+      sandboxProviderReady: false,
+      sandboxProviderNetworkCalls: "none",
+      sandboxProviderErrors: [],
       githubExecutionMode: "disabled",
       githubExecutionReady: true,
       githubExecutionNetworkCalls: "none",
@@ -1364,6 +1376,7 @@ describe("Bek API", () => {
 
   it("marks the seed workspace ready when Slack scopes and GitHub execution are complete", async () => {
     process.env.BEK_GITHUB_EXECUTION = "fake";
+    process.env.BEK_SANDBOX_PROVIDER = "docker-local";
     const store = new BekStore();
     const scopes = [
       "app_mentions:read",
@@ -1410,8 +1423,78 @@ describe("Bek API", () => {
       githubExecutionEnabled: true,
       githubExecutionReady: true,
       githubExecutionNetworkCalls: "none",
+      runtimeProfiles: 2,
+      runtimeExecutableProfiles: 2,
+      runtimeExecutionReady: true,
+      runtimeExecutionErrors: [],
+      sandboxedRuntimeProfiles: 1,
+      sandboxProviderMode: "docker-local",
+      sandboxProviderEnabled: true,
+      sandboxProviderReady: true,
+      sandboxProviderNetworkCalls: "docker_on_worker_run",
+      sandboxProviderErrors: [],
       readyForLocalDemo: true,
       readyForWorkspace: true,
+    });
+  });
+
+  it("keeps the seed workspace unready when opencode-sandbox has no sandbox provider", async () => {
+    process.env.BEK_GITHUB_EXECUTION = "fake";
+    const store = new BekStore();
+    const scopes = [
+      "app_mentions:read",
+      "reactions:read",
+      "commands",
+      "chat:write",
+      "channels:read",
+      "groups:read",
+      "im:history",
+    ];
+    const install = store.upsertConnectorInstall({
+      id: "connector_slack_T123",
+      kind: "slack",
+      provider: "slack",
+      externalId: "T123",
+      displayName: "Redo",
+      status: "active",
+      metadata: {
+        teamId: "T123",
+        teamName: "Redo",
+        botUserId: "U_BEK",
+        scopes,
+      },
+    });
+    store.upsertCredential({
+      id: "credential_slack_bot_T123",
+      connectorInstallId: install.id,
+      name: "Redo Slack bot token",
+      provider: "slack",
+      externalAccountId: "T123",
+      secretRef: "bek-local-vault:slack:org_demo:T123:bot",
+      status: "active",
+      scopeSummary: scopes.join(","),
+    });
+
+    const res = await createApp(store).request("/api/setup/status");
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      missingSlackScopes: [],
+      githubExecutionMode: "fake",
+      githubExecutionEnabled: true,
+      githubExecutionReady: true,
+      runtimeProfiles: 2,
+      runtimeExecutableProfiles: 1,
+      runtimeExecutionReady: false,
+      runtimeExecutionErrors: [
+        "Runtime profile runtime_code uses opencode-sandbox, but BEK_SANDBOX_PROVIDER is not configured.",
+      ],
+      sandboxedRuntimeProfiles: 1,
+      sandboxProviderMode: "none",
+      sandboxProviderEnabled: false,
+      sandboxProviderReady: false,
+      readyForLocalDemo: true,
+      readyForWorkspace: false,
     });
   });
 
@@ -3083,6 +3166,54 @@ describe("Bek API", () => {
         }),
       }),
     );
+  });
+
+  it("fails real GitHub PR planning without an active persisted repo binding", async () => {
+    clearGitHubEnv();
+    process.env.BEK_GITHUB_EXECUTION = "real";
+    process.env.GITHUB_APP_ID = "12345";
+    process.env.GITHUB_APP_PRIVATE_KEY = testGitHubPrivateKey;
+    process.env.GITHUB_APP_WEBHOOK_SECRET = "a-webhook-secret-with-length";
+    const app = createApp(new BekStore(), {
+      runAdvancement: "worker_local",
+    });
+
+    const created = await app.request("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: "@bek open a real PR without install binding",
+        placeScopeId: "place_checkout",
+        capability: "github.pr",
+        resource: "github:redohq/checkout",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+
+    expect(created.status).toBe(201);
+    const run = (await created.json()) as { id: string; status: string };
+    expect(run.status).toBe("queued");
+    await expect(expectJson(app, `/api/runs/${run.id}`)).resolves.toMatchObject(
+      {
+        approvals: [],
+      },
+    );
+    await expect(expectJson(app, "/api/worker/queue")).resolves.toMatchObject({
+      queue: {
+        records: expect.arrayContaining([
+          expect.objectContaining({
+            item: expect.objectContaining({
+              runId: run.id,
+            }),
+            result: expect.objectContaining({
+              status: "failed",
+              error: expect.stringContaining(
+                "not bound to an active GitHub App installation",
+              ),
+            }),
+          }),
+        ]),
+      },
+    });
   });
 
   it("persists and resumes runtime-requested local worker approvals", async () => {
