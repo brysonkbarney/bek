@@ -243,6 +243,9 @@ For real Slack callback testing, expose the API with an HTTPS tunnel and set:
 
 ```bash
 export SLACK_SIGNING_SECRET=...
+export SLACK_CLIENT_ID=...
+export SLACK_CLIENT_SECRET=...
+export SLACK_STATE_SECRET="$(openssl rand -hex 32)"
 export SLACK_REDIRECT_URI=https://YOUR-TUNNEL.example.com/api/slack/oauth/callback
 export BEK_CREDENTIAL_MASTER_KEY="hex:$(openssl rand -hex 32)"
 export BEK_SLACK_OAUTH_EXCHANGE=true
@@ -256,7 +259,10 @@ token in the local encrypted vault and enables thread replies, approval
 buttons, approval decisions, and final answers through `chat:write`. You can
 start OAuth from the Slack card on `/connectors`, then refresh `/setup` or
 `/connectors` to confirm the workspace is active and the token is stored. You
-can also set `SLACK_BOT_TOKEN=xoxb-...` as a manual fallback.
+can also set `SLACK_BOT_TOKEN=xoxb-...` as a manual fallback. If
+`BEK_SLACK_OAUTH_EXCHANGE` is `false`, Bek validates callback state without
+calling Slack or storing a token; if it is unset, exchange is enabled only in
+`NODE_ENV=production`.
 
 Unsigned Slack payloads are only for local experiments:
 
@@ -292,6 +298,7 @@ pnpm check
   `BEK_WORKER_QUEUE_BACKEND=postgres` persists queue/dead-letter/event state for
   restart-safe self-hosted evaluation. Hosted or multi-instance production still
   needs daemonized workers and transactional claim/lease operations.
-- Model calls, GitHub writes, sandbox execution, and MCP tool proxying are
-  foundations, deterministic local providers, or contracts.
+- AI SDK Gateway model calls and the local Docker sandbox-command adapter are
+  opt-in. GitHub writes, hosted sandbox execution, full OpenCode repo
+  orchestration, and MCP tool proxying remain foundations or contracts.
 - Do not use this repo for production workspaces until the launch blockers in `docs/launch-readiness.md` are closed.

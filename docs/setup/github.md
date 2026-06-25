@@ -4,7 +4,7 @@ Bek's GitHub integration is an internal capability behind the same visible `@bek
 
 ## Current Status
 
-The current foundation provides local helpers only:
+The current foundation provides signed ingress and local workflow helpers:
 
 - GitHub App environment validation.
 - GitHub webhook `X-Hub-Signature-256` verification.
@@ -114,6 +114,16 @@ Point the GitHub App webhook URL at:
 ```txt
 https://<your-bek-api-host>/api/github/webhooks
 ```
+
+Use the same value in the GitHub App webhook secret field and
+`GITHUB_APP_WEBHOOK_SECRET`. The API computes the HMAC over the raw request
+body, so any proxy in front of Bek must preserve the body exactly and forward
+`X-Hub-Signature-256`, `X-GitHub-Event`, and `X-GitHub-Delivery`.
+
+For an operator smoke test, trigger GitHub's built-in `ping` delivery from the
+GitHub App settings page and confirm the response is `ok: true`. Re-sending the
+same delivery should return `deduped: true` after the first processed or ignored
+record has been persisted.
 
 ## Resource Format
 

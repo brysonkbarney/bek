@@ -15,6 +15,8 @@ review.
   `BEK_CREDENTIAL_MASTER_KEY`.
 - Slack Web API posting through stored OAuth tokens or `SLACK_BOT_TOKEN` for
   local/self-hosted deployments.
+- Signed GitHub webhook ingress for `ping`, `installation`,
+  `installation_repositories`, `pull_request`, and `check_run` events.
 - Access bundle policy, approvals, run events, redaction, and cost primitives.
 - GitHub App, model-router, MCP gateway, worker, runtime, and sandbox contracts.
 
@@ -41,16 +43,16 @@ and hosted sandbox implementation.
 
 | Boundary                      | Current control                                                                     | Open production questions                                                      |
 | ----------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Slack to API callbacks        | HMAC signature verification and 5-minute replay window.                             | Durable event dedupe, Slack team mapping, deauthorization handling.            |
+| Slack to API callbacks        | HMAC signature verification, 5-minute replay window, and snapshot-persisted dedupe. | Slack team mapping, deauthorization handling, multi-instance hardening.        |
 | API to local credential vault | AES-GCM encrypted OAuth token envelopes bound to org/credential/team context.       | Key rotation, revocation, backup/restore, KMS migration.                       |
-| API to Slack Web API          | Stored OAuth tokens or `SLACK_BOT_TOKEN`, typed client, and best-effort run events. | Durable outbound retries and delivery idempotency.                             |
+| API to Slack Web API          | Stored OAuth tokens or `SLACK_BOT_TOKEN`, typed client, and durable local outbox.   | Daemonized outbound dispatcher and stale-delivery recovery.                    |
 | Browser admin app to API      | CORS allowlist and optional bearer token, mandatory in production.                  | Real admin identity, RBAC, session management, audit completeness.             |
 | API to store                  | In-memory local store or Postgres snapshot repository.                              | Row-level command persistence, transactional audit, tenant isolation, backups. |
-| API/worker to GitHub          | Local config, signature, token, fake-client, and workflow contracts.                | Installation token broker and isolated repo work execution.                    |
+| API/worker to GitHub          | Signed webhook ingress, local config, token, fake-client, and workflow contracts.   | Installation token broker and isolated repo work execution.                    |
 | Runtime to model providers    | Model route and cost primitives.                                                    | Provider adapters, credential broker, usage accounting.                        |
 | Runtime to MCP tools          | Manifest, schema hash, quarantine, and proxy request contracts.                     | Live transport, credential scope, output redaction.                            |
 | Runtime to sandbox            | Docker policy and fake provider contracts.                                          | Hosted microVM isolation, egress enforcement, artifact scanning.               |
-| Worker queue to execution     | In-memory queue contract reloads state on claim.                                    | Durable claims, retries, cancellation, idempotent side effects.                |
+| Worker queue to execution     | In-memory queue contract with optional Postgres snapshot persistence.               | Daemonized claims, retries, cancellation, idempotent side effects.             |
 
 ## Runtime Entry Points
 
@@ -72,8 +74,16 @@ Current API entry points:
 - `POST /api/approvals/:approvalId/deny`
 - `GET /api/audit-events`
 - `GET /api/model-usage`
+- `GET /api/setup/github`
+- `GET /api/worker/queue`
+- `POST /api/worker/drain`
+- `POST /api/worker/dead-letters/:deadLetterId/redrive`
+- `GET /api/outbound/slack`
+- `POST /api/outbound/slack/drain`
 - `POST /api/policy/evaluate`
+- `POST /api/github/webhooks`
 - `GET /api/slack/install`
+- `GET /api/slack/install-url`
 - `GET /api/slack/oauth/callback`
 - `POST /api/slack/events`
 - `POST /api/slack/commands`
@@ -81,7 +91,7 @@ Current API entry points:
 
 Future high-risk entry points:
 
-- GitHub webhook ingestion.
+- GitHub webhook-to-run routing and approved GitHub write execution.
 - MCP server discovery and tool execution.
 - Model provider streaming callbacks or gateway webhooks.
 - Sandbox command execution and artifact upload/download.

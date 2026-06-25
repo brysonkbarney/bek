@@ -28,7 +28,8 @@ It can:
 - create a local Bek run when the event or slash-command channel matches seeded channel IDs,
 - redirect installers to Slack OAuth with signed state,
 - validate OAuth callback state and exchange OAuth codes when
-  `BEK_SLACK_OAUTH_EXCHANGE=true` or `NODE_ENV=production`,
+  `BEK_SLACK_OAUTH_EXCHANGE=true`, or when that variable is unset and
+  `NODE_ENV=production`,
 - store exchanged Slack bot tokens in the local encrypted credential vault when
   `BEK_CREDENTIAL_MASTER_KEY` is set,
 - parse Bek approval button actions and apply them when the Slack user is mapped to a Bek principal,
@@ -43,7 +44,9 @@ When exchange is enabled, the callback returns redacted install metadata and
 stores the bot token encrypted in the local credential vault. Set
 `BEK_CREDENTIAL_MASTER_KEY` before exchanging codes, and keep that key stable
 for persisted installs. For manual local fallback, set `SLACK_BOT_TOKEN` from
-the Slack app's Bot User OAuth Token.
+the Slack app's Bot User OAuth Token. The env templates set
+`BEK_SLACK_OAUTH_EXCHANGE=false`, so local and Compose installs validate state
+without storing a token until you explicitly opt in.
 
 It does not yet include hosted-grade KMS/secret-manager custody, rotation,
 revocation workflows, or persistent Slack user/principal mapping.
@@ -84,6 +87,11 @@ revocation workflows, or persistent Slack user/principal mapping.
    export BEK_CREDENTIAL_MASTER_KEY="hex:$(openssl rand -hex 32)"
    export BEK_SLACK_OAUTH_EXCHANGE=true
    ```
+
+   If `BEK_SLACK_OAUTH_EXCHANGE` is `false`, the callback still verifies the
+   signed state and code presence, then returns a validated status without
+   calling Slack or storing a bot token. If the variable is unset, exchange is
+   enabled only in `NODE_ENV=production`.
 
    Then open the admin console at `/connectors` or `/setup` and use the Slack
    install action. The web action calls `/api/slack/install-url` with admin

@@ -21,8 +21,9 @@ the current OSS spine.
 - [ ] Start local dependencies with `docker compose up -d`.
 - [ ] Confirm Postgres, Valkey, and MinIO are healthy with `docker compose ps`.
 - [ ] Copy `.env.docker.example` to `.env.docker`, replace
-      `BEK_ADMIN_API_TOKEN`, and set `BEK_CREDENTIAL_MASTER_KEY` before Slack
-      OAuth token storage matters.
+      `BEK_ADMIN_API_TOKEN`, generate `BEK_CREDENTIAL_MASTER_KEY`, generate
+      `SLACK_STATE_SECRET` before Slack OAuth, and generate
+      `GITHUB_APP_WEBHOOK_SECRET` before GitHub webhooks.
 - [ ] Run `docker compose --env-file .env.docker --profile app run --rm --build migrate`
       before first app startup and after pulling schema changes.
 - [ ] Start the containerized app with
@@ -50,7 +51,8 @@ the current OSS spine.
       the returned bot token in the local encrypted vault. Keep this key stable
       across API restarts and database restores.
 - [ ] Set `BEK_SLACK_OAUTH_EXCHANGE=true` outside production when testing real
-      OAuth code exchange.
+      OAuth code exchange. If it is unset, exchange is enabled only in
+      `NODE_ENV=production`; the env templates explicitly set it to `false`.
 - [ ] Confirm `/setup` or `/connectors` reports an active Slack install plus a
       stored bot token before inviting Bek into pilot channels.
 - [ ] Use `SLACK_BOT_TOKEN` with `chat:write` only as a manual fallback when no
@@ -76,6 +78,9 @@ the current OSS spine.
 
 - [ ] Create a GitHub App with least-privilege repo access.
 - [ ] Set `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, and webhook secret.
+- [ ] Point the GitHub App webhook URL at `/api/github/webhooks`, keep
+      `GITHUB_APP_WEBHOOK_SECRET` in sync with the app's webhook secret, and
+      verify a signed `ping` delivery succeeds.
 - [ ] Grant repos with canonical resources such as `github:owner/repo`.
 - [ ] Require approval for `github.branch` and `github.pr` until the workflow is
       proven safe.
@@ -149,9 +154,12 @@ the current OSS spine.
       client IP headers.
 - [ ] Review [Security Policy](../SECURITY.md) and
       [security entry points](./security/threat-model-entry-points.md).
-- [ ] Confirm request IDs, audit events, and run timelines are sufficient for
-      incident review.
-- [ ] Back up Postgres and object storage once persistent mode is enabled.
+- [ ] Confirm audit events, ingress/outbound delivery records, and run
+      timelines are sufficient for incident review.
+- [ ] Back up Postgres once persistent mode is enabled; include object storage
+      backups if artifacts are written there.
+- [ ] Store `BEK_CREDENTIAL_MASTER_KEY` separately from database backups and
+      verify a restore can still decrypt local Slack OAuth token envelopes.
 - [ ] Rotate Slack, GitHub, model-provider, MCP, and sandbox credentials on a
       defined schedule.
 - [ ] Rotate `BEK_CREDENTIAL_MASTER_KEY` only with a tested decrypt/re-encrypt

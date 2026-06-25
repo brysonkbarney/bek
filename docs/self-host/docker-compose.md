@@ -27,8 +27,10 @@ For the app profile, copy the Docker template and replace placeholder secrets:
 
 ```bash
 cp .env.docker.example .env.docker
-printf 'BEK_ADMIN_API_TOKEN=%s\n' "$(openssl rand -hex 32)"
-printf 'BEK_CREDENTIAL_MASTER_KEY=hex:%s\n' "$(openssl rand -hex 32)"
+openssl rand -hex 32 # use for BEK_ADMIN_API_TOKEN
+printf 'hex:%s\n' "$(openssl rand -hex 32)" # use for BEK_CREDENTIAL_MASTER_KEY
+openssl rand -hex 32 # use for SLACK_STATE_SECRET
+openssl rand -hex 32 # use for GITHUB_APP_WEBHOOK_SECRET
 ```
 
 Set `BEK_ADMIN_API_TOKEN` to the generated value for a trusted self-hosted admin
@@ -53,6 +55,9 @@ you specifically want to verify OAuth exchange; with `BEK_CREDENTIAL_MASTER_KEY`
 set, Bek stores the returned bot token in the local encrypted vault. Set
 `SLACK_BOT_TOKEN` in `.env.docker` only as a manual fallback for outbound
 `chat:write` replies, approval buttons, approval decisions, and final answers.
+If `BEK_SLACK_OAUTH_EXCHANGE` is unset, the API exchanges OAuth codes only when
+`NODE_ENV=production`; the Docker template pins it to `false` until the operator
+opts in deliberately.
 
 ## Start Dependencies Only
 
@@ -83,7 +88,7 @@ The API container defaults to `BEK_RUN_ADVANCEMENT=worker_local` and
 through the worker bridge while worker records, leases, dead letters, and
 worker events persist in Postgres. This is useful for restart-safe self-hosted
 evaluation; production still needs daemonized workers, lease sweepers,
-dead-letter redrive, side-effect outbox semantics, and operational metrics.
+automated outbox dispatch, redrive UI/operations, and operational metrics.
 
 For upgrades or schema checks, run the migration service explicitly before
 starting the app profile:
@@ -101,6 +106,56 @@ rebuild the web image because Vite embeds those values at build time.
 process intentionally has Docker CLI/socket access. A mounted host Docker socket
 is host-control-plane access, so do not expose it to untrusted workloads or use
 it as a multitenant isolation boundary.
+
+## Worker And Outbox Operations
+
+Export the same admin token you put in `.env.docker` before calling protected
+operator endpoints:
+
+```bash
+export BEK_ADMIN_API_TOKEN=...
+```
+
+Inspect local worker state:
+
+```bash
+curl -s http://localhost:4317/api/worker/queue \
+  -H "authorization: Bearer $BEK_ADMIN_API_TOKEN"
+```
+
+Drain pending in-process worker work and the Slack outbox:
+
+```bash
+curl -s -X POST http://localhost:4317/api/worker/drain \
+  -H "authorization: Bearer $BEK_ADMIN_API_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"maxItems":10}'
+```
+
+Inspect or retry only Slack outbound deliveries:
+
+```bash
+curl -s http://localhost:4317/api/outbound/slack \
+  -H "authorization: Bearer $BEK_ADMIN_API_TOKEN"
+
+curl -s -X POST http://localhost:4317/api/outbound/slack/drain \
+  -H "authorization: Bearer $BEK_ADMIN_API_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"limit":25}'
+```
+
+Redrive a dead letter after inspecting `GET /api/worker/queue`:
+
+```bash
+curl -s -X POST http://localhost:4317/api/worker/dead-letters/DEAD_ID/redrive \
+  -H "authorization: Bearer $BEK_ADMIN_API_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"reason":"operator redrive after fixing configuration"}'
+```
+
+Slack callbacks schedule best-effort local background draining by default. Set
+`BEK_SLACK_BACKGROUND_DRAIN=false` when you want callbacks to only persist
+ingress/run/outbound state and leave all draining to explicit operator commands.
 
 ## Run The Worker Smoke Runner
 
@@ -123,6 +178,39 @@ Remove local volumes:
 ```bash
 docker compose --profile app down -v
 ```
+
+## Backup And Restore
+
+In the current Compose profile, durable Bek snapshot state, Slack ingress
+dedupe, Slack outbound deliveries, worker records, worker events, dead letters,
+and model usage live in Postgres. Back up Postgres before upgrades and before
+rotating secrets:
+
+```bash
+docker compose --env-file .env.docker exec -T postgres \
+  sh -lc 'pg_dump --clean --if-exists -U "$POSTGRES_USER" "$POSTGRES_DB"' \
+  > bek-postgres.sql
+```
+
+Restore into an initialized database while the app containers are stopped:
+
+```bash
+docker compose --env-file .env.docker --profile app stop api web
+cat bek-postgres.sql | docker compose --env-file .env.docker exec -T postgres \
+  sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" "$POSTGRES_DB"'
+docker compose --env-file .env.docker --profile app run --rm migrate
+docker compose --env-file .env.docker --profile app up -d
+```
+
+Keep `BEK_CREDENTIAL_MASTER_KEY` backed up separately from the database backup.
+Restored Slack OAuth bot tokens cannot be decrypted without the same key and
+`BEK_CREDENTIAL_KEY_ID`. Do not rotate that key unless you have a tested
+decrypt/re-encrypt migration for stored local-vault envelopes.
+
+Valkey and MinIO are present in the local stack, but the current Bek runtime
+does not depend on Valkey queues or object-store-backed artifacts end to end.
+If you start storing artifacts in MinIO, back up the `bek-minio` volume or the
+underlying bucket alongside Postgres.
 
 ## Current Self-Host Limits
 

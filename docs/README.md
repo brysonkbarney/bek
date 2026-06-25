@@ -39,8 +39,10 @@ The repository currently ships a working local product spine:
 
 It is not production-ready yet. Slack posting can use vaulted OAuth tokens or
 `SLACK_BOT_TOKEN` in self-hosted/local deployments, but managed credential
-broker/KMS operations, GitHub writes, live MCP proxying, model-provider calls,
-durable worker execution, and production sandboxing are not wired end to end.
+broker/KMS operations, GitHub writes, live MCP proxying, daemonized worker
+execution, and production sandboxing are not wired end to end. Live AI SDK
+Gateway text generation is available only when explicitly enabled with Gateway
+auth.
 
 ## Credential Requirements
 
@@ -54,10 +56,10 @@ checklist when moving beyond the seeded demo.
 | Slack OAuth install/callback | `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_STATE_SECRET`, `SLACK_REDIRECT_URI`, `BEK_CREDENTIAL_MASTER_KEY` | Redirect/state validation works; code exchange stores the bot token in the local encrypted vault when enabled. |
 | Slack Web API posting        | Stored OAuth token or `SLACK_BOT_TOKEN` with `chat:write`                                                         | Self-hosted/local posting of thread replies, approval buttons, decisions, and final answers.                   |
 | Slack approvals              | `BEK_SLACK_USER_PRINCIPAL_MAP` for local mapping                                                                  | Parsed approval buttons can decide seeded approvals.                                                           |
-| GitHub App workflow          | `GITHUB_APP_ID`, private key, webhook secret                                                                      | Validation and local workflow contracts exist; no real writes.                                                 |
-| Model providers              | Provider key or gateway credential                                                                                | Routing and cost primitives exist; no external model calls.                                                    |
+| GitHub App workflow          | `GITHUB_APP_ID`, private key, webhook secret                                                                      | Validation, signed webhook ingress, and local workflow contracts exist; no real writes.                        |
+| Model providers              | Provider key or gateway credential                                                                                | AI SDK Gateway text generation is active when explicitly enabled; direct provider adapters remain future work. |
 | MCP servers                  | Registry/config path and tool credentials                                                                         | Schema/cache/proxy contracts exist; no live transport.                                                         |
-| Sandbox execution            | Docker or hosted sandbox provider credentials                                                                     | Policy/adapter contracts exist; production execution is blocked.                                               |
+| Sandbox execution            | Docker or hosted sandbox provider credentials                                                                     | Local Docker sandbox-command adapter is opt-in; hosted production execution is blocked.                        |
 
 ## Cost And Limit Controls
 

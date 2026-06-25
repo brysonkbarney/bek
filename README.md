@@ -23,7 +23,7 @@ The control plane underneath is explicit and inspectable:
 
 This repository is a working OSS product spine for Bek. It runs locally without external credentials, and can move into persisted/self-hosted mode when Postgres is configured:
 
-- Hono API with seeded Bek workspace data, admin-token gating, Slack event ingress, run creation, approvals, audit events, and policy evaluation.
+- Hono API with seeded Bek workspace data, admin-token gating, Slack event ingress, idempotent run creation via `Idempotency-Key`, approvals, audit events, and policy evaluation.
 - React + TanStack admin app with setup, channels, access bundles, runs, approvals, connectors, model policy, memory stance, audit, and settings.
 - Core TypeScript domain package with policy, approval, redaction, run, and security tests.
 - Slack helpers with fail-closed signature verification, OAuth state, OAuth code exchange, local encrypted install-token storage, slash-command parsing, approval interactions, message rendering, and Web API posting through vaulted OAuth tokens or `SLACK_BOT_TOKEN`.
@@ -86,12 +86,15 @@ docker compose up -d
 ```
 
 The default Compose command starts Postgres, Valkey, and MinIO. Use the `app`
-profile for the API/web containers. Set `BEK_RUN_ADVANCEMENT=worker_local` to
-make API and Slack-created runs advance through the local worker, and set
-`BEK_STORAGE=postgres` with `BEK_WORKER_QUEUE_BACKEND=postgres` to persist both
-the Bek snapshot and worker queue/dead-letter/event state in Postgres. The
-`worker` profile and `pnpm worker:local` remain deterministic runner smoke
-tests for the worker contract.
+profile for the API/web containers after copying `.env.docker.example` to
+`.env.docker` and replacing the admin token plus Slack/GitHub/vault secrets.
+The app profile defaults to `BEK_RUN_ADVANCEMENT=worker_local`,
+`BEK_STORAGE=postgres`, and `BEK_WORKER_QUEUE_BACKEND=postgres`, so the Bek
+snapshot, worker queue/dead-letter/event state, Slack ingress dedupe, and Slack
+outbox live in Postgres. Compose leaves executable sandboxes off with
+`BEK_SANDBOX_PROVIDER=none`; opt into `docker-local` only for trusted
+single-tenant evaluation. The `worker` profile and `pnpm worker:local` remain
+deterministic runner smoke tests for the worker contract.
 
 ## Install And Setup Docs
 
@@ -133,7 +136,9 @@ integrations. The local worker bridge is executable, Postgres mode persists the
 worker queue for restart-safe self-hosting, and self-hosted Slack posting can
 use stored OAuth tokens or `SLACK_BOT_TOKEN`, but hosted production still needs
 daemonized worker fleets, managed credential brokering/KMS, side-effect outbox
-semantics, and real repo/sandbox adapters. See
+dispatchers, and real repo/sandbox adapters. Signed GitHub webhook ingress is
+wired for normalized delivery persistence, but GitHub writes and installation
+token exchange remain future work. See
 [Launch Readiness](./docs/launch-readiness.md) before using Bek in a real
 workspace.
 

@@ -6,7 +6,7 @@ Bek should launch in stages. The current repo is good enough to show the product
 
 - One visible `@bek` product model is enforced in docs, seed data, UI, and schema.
 - Admin console covers setup, channels, access bundles, runs, run detail, approvals, connectors, models, memory stance, audit, and settings.
-- API supports seeded runs, approvals, audit events, policy evaluation, Slack event ingress, Slack OAuth state/exchange, admin auth when configured, signed Slack request verification, and Postgres-backed snapshot persistence when configured.
+- API supports seeded runs, `Idempotency-Key` dedupe for `/api/runs`, approvals, audit events, policy evaluation, Slack event ingress, Slack OAuth state/exchange, admin auth when configured, signed Slack request verification, and Postgres-backed snapshot persistence when configured.
 - API can run in `BEK_RUN_ADVANCEMENT=worker_local` mode, where API/Slack-created runs are enqueued, drained through the local worker runtime service, paused for approvals, resumed after approval, and reflected back into run status/events.
 - Slack events, slash commands, and interactivity callbacks persist delivery keys in the Bek snapshot so retries dedupe across API app instances and Postgres-backed restarts.
 - Slack outbound posting can use stored OAuth bot tokens or `SLACK_BOT_TOKEN`
@@ -63,9 +63,15 @@ These product items block broad design-partner rollout, not a code-only release 
   OAuth bot tokens or `SLACK_BOT_TOKEN`; hosted installs still need managed
   KMS/broker custody, rotation, revocation, access audit, and durable outbound
   delivery retries.
-- API has typed errors and request IDs.
-- Docker Compose starts all local dependencies.
+- API has typed errors, bounded request bodies, signed public callback ingress,
+  and per-process rate limiting.
+- Docker Compose starts local dependencies and an app profile with Postgres
+  persistence, local worker advancement, and sandbox execution disabled by
+  default.
 - GitHub App package can validate config, verify webhooks, parse repo resources, ingest signed webhook deliveries, and generate PR proposals without network calls.
+- Compose self-host backup/restore notes cover Postgres dumps and local
+  credential-vault key custody; managed backups and restore drills remain a
+  hosted/shared-operations requirement.
 
 ## Security
 

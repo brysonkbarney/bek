@@ -37,8 +37,9 @@ Migration-safe UUID plan:
 
 - `runs`: durable unit of work with trigger, requester, place, model policy, runtime profile, status, and cost totals.
 - `run_events`: timeline events shown to admins and users.
-- `ingress_deliveries`: idempotency records for Slack events, slash commands,
-  and interactivity callbacks, keyed uniquely per org.
+- `ingress_deliveries`: durable inbound delivery and idempotency ledger for
+  Slack callbacks, GitHub webhooks, and admin API run-creation retries, keyed
+  uniquely per org.
 - `outbound_deliveries`: durable Slack Web API message intents with stable
   rendered payloads, retry attempts, next-attempt timestamps, and terminal
   delivered/failed state.
