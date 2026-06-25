@@ -5,6 +5,10 @@
   "description": "Open-source Claude Tag-style Slack teammate: one visible handle, any model/tool/repo/sandbox behind it.",
   "type": "module",
   "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=24 <25",
+    "pnpm": "11.1.3"
+  },
   "scripts": {
     "dev": "turbo dev --parallel",
     "dev:api": "pnpm --filter @bek/api dev",
@@ -20,11 +24,11 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "smoke": "bash scripts/smoke.sh",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
   },
   "packageManager": "pnpm@11.1.3",
   "devDependencies": {
-    "@types/node": "^25.0.0",
+    "@types/node": "^24.0.0",
     "prettier": "^3.7.4",
     "turbo": "^2.6.3",
     "typescript": "^5.9.3",

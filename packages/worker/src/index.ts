@@ -34,6 +34,7 @@ import {
   type AccessBundle,
   type ApprovalRequest,
   type BekSnapshot,
+  type BudgetPolicy,
   type CapabilityGrant,
   type ModelPolicy,
   type PlaceScope,
@@ -1528,6 +1529,18 @@ export class WorkerRuntimeService {
   }> {
     let requestedApproval: ApprovalRequest | undefined;
     this.emitBudgetCheckedEvent(claim.lease.id, context.modelRoute);
+    const budgetApproval = this.createBudgetApprovalIfOverLimit(
+      claim.lease.id,
+      claim.record,
+      context,
+    );
+    if (budgetApproval) {
+      return {
+        result: budgetBlockedResult(context.modelRoute),
+        approval: budgetApproval,
+      };
+    }
+
     const sandbox = await this.createSandboxContext(
       claim.lease.id,
       claim.record,
@@ -1659,6 +1672,68 @@ export class WorkerRuntimeService {
       },
       now: this.time(),
     });
+  }
+
+  private createBudgetApprovalIfOverLimit(
+    leaseId: string,
+    record: WorkerWorkRecord,
+    context: WorkerRuntimeContext,
+  ): ApprovalRequest | undefined {
+    if (isApprovedBudgetIncrease(record)) {
+      return undefined;
+    }
+
+    const decision = runtimeBudgetGuardDecision(context);
+    if (decision.decision === "within_budget") {
+      return undefined;
+    }
+
+    const now = this.time();
+    const approval = createApprovalRequest(
+      record.item.orgId,
+      record.item.runId,
+      context.run.requesterPrincipalId,
+      "budget.increase",
+      {
+        provider: context.modelRoute.provider,
+        model: context.modelRoute.model,
+        estimatedCostCents: decision.estimatedCostCents,
+        budgetCents: decision.budgetCents,
+        budgetSource: decision.budgetSource,
+        budgetPolicyId: decision.budgetPolicyId,
+      },
+      "privileged",
+      now,
+      addMs(now, this.approvalExpiresInMs),
+    );
+
+    this.queue.emitRuntimeEvent({
+      leaseId,
+      event: {
+        type: "tool.requested",
+        message: decision.reason,
+        data: {
+          approvalId: approval.id,
+          action: approval.action,
+          kind: "budget.increase",
+          resource: `model:${context.modelRoute.model}`,
+          risk: approval.risk,
+          provider: context.modelRoute.provider,
+          model: context.modelRoute.model,
+          estimatedCostCents: decision.estimatedCostCents,
+          budgetDecision: decision.decision,
+          budgetCents: decision.budgetCents,
+          remainingBudgetCents: decision.remainingBudgetCents,
+          budgetSource: decision.budgetSource,
+          ...(decision.budgetPolicyId
+            ? { budgetPolicyId: decision.budgetPolicyId }
+            : {}),
+        },
+      },
+      now,
+    });
+
+    return approval;
   }
 
   private async createSandboxContext(
@@ -2569,6 +2644,108 @@ function modelRouteEventData(
     data.remainingBudgetCents = route.budget.remainingBudgetCents;
   }
   return data;
+}
+
+interface RuntimeBudgetGuardDecision {
+  decision: RuntimeModelBudgetPreflight["decision"];
+  estimatedCostCents: number;
+  budgetCents: number;
+  remainingBudgetCents: number;
+  budgetSource: "model_policy" | "budget_policy";
+  budgetPolicyId?: string | undefined;
+  reason: string;
+}
+
+function runtimeBudgetGuardDecision(
+  context: WorkerRuntimeContext,
+): RuntimeBudgetGuardDecision {
+  const estimatedCostCents = normalizeEstimatedCostCents(
+    context.modelRoute.budget?.estimatedCostCents ??
+      context.modelRoute.estimatedCostCents ??
+      context.run.estimatedCostCents,
+  );
+  const budgetCeiling = strictestRuntimeBudgetCeiling(context);
+  const remainingBudgetCents = budgetCeiling.budgetCents - estimatedCostCents;
+  const decision = remainingBudgetCents >= 0 ? "within_budget" : "over_budget";
+  const reason =
+    decision === "within_budget"
+      ? `Budget preflight for ${context.modelRoute.model} is within budget.`
+      : `Budget preflight blocked ${context.modelRoute.model}: estimated ${estimatedCostCents} cents exceeds ${budgetCeiling.budgetCents} cents.`;
+
+  return {
+    decision,
+    estimatedCostCents,
+    budgetCents: budgetCeiling.budgetCents,
+    remainingBudgetCents,
+    budgetSource: budgetCeiling.source,
+    reason,
+    ...(budgetCeiling.budgetPolicyId
+      ? { budgetPolicyId: budgetCeiling.budgetPolicyId }
+      : {}),
+  };
+}
+
+function strictestRuntimeBudgetCeiling(context: WorkerRuntimeContext): {
+  budgetCents: number;
+  source: "model_policy" | "budget_policy";
+  budgetPolicyId?: string | undefined;
+} {
+  const applicableBudgetPolicies = budgetPoliciesForAccessBundles(
+    context.snapshot.budgetPolicies,
+    context.accessBundles,
+    context.run.orgId,
+  );
+  const strictestBudgetPolicy = applicableBudgetPolicies.sort(
+    (left, right) => left.perRunCents - right.perRunCents,
+  )[0];
+
+  if (
+    strictestBudgetPolicy &&
+    strictestBudgetPolicy.perRunCents < context.modelPolicy.perRunBudgetCents
+  ) {
+    return {
+      budgetCents: strictestBudgetPolicy.perRunCents,
+      source: "budget_policy",
+      budgetPolicyId: strictestBudgetPolicy.id,
+    };
+  }
+
+  return {
+    budgetCents: context.modelPolicy.perRunBudgetCents,
+    source: "model_policy",
+  };
+}
+
+function budgetPoliciesForAccessBundles(
+  budgetPolicies: BudgetPolicy[],
+  accessBundles: AccessBundle[],
+  orgId: string,
+): BudgetPolicy[] {
+  const policyIds = new Set(
+    accessBundles
+      .filter((bundle) => bundle.orgId === orgId)
+      .map((bundle) => bundle.budgetPolicyId),
+  );
+  return budgetPolicies.filter(
+    (policy) => policy.orgId === orgId && policyIds.has(policy.id),
+  );
+}
+
+function isApprovedBudgetIncrease(record: WorkerWorkRecord): boolean {
+  return (
+    record.item.reason === "approval_granted" &&
+    record.approval?.action === "budget.increase" &&
+    record.approval.status === "approved"
+  );
+}
+
+function budgetBlockedResult(route: RuntimeModelRoute): RuntimeResult {
+  return {
+    status: "awaiting_approval",
+    finalText: `Budget approval required before starting ${route.model}.`,
+    artifactRefs: [],
+    actualCostCents: 0,
+  };
 }
 
 function localFinalText(input: RuntimeStartInput): string {

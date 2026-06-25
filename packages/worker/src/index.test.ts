@@ -2,7 +2,6 @@ import { createSeedSnapshot, type ApprovalRequest } from "@bek/core";
 import {
   createRunWorkItem,
   type RuntimeAdapter,
-  type RuntimeModelRoute,
   type RuntimeResult,
 } from "@bek/runtime";
 import { FakeModelGateway } from "@bek/model-router";
@@ -686,7 +685,7 @@ describe("worker runtime service", () => {
     );
   });
 
-  it("passes deterministic model budget preflight metadata to runtime adapters", async () => {
+  it("pauses over-budget model routes before starting runtime adapters", async () => {
     const { snapshot, run } = snapshotWithQueuedRun({
       runId: "run_service_budget",
     });
@@ -713,13 +712,13 @@ describe("worker runtime service", () => {
       now: baseNow,
     });
 
-    let selectedModelRoute: RuntimeModelRoute | undefined;
+    let started = false;
     const adapter: RuntimeAdapter = {
       id: "ai-sdk-local-stub",
       kind: "ai_sdk",
       canRun: () => true,
-      async start(input) {
-        selectedModelRoute = input.modelRoute;
+      async start() {
+        started = true;
         return completedResult();
       },
       async resume() {
@@ -741,17 +740,23 @@ describe("worker runtime service", () => {
     const decision = await service.processNext({ now: baseNow });
 
     expect(decision.decision).toBe("processed");
-    expect(selectedModelRoute).toMatchObject({
-      provider: "openai",
-      model: "openai/gpt-5.4",
-      estimatedCostCents: 4,
-      budget: {
-        decision: "over_budget",
-        budgetCents: 3,
-        estimatedCostCents: 4,
-        remainingBudgetCents: -1,
-        estimatedInputTokens: 7,
-        estimatedOutputTokens: 1_024,
+    if (decision.decision !== "processed") {
+      throw new Error("Expected over-budget work to pause.");
+    }
+    expect(started).toBe(false);
+    expect(decision.result).toMatchObject({
+      status: "awaiting_approval",
+      actualCostCents: 0,
+      finalText: "Budget approval required before starting openai/gpt-5.4.",
+    });
+    expect(decision.settlement.decision).toBe("paused_for_approval");
+    expect(queue.read().records[0]).toMatchObject({
+      status: "awaiting_approval",
+      attemptState: "awaiting_approval",
+      approval: {
+        action: "budget.increase",
+        risk: "privileged",
+        status: "pending",
       },
     });
 
@@ -770,18 +775,97 @@ describe("worker runtime service", () => {
         remainingBudgetCents: -1,
       },
     });
-    const runtimeSelected = events.find(
-      (event) => event.type === "runtime.selected",
-    );
-    expect(runtimeSelected).toMatchObject({
-      type: "runtime.selected",
+    expect(events.map((event) => event.type)).not.toContain("runtime.selected");
+    expect(
+      events.find((event) => event.type === "tool.requested"),
+    ).toMatchObject({
+      type: "tool.requested",
       data: {
-        adapterId: "ai-sdk-local-stub",
-        runtimeKind: "ai_sdk",
+        action: "budget.increase",
+        kind: "budget.increase",
         provider: "openai",
         model: "openai/gpt-5.4",
         estimatedCostCents: 4,
         budgetDecision: "over_budget",
+        budgetCents: 3,
+        budgetSource: "model_policy",
+      },
+    });
+  });
+
+  it("pauses when the place budget policy is stricter than the model policy", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_service_budget_policy",
+    });
+    const modelPolicy = snapshot.modelPolicies.find(
+      (policy) => policy.id === run.modelPolicyId,
+    );
+    if (!modelPolicy) {
+      throw new Error("Expected model policy.");
+    }
+    modelPolicy.perRunBudgetCents = 2000;
+    const budgetPolicy = snapshot.budgetPolicies[0];
+    if (!budgetPolicy) {
+      throw new Error("Expected budget policy.");
+    }
+    budgetPolicy.perRunCents = 3;
+
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_service_budget_policy",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+
+    let started = false;
+    const adapter: RuntimeAdapter = {
+      id: "ai-sdk-local-stub",
+      kind: "ai_sdk",
+      canRun: () => true,
+      async start() {
+        started = true;
+        return completedResult();
+      },
+      async resume() {
+        throw new Error("Unexpected resume.");
+      },
+      async cancel() {
+        throw new Error("Unexpected cancel.");
+      },
+    };
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [adapter],
+      workerId: "worker_service",
+      now: () => baseNow,
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected budget policy block.");
+    }
+    expect(started).toBe(false);
+    expect(decision.settlement.decision).toBe("paused_for_approval");
+    expect(
+      queue.read().events.find((event) => event.type === "tool.requested"),
+    ).toMatchObject({
+      data: {
+        action: "budget.increase",
+        estimatedCostCents: 4,
+        budgetCents: 3,
+        budgetSource: "budget_policy",
+        budgetPolicyId: budgetPolicy.id,
       },
     });
   });

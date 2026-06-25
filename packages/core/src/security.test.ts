@@ -118,6 +118,76 @@ describe("Bek security helpers", () => {
     });
   });
 
+  it("redacts sensitive field names in nested run metadata and events", () => {
+    const event = createRunEvent(
+      "org_demo",
+      "run_test",
+      "tool.completed",
+      "metadata updated",
+      {
+        metadata: {
+          status: "active",
+          name: "deploy",
+          passphrase: "correct horse battery staple",
+          credentialRef: "cred_live_slack",
+          credentialValue: "xoxb-1234567890-secret",
+          accessKeyId: "AKIAIOSFODNN7EXAMPLE",
+          refreshToken: "refresh-token-value",
+          clientSecret: "client-secret-value",
+          webhookSigningSecret: "webhook-signing-secret-value",
+        },
+        events: [
+          {
+            status: "queued",
+            name: "first",
+            authorization: "Bearer abcdefghijklmnop123456",
+            "api key": "api-key-value",
+          },
+          {
+            status: "complete",
+            name: "second",
+            nested: {
+              "credential-value": "credential-value",
+              signingSecret: "signing-secret-value",
+              private_key: "private-key-value",
+            },
+          },
+        ],
+      },
+    );
+
+    expect(event.data).toEqual({
+      metadata: {
+        status: "active",
+        name: "deploy",
+        passphrase: "[redacted:field]",
+        credentialRef: "[redacted:field]",
+        credentialValue: "[redacted:field]",
+        accessKeyId: "[redacted:field]",
+        refreshToken: "[redacted:field]",
+        clientSecret: "[redacted:field]",
+        webhookSigningSecret: "[redacted:field]",
+      },
+      events: [
+        {
+          status: "queued",
+          name: "first",
+          authorization: "[redacted:field]",
+          "api key": "[redacted:field]",
+        },
+        {
+          status: "complete",
+          name: "second",
+          nested: {
+            "credential-value": "[redacted:field]",
+            signingSecret: "[redacted:field]",
+            private_key: "[redacted:field]",
+          },
+        },
+      ],
+    });
+  });
+
   it("hashes approval payloads canonically", () => {
     expect(hashPayload({ b: 2, a: 1 })).toBe(hashPayload({ a: 1, b: 2 }));
   });

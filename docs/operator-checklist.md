@@ -6,7 +6,7 @@ the current OSS spine.
 
 ## Local Demo
 
-- [ ] Install Node.js 25 and pnpm 11.1.3.
+- [ ] Install Node.js 24 LTS and pnpm 11.1.3.
 - [ ] Run `pnpm install`.
 - [ ] Start Bek with `pnpm dev`.
 - [ ] Open `http://localhost:5173` and confirm the visible handle is `@bek`.
@@ -15,6 +15,13 @@ the current OSS spine.
       migrations and persistence dependencies are available.
 - [ ] Run `pnpm smoke`; it can reuse a running API or start a temporary
       memory-backed API for the local smoke flow.
+- [ ] Confirm `pnpm smoke` only uses `BEK_ALLOW_UNAUTHENTICATED_LOCAL=true`
+      for the temporary API it auto-starts. When smoking an already-running API
+      with admin auth enabled, export `BEK_ADMIN_API_TOKEN` instead.
+- [ ] Confirm the smoke covers readiness, idempotent API run creation,
+      approval decision, worker drain when enabled, Slack outbox
+      summary/drain, model usage, and audit events without Slack or GitHub
+      credentials.
 - [ ] Keep the local demo unsigned Slack mode disabled unless testing local
       payloads deliberately.
 
@@ -150,6 +157,8 @@ the current OSS spine.
 
 - [ ] Set `BEK_ADMIN_API_TOKEN` and `BEK_REQUIRE_ADMIN_AUTH=true` outside local
       demo mode.
+- [ ] Set `BEK_ALLOW_UNAUTHENTICATED_LOCAL=false` outside a disposable
+      localhost demo or the `pnpm smoke` auto-started API.
 - [ ] Set `BEK_ADMIN_ORIGINS` to explicit admin-console origins.
 - [ ] Set `BEK_MAX_REQUEST_BODY_BYTES` to the smallest value that still covers
       expected Slack callbacks, admin actions, and provider webhooks.

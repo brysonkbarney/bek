@@ -159,6 +159,30 @@ describe("model router", () => {
     ).not.toContain("offline/model");
   });
 
+  it("fails closed when a supplied registry excludes every configured candidate", () => {
+    const registry = createModelProviderRegistry([
+      {
+        id: "offline",
+        displayName: "Offline",
+        kind: "fake",
+        status: "disabled",
+        models: [
+          { id: "openai/gpt-5.4" },
+          { id: "anthropic/claude-sonnet-4.8" },
+          { id: "openai-compatible/local" },
+        ],
+      },
+    ]);
+
+    expect(() =>
+      selectModel({
+        policy,
+        benchmarks,
+        registry,
+      }),
+    ).toThrow("No model candidates were available for routing.");
+  });
+
   it("records estimate and actual costs in a run ledger", () => {
     const ledger = new InMemoryModelCostLedger();
     const route = selectModel({

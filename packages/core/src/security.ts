@@ -4,6 +4,8 @@ interface SecretPattern {
 }
 
 const redacted = (label: string): string => `[redacted:${label}]`;
+const SENSITIVE_FIELD_NAME_PATTERN =
+  /token|secret|password|passphrase|api[_-]?key|private[_-]?key|access[_-]?key|authorization|credential[_-]?(secret|value|ref)|refresh[_-]?(token|secret)|access[_-]?token|client[_-]?secret|bot[_-]?token|signing[_-]?secret|webhook[_-]?signing[_-]?secret/i;
 
 const SECRET_PATTERNS: SecretPattern[] = [
   {
@@ -66,11 +68,7 @@ export function redactUnknown(value: unknown): unknown {
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value).map(([key, entry]) => {
-        if (
-          /token|secret|password|api[_-]?key|private[_-]?key|authorization/i.test(
-            key,
-          )
-        ) {
+        if (isSensitiveFieldName(key)) {
           return [key, "[redacted:field]"];
         }
         return [key, redactUnknown(entry)];
@@ -78,4 +76,15 @@ export function redactUnknown(value: unknown): unknown {
     );
   }
   return value;
+}
+
+function isSensitiveFieldName(fieldName: string): boolean {
+  return SENSITIVE_FIELD_NAME_PATTERN.test(normalizeFieldName(fieldName));
+}
+
+function normalizeFieldName(fieldName: string): string {
+  return fieldName
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/\s+/g, "_")
+    .toLowerCase();
 }

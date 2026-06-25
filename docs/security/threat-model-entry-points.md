@@ -125,8 +125,9 @@ Future high-risk entry points:
 - Slack request signatures fail closed unless local unsigned mode is explicitly
   enabled outside production.
 - Slack OAuth state is signed, time-bounded, and verified before callback work.
-- Admin API auth is mandatory in `NODE_ENV=production` or when
-  `BEK_REQUIRE_ADMIN_AUTH=true`.
+- Admin API routes fail closed unless `BEK_ADMIN_API_TOKEN` is configured or
+  the explicit local-only `BEK_ALLOW_UNAUTHENTICATED_LOCAL=true` bypass is set
+  outside production. `BEK_REQUIRE_ADMIN_AUTH=true` disables that local bypass.
 - Access bundle policy denies by default and deny grants take precedence.
 - Approval payloads include hashes, expiry, and self-approval protections in
   current tests.

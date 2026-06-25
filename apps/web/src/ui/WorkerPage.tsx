@@ -8,13 +8,17 @@ import {
   Play,
   RefreshCw,
   RotateCcw,
+  Send,
   TimerReset,
 } from "lucide-react";
 import { useState } from "react";
 import {
   cancelRun,
+  drainSlackOutbox,
   drainWorker,
+  fetchSlackOutbox,
   fetchWorkerQueue,
+  type SlackOutboundDelivery,
   redriveDeadLetter,
   type WorkerDeadLetterRecord,
   type WorkerEvent,
@@ -34,16 +38,29 @@ import { formatDateTime, workerQueueSummary } from "./product-model";
 export function WorkerPage() {
   const queryClient = useQueryClient();
   const [maxItems, setMaxItems] = useState(10);
+  const [outboxLimit, setOutboxLimit] = useState(25);
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ["worker-queue"],
     queryFn: fetchWorkerQueue,
+    refetchInterval: 5000,
+  });
+  const outboxQuery = useQuery({
+    queryKey: ["slack-outbox"],
+    queryFn: () => fetchSlackOutbox(),
     refetchInterval: 5000,
   });
   const drainMutation = useMutation({
     mutationFn: () => drainWorker({ maxItems }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["worker-queue"] });
+      void queryClient.invalidateQueries({ queryKey: ["slack-outbox"] });
       void queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+    },
+  });
+  const drainOutboxMutation = useMutation({
+    mutationFn: () => drainSlackOutbox({ limit: outboxLimit }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["slack-outbox"] });
     },
   });
   const cancelMutation = useMutation({
@@ -77,6 +94,7 @@ export function WorkerPage() {
   }
 
   const summary = workerQueueSummary(data.queue);
+  const outboxSummary = slackOutboxSummary(outboxQuery.data?.deliveries ?? []);
 
   return (
     <div className="page">
@@ -129,12 +147,19 @@ export function WorkerPage() {
           {drainMutation.data.result.stoppedReason}.
         </SuccessCallout>
       ) : null}
+      {drainOutboxMutation.isSuccess ? (
+        <SuccessCallout>
+          Attempted {drainOutboxMutation.data.outbound.attempted} Slack delivery
+          item(s).
+        </SuccessCallout>
+      ) : null}
       {redriveMutation.isSuccess ? (
         <SuccessCallout>
           Redrive queued for {redriveMutation.data.run.id}.
         </SuccessCallout>
       ) : null}
       {drainMutation.isError ||
+      drainOutboxMutation.isError ||
       cancelMutation.isError ||
       redriveMutation.isError ? (
         <WarningCallout>
@@ -169,6 +194,56 @@ export function WorkerPage() {
         />
       </section>
 
+      <Panel
+        title="Slack Outbox"
+        action={
+          <div className="row-actions">
+            <span className="chip">{outboxSummary.queued} queued</span>
+            <span className="chip">{outboxSummary.delivered} delivered</span>
+            <span className="chip danger-chip">
+              {outboxSummary.failed} failed
+            </span>
+            <button
+              className="secondary"
+              type="button"
+              onClick={() => void outboxQuery.refetch()}
+              disabled={outboxQuery.isFetching}
+            >
+              <RefreshCw size={16} aria-hidden="true" />
+              Refresh
+            </button>
+            <label className="inline-control">
+              <span className="sr-only">Slack outbox drain limit</span>
+              <input
+                type="number"
+                min={1}
+                max={100}
+                value={outboxLimit}
+                onChange={(event) => setOutboxLimit(Number(event.target.value))}
+                aria-label="Slack outbox drain limit"
+              />
+            </label>
+            <button
+              className="primary"
+              type="button"
+              disabled={drainOutboxMutation.isPending}
+              onClick={() => drainOutboxMutation.mutate()}
+            >
+              <Send size={16} aria-hidden="true" />
+              Drain
+            </button>
+          </div>
+        }
+      >
+        {outboxQuery.isError ? (
+          <WarningCallout>Bek could not load the Slack outbox.</WarningCallout>
+        ) : outboxQuery.isLoading ? (
+          <div className="state compact-state">Loading Slack outbox...</div>
+        ) : (
+          <SlackOutboxTable deliveries={outboxQuery.data?.deliveries ?? []} />
+        )}
+      </Panel>
+
       <Panel title="Work Records">
         <WorkerRecordsTable
           records={data.queue.records}
@@ -189,6 +264,87 @@ export function WorkerPage() {
           <WorkerEventsList events={data.queue.events.slice(-8).reverse()} />
         </Panel>
       </section>
+    </div>
+  );
+}
+
+function SlackOutboxTable({
+  deliveries,
+}: {
+  deliveries: SlackOutboundDelivery[];
+}) {
+  if (deliveries.length === 0) {
+    return (
+      <EmptyState
+        title="No Slack deliveries"
+        body="Slack outbound deliveries land here."
+      />
+    );
+  }
+  return (
+    <div className="table-scroll">
+      <table className="responsive-table wide-table">
+        <caption className="sr-only">Bek Slack outbound deliveries</caption>
+        <thead>
+          <tr>
+            <th>Delivery</th>
+            <th>Status</th>
+            <th>Attempts</th>
+            <th>Run / Approval</th>
+            <th>Last Error</th>
+            <th>Next / Delivered</th>
+            <th>Updated</th>
+          </tr>
+        </thead>
+        <tbody>
+          {deliveries.map((delivery) => (
+            <tr key={delivery.id}>
+              <td data-label="Delivery">
+                <span>{delivery.id}</span>
+                <small className="muted"> {delivery.kind}</small>
+              </td>
+              <td data-label="Status">
+                <StatusBadge value={delivery.status} />
+              </td>
+              <td data-label="Attempts">
+                {delivery.attempts}/{delivery.maxAttempts}
+              </td>
+              <td data-label="Run / Approval">
+                {delivery.runId ? (
+                  <Link
+                    to="/runs/$runId"
+                    params={{ runId: delivery.runId }}
+                    className="inline-link"
+                  >
+                    {delivery.runId}
+                  </Link>
+                ) : (
+                  <span className="muted">no run</span>
+                )}
+                <small className="muted">
+                  {" "}
+                  approval {delivery.approvalId ?? "-"}
+                </small>
+              </td>
+              <td data-label="Last Error">
+                {delivery.lastError ? (
+                  <span className="truncate">{delivery.lastError}</span>
+                ) : (
+                  <span className="muted">-</span>
+                )}
+              </td>
+              <td data-label="Next / Delivered">
+                <span>{optionalDateTime(delivery.nextAttemptAt)}</span>
+                <small className="muted">
+                  {" "}
+                  delivered {optionalDateTime(delivery.deliveredAt)}
+                </small>
+              </td>
+              <td data-label="Updated">{formatDateTime(delivery.updatedAt)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -379,4 +535,19 @@ function canCancel(record: WorkerWorkRecord): boolean {
     record.status === "claimed" ||
     record.status === "awaiting_approval"
   );
+}
+
+function slackOutboxSummary(deliveries: SlackOutboundDelivery[]) {
+  return {
+    queued: deliveries.filter((delivery) => delivery.status === "queued")
+      .length,
+    delivered: deliveries.filter((delivery) => delivery.status === "delivered")
+      .length,
+    failed: deliveries.filter((delivery) => delivery.status === "failed")
+      .length,
+  };
+}
+
+function optionalDateTime(value?: string): string {
+  return value ? formatDateTime(value) : "-";
 }

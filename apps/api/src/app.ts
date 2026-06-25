@@ -189,15 +189,14 @@ export function createApp(
     }
 
     const token = process.env.BEK_ADMIN_API_TOKEN;
-    const authRequired =
-      process.env.NODE_ENV === "production" ||
-      process.env.BEK_REQUIRE_ADMIN_AUTH === "true";
     if (!token) {
-      if (authRequired) {
+      if (!allowsUnauthenticatedLocalAdminApi()) {
         return c.json(
           {
-            error:
-              "BEK_ADMIN_API_TOKEN is required when admin auth is enabled.",
+            error: [
+              "BEK_ADMIN_API_TOKEN is required for admin API routes.",
+              "For a local-only demo, set BEK_ALLOW_UNAUTHENTICATED_LOCAL=true.",
+            ].join(" "),
           },
           500,
         );
@@ -3324,6 +3323,22 @@ function shouldExchangeSlackOAuth(): boolean {
   return process.env.NODE_ENV === "production";
 }
 
+function allowsUnauthenticatedLocalAdminApi(): boolean {
+  return (
+    process.env.NODE_ENV !== "production" &&
+    process.env.BEK_REQUIRE_ADMIN_AUTH !== "true" &&
+    process.env.BEK_ALLOW_UNAUTHENTICATED_LOCAL === "true"
+  );
+}
+
+function allowsLegacySlackUserPrincipalMap(): boolean {
+  const configured = process.env.BEK_ALLOW_LEGACY_SLACK_USER_MAP;
+  if (configured !== undefined) {
+    return configured === "true";
+  }
+  return allowsUnauthenticatedLocalAdminApi();
+}
+
 function slackPrincipalIdForUser(
   slackUserId?: string | undefined,
   teamId?: string | undefined,
@@ -3353,6 +3368,9 @@ function slackPrincipalIdForUser(
     const scopedKey = `${teamId}:${slackUserId}`;
     if (Object.prototype.hasOwnProperty.call(principalMap, scopedKey)) {
       return principalIdFromSlackMapValue(principalMap[scopedKey]);
+    }
+    if (!allowsLegacySlackUserPrincipalMap()) {
+      return undefined;
     }
   }
 

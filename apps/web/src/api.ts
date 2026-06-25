@@ -340,6 +340,35 @@ export interface RedriveDeadLetterResponse extends WorkerQueueResponse {
   run: Run;
 }
 
+export interface SlackOutboundDelivery {
+  id: string;
+  provider: "slack";
+  kind: "slack.run_outcome" | "slack.approval_decision";
+  status: "queued" | "delivering" | "delivered" | "failed";
+  attempts: number;
+  maxAttempts: number;
+  runId?: string;
+  approvalId?: string;
+  lastError?: string;
+  nextAttemptAt?: string;
+  deliveredAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  target?: Record<string, unknown>;
+  payload?: Record<string, unknown>;
+}
+
+export interface SlackOutboxResponse {
+  deliveries: SlackOutboundDelivery[];
+}
+
+export interface DrainSlackOutboxResponse {
+  outbound: {
+    attempted: number;
+    deliveries: SlackOutboundDelivery[];
+  };
+}
+
 export async function fetchBootstrap(): Promise<Bootstrap> {
   return jsonRequest<Bootstrap>("/api/bootstrap");
 }
@@ -520,10 +549,34 @@ export async function fetchWorkerQueue(): Promise<WorkerQueueResponse> {
   return jsonRequest<WorkerQueueResponse>("/api/worker/queue");
 }
 
+export function slackOutboxPath(input: { includeDetails?: boolean } = {}) {
+  if (!input.includeDetails) {
+    return "/api/outbound/slack";
+  }
+  const params = new URLSearchParams({ include: "details" });
+  return `/api/outbound/slack?${params.toString()}`;
+}
+
+export async function fetchSlackOutbox(
+  input: { includeDetails?: boolean } = {},
+): Promise<SlackOutboxResponse> {
+  return jsonRequest<SlackOutboxResponse>(slackOutboxPath(input));
+}
+
 export async function drainWorker(input: {
   maxItems?: number;
 }): Promise<DrainWorkerResponse> {
   return jsonRequest<DrainWorkerResponse>("/api/worker/drain", {
+    method: "POST",
+    body: JSON.stringify(input),
+    headers: { "content-type": "application/json" },
+  });
+}
+
+export async function drainSlackOutbox(input: {
+  limit?: number;
+}): Promise<DrainSlackOutboxResponse> {
+  return jsonRequest<DrainSlackOutboxResponse>("/api/outbound/slack/drain", {
     method: "POST",
     body: JSON.stringify(input),
     headers: { "content-type": "application/json" },

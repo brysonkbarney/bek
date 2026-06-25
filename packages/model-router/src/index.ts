@@ -977,7 +977,7 @@ function filterRoutableModels(
       registered.model.enabled !== false
     );
   });
-  return routable.length > 0 ? routable : uniqueModels;
+  return routable;
 }
 
 function policyCandidateModels(policy: ModelPolicy): string[] {

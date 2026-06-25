@@ -430,6 +430,12 @@ h2 {
   color: #795c0f;
 }
 
+.danger-chip {
+  border-color: #efc4bd;
+  background: #fff5f3;
+  color: #9b352b;
+}
+
 .chip-link {
   color: #17613f;
   text-decoration: none;
@@ -515,6 +521,10 @@ table {
 
 .table-scroll table {
   min-width: 640px;
+}
+
+.table-scroll table.wide-table {
+  min-width: 980px;
 }
 
 th,
@@ -706,6 +716,10 @@ select {
 
 .state.error {
   color: #a23c32;
+}
+
+.compact-state {
+  min-height: 120px;
 }
 
 .badge {

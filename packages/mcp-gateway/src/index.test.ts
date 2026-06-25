@@ -58,7 +58,7 @@ describe("MCP gateway", () => {
     expect(canExposeTool(grants[2]!)).toBe(false);
   });
 
-  it("registers servers and parses resource formats", () => {
+  it("registers servers as pending by default and parses resource formats", () => {
     const registry = new McpServerRegistry([
       {
         id: "linear",
@@ -71,6 +71,7 @@ describe("MCP gateway", () => {
     expect(registry.getByResource("mcp:linear/create_issue")?.id).toBe(
       "linear",
     );
+    expect(registry.get("linear")?.status).toBe("pending");
     expect(parseMcpResource("mcp:docs-search.query")).toEqual({
       serverId: "docs-search",
       toolName: "query",
@@ -80,6 +81,24 @@ describe("MCP gateway", () => {
     );
   });
 
+  it("keeps pending registrations unavailable in manifests", () => {
+    const registry = new McpServerRegistry([
+      {
+        id: "linear",
+        displayName: "Linear",
+        transport: "stdio",
+        origin: "local:linear",
+      },
+    ]);
+
+    const manifest = manifestFromGrants("run_test", grants, {
+      serverRegistry: registry,
+    });
+
+    expect(manifest.tools).toHaveLength(0);
+    expect(manifest.unavailableResources).toEqual(["mcp:linear/create_issue"]);
+  });
+
   it("uses cached tool schemas in manifests", () => {
     const registry = new McpServerRegistry([
       {
@@ -87,6 +106,7 @@ describe("MCP gateway", () => {
         displayName: "Linear",
         transport: "stdio",
         origin: "local:linear",
+        status: "active",
       },
     ]);
     const cache = new ToolSchemaCache();
@@ -162,6 +182,97 @@ describe("MCP gateway", () => {
     expect(manifest.quarantinedResources).toEqual(["mcp:linear/create_issue"]);
   });
 
+  it("blocks stale schema hashes after drift approval", async () => {
+    const registry = new McpServerRegistry([
+      {
+        id: "docs",
+        displayName: "Docs",
+        transport: "in_process",
+        origin: "mock:docs",
+        status: "active",
+      },
+    ]);
+    const server = registry.get("docs")!;
+    const cache = new ToolSchemaCache();
+    const first = cache.upsert({
+      serverId: "docs",
+      toolName: "search",
+      description: "Search internal docs",
+      resource: "mcp:docs/search",
+      inputSchema: {
+        type: "object",
+        properties: { query: { type: "string" } },
+        required: ["query"],
+      },
+      risk: "read_internal",
+      cachedAt: "2026-06-24T00:00:00.000Z",
+    });
+    const grant: CapabilityGrant = {
+      id: "grant_docs_search",
+      capability: "mcp.tool",
+      resource: "mcp:docs/search",
+      decision: "allow",
+      risk: "read_internal",
+      requiresApproval: false,
+    };
+    const request = createMcpProxyRequest({
+      runId: "run_docs",
+      requestId: "tool_req_docs",
+      grant,
+      server,
+      schema: first.active!,
+      input: { query: "rollout" },
+    });
+    const drift = cache.upsert({
+      serverId: "docs",
+      toolName: "search",
+      description: "Search internal docs with limits",
+      resource: "mcp:docs/search",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          limit: { type: "integer" },
+        },
+        required: ["query"],
+      },
+      risk: "read_internal",
+      cachedAt: "2026-06-24T00:01:00.000Z",
+    });
+    const approvedSchema = cache.approve(
+      "mcp:docs/search",
+      drift.quarantined!.hash,
+    )!;
+    const allowlist = new McpTenantToolAllowlist([
+      {
+        tenantId: "tenant_alpha",
+        resource: "mcp:docs/search",
+      },
+    ]);
+    let transportCalled = false;
+    const transport = new MockMcpTransport({
+      "mcp:docs/search": () => {
+        transportCalled = true;
+        return { ok: true };
+      },
+    });
+
+    const result = await executeMcpProxyRequest({
+      tenantId: "tenant_alpha",
+      request,
+      server,
+      schema: approvedSchema,
+      allowlist,
+      transport,
+    });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      reason: "schema_mismatch",
+    });
+    expect(transportCalled).toBe(false);
+  });
+
   it("classifies risky tools and builds proxy request objects", () => {
     const registry = new McpServerRegistry([
       {
@@ -169,6 +280,7 @@ describe("MCP gateway", () => {
         displayName: "Deploy",
         transport: "stdio",
         origin: "local:deploy",
+        status: "active",
       },
     ]);
     const server = registry.get("deploy")!;
@@ -224,6 +336,139 @@ describe("MCP gateway", () => {
     expect(request.inputHash).toHaveLength(64);
   });
 
+  it("rejects invalid or unsupported tool input schemas before proxying", async () => {
+    const registry = new McpServerRegistry([
+      {
+        id: "docs",
+        displayName: "Docs",
+        transport: "in_process",
+        origin: "mock:docs",
+        status: "active",
+      },
+    ]);
+    const server = registry.get("docs")!;
+    const cache = new ToolSchemaCache();
+    const schema = cache.upsert({
+      serverId: "docs",
+      toolName: "search",
+      description: "Search internal docs",
+      resource: "mcp:docs/search",
+      inputSchema: {
+        type: "object",
+        properties: { query: { type: "string" } },
+        required: ["query"],
+        additionalProperties: false,
+      },
+      risk: "read_internal",
+      cachedAt: "2026-06-24T00:00:00.000Z",
+    }).active!;
+    const unsupportedSchemaResult = cache.upsert({
+      serverId: "docs",
+      toolName: "summarize",
+      description: "Summarize internal docs",
+      resource: "mcp:docs/summarize",
+      inputSchema: {
+        type: "object",
+        properties: { docId: {} },
+      },
+      risk: "read_internal",
+      cachedAt: "2026-06-24T00:00:00.000Z",
+    });
+    const unsupportedSchema = {
+      ...schema,
+      toolName: "summarize",
+      resource: "mcp:docs/summarize",
+      inputSchema: {
+        type: "object",
+        properties: { docId: {} },
+      },
+      hash: "unsupported_schema_hash",
+    };
+    const grant: CapabilityGrant = {
+      id: "grant_docs_search",
+      capability: "mcp.tool",
+      resource: "mcp:docs/search",
+      decision: "allow",
+      risk: "read_internal",
+      requiresApproval: false,
+    };
+    const unsupportedGrant: CapabilityGrant = {
+      ...grant,
+      id: "grant_docs_summarize",
+      resource: "mcp:docs/summarize",
+    };
+
+    expect(unsupportedSchemaResult).toMatchObject({
+      status: "quarantined",
+      reason: expect.stringContaining("Unsupported MCP input schema"),
+    });
+    expect(unsupportedSchemaResult.active).toBeUndefined();
+    expect(() =>
+      createMcpProxyRequest({
+        runId: "run_docs",
+        grant,
+        server,
+        schema,
+        input: { query: 42 },
+      }),
+    ).toThrow(/failed schema validation/);
+    expect(() =>
+      createMcpProxyRequest({
+        runId: "run_docs",
+        grant,
+        server,
+        schema,
+        input: { query: "rollout", unexpected: true },
+      }),
+    ).toThrow(/unexpected property/);
+    expect(() =>
+      createMcpProxyRequest({
+        runId: "run_docs",
+        grant: unsupportedGrant,
+        server,
+        schema: unsupportedSchema,
+        input: { docId: "doc_1" },
+      }),
+    ).toThrow(/unsupported schema/);
+
+    const request = createMcpProxyRequest({
+      runId: "run_docs",
+      requestId: "tool_req_docs",
+      grant,
+      server,
+      schema,
+      input: { query: "rollout" },
+    });
+    let transportCalled = false;
+    const transport = new MockMcpTransport({
+      "mcp:docs/search": () => {
+        transportCalled = true;
+        return { ok: true };
+      },
+    });
+    const allowlist = new McpTenantToolAllowlist([
+      {
+        tenantId: "tenant_alpha",
+        resource: "mcp:docs/search",
+      },
+    ]);
+
+    const result = await executeMcpProxyRequest({
+      tenantId: "tenant_alpha",
+      request: { ...request, input: { query: 42 } },
+      server,
+      schema,
+      allowlist,
+      transport,
+    });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      reason: "invalid_input",
+    });
+    expect(transportCalled).toBe(false);
+  });
+
   it("executes allowlisted mock transports and redacts credential references", async () => {
     const registry = new McpServerRegistry([
       {
@@ -231,6 +476,7 @@ describe("MCP gateway", () => {
         displayName: "Docs",
         transport: "in_process",
         origin: "mock:docs",
+        status: "active",
       },
     ]);
     const server = registry.get("docs")!;
@@ -309,6 +555,7 @@ describe("MCP gateway", () => {
         displayName: "Docs",
         transport: "in_process",
         origin: "mock:docs",
+        status: "active",
       },
     ]);
     const server = registry.get("docs")!;
@@ -375,6 +622,7 @@ describe("MCP gateway", () => {
         displayName: "Deploy",
         transport: "in_process",
         origin: "mock:deploy",
+        status: "active",
       },
     ]);
     const server = registry.get("deploy")!;

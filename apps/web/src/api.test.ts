@@ -3,12 +3,15 @@ import {
   adminAuthHeaders,
   cancelRunPath,
   clearAdminApiToken,
+  drainSlackOutbox,
   fetchModelUsage,
+  fetchSlackOutbox,
   hasStoredAdminToken,
   redriveDeadLetterPath,
   readAdminApiToken,
   saveAdminApiToken,
   slackInstallStartPath,
+  slackOutboxPath,
 } from "./api";
 
 describe("web API helpers", () => {
@@ -72,6 +75,16 @@ describe("web API helpers", () => {
     );
   });
 
+  it("builds Slack outbox paths with optional details", () => {
+    expect(slackOutboxPath()).toBe("/api/outbound/slack");
+    expect(slackOutboxPath({ includeDetails: false })).toBe(
+      "/api/outbound/slack",
+    );
+    expect(slackOutboxPath({ includeDetails: true })).toBe(
+      "/api/outbound/slack?include=details",
+    );
+  });
+
   it("fetches model usage totals with admin auth", async () => {
     const storage = createMemoryStorage();
     vi.stubGlobal("window", { localStorage: storage });
@@ -98,6 +111,68 @@ describe("web API helpers", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(fetchModelUsage()).resolves.toEqual(usage);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("fetches Slack outbox details with admin auth", async () => {
+    const storage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveAdminApiToken("runtime-token");
+    const outbox = {
+      deliveries: [
+        {
+          id: "outbound_123",
+          provider: "slack" as const,
+          kind: "slack.run_outcome" as const,
+          status: "queued" as const,
+          attempts: 1,
+          maxAttempts: 3,
+          runId: "run_123",
+          nextAttemptAt: "2026-06-24T10:00:00.000Z",
+          createdAt: "2026-06-24T09:00:00.000Z",
+          updatedAt: "2026-06-24T09:01:00.000Z",
+          target: { channelId: "C123" },
+          payload: { text: "ready" },
+        },
+      ],
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(String(input)).toBe(
+        "http://localhost:4317/api/outbound/slack?include=details",
+      );
+      expect(init?.headers).toEqual({ authorization: "Bearer runtime-token" });
+      return new Response(JSON.stringify(outbox), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchSlackOutbox({ includeDetails: true })).resolves.toEqual(
+      outbox,
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("drains the Slack outbox with a bounded limit", async () => {
+    const drain = { outbound: { attempted: 2, deliveries: [] } };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(String(input)).toBe(
+        "http://localhost:4317/api/outbound/slack/drain",
+      );
+      expect(init?.method).toBe("POST");
+      expect(init?.headers).toEqual({ "content-type": "application/json" });
+      expect(init?.body).toBe(JSON.stringify({ limit: 25 }));
+      return new Response(JSON.stringify(drain), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(drainSlackOutbox({ limit: 25 })).resolves.toEqual(drain);
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 });

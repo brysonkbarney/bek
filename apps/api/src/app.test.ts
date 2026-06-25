@@ -12,11 +12,14 @@ import {
 import { createGitHubWebhookSignature } from "@bek/github";
 import { BekStore, createSeedSnapshot } from "@bek/core";
 import type { WorkerSnapshot } from "@bek/worker";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "./app";
 
 const managedEnvKeys = [
+  "BEK_ALLOW_LEGACY_SLACK_USER_MAP",
+  "BEK_ALLOW_UNAUTHENTICATED_LOCAL",
   "BEK_ADMIN_API_TOKEN",
+  "BEK_REQUIRE_ADMIN_AUTH",
   "BEK_CREDENTIAL_KEY_ID",
   "BEK_CREDENTIAL_MASTER_KEY",
   "BEK_MAX_REQUEST_BODY_BYTES",
@@ -52,6 +55,10 @@ for (const key of managedEnvKeys) {
 const testCredentialMasterKey = `hex:${"7".repeat(64)}`;
 const testGitHubPrivateKey =
   "-----BEGIN RSA PRIVATE KEY-----\\nabc123\\n-----END RSA PRIVATE KEY-----";
+
+beforeEach(() => {
+  process.env.BEK_ALLOW_UNAUTHENTICATED_LOCAL = "true";
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -197,6 +204,33 @@ async function expectJson<T = unknown>(
 }
 
 describe("Bek API", () => {
+  it("requires an explicit local bypass when no admin token is configured", async () => {
+    delete process.env.BEK_ADMIN_API_TOKEN;
+    delete process.env.BEK_ALLOW_UNAUTHENTICATED_LOCAL;
+
+    const denied = await createApp().request("/api/bootstrap");
+    expect(denied.status).toBe(500);
+    await expect(denied.json()).resolves.toMatchObject({
+      error: expect.stringContaining("BEK_ALLOW_UNAUTHENTICATED_LOCAL"),
+    });
+
+    process.env.BEK_ALLOW_UNAUTHENTICATED_LOCAL = "true";
+    const allowed = await createApp().request("/api/bootstrap");
+    expect(allowed.status).toBe(200);
+  });
+
+  it("does not let the local unauthenticated bypass override required admin auth", async () => {
+    process.env.BEK_REQUIRE_ADMIN_AUTH = "true";
+    delete process.env.BEK_ADMIN_API_TOKEN;
+    process.env.BEK_ALLOW_UNAUTHENTICATED_LOCAL = "true";
+
+    const denied = await createApp().request("/api/bootstrap");
+    expect(denied.status).toBe(500);
+    await expect(denied.json()).resolves.toMatchObject({
+      error: expect.stringContaining("BEK_ADMIN_API_TOKEN"),
+    });
+  });
+
   it("protects admin API routes when an admin token is configured", async () => {
     const previousToken = process.env.BEK_ADMIN_API_TOKEN;
     process.env.BEK_ADMIN_API_TOKEN = "test-admin-token";
@@ -2674,6 +2708,64 @@ describe("Bek API", () => {
     const json = (await res.json()) as { runId: string };
 
     expect(res.status).toBe(200);
+    expect(
+      store.read().runs.find((candidate) => candidate.id === json.runId),
+    ).toMatchObject({
+      requesterPrincipalId: "principal_bryson",
+    });
+  });
+
+  it("does not use legacy Slack user mappings for team callbacks unless explicitly allowed", async () => {
+    process.env.BEK_ALLOW_LEGACY_SLACK_USER_MAP = "false";
+    mapSlackTestUsers({ U123: "principal_bryson" });
+    const store = new BekStore();
+    const app = createApp(store);
+    const initialRunCount = store.read().runs.length;
+    const rawBody = JSON.stringify({
+      team_id: "T123",
+      event_id: "EvLegacyUserMapDisabled",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek do not use the legacy unscoped identity",
+      },
+    });
+
+    const res = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: false,
+      ignored: true,
+      reason: "Slack user U123 is not mapped to a Bek principal.",
+    });
+    expect(store.read().runs).toHaveLength(initialRunCount);
+
+    process.env.BEK_ALLOW_LEGACY_SLACK_USER_MAP = "true";
+    const allowedBody = JSON.stringify({
+      team_id: "T123",
+      event_id: "EvLegacyUserMapEnabled",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek allow the explicit legacy local mapping",
+      },
+    });
+
+    const allowed = await app.request("/api/slack/events", {
+      method: "POST",
+      body: allowedBody,
+      headers: signedSlackHeaders(allowedBody),
+    });
+    const json = (await allowed.json()) as { runId: string };
+
+    expect(allowed.status).toBe(200);
     expect(
       store.read().runs.find((candidate) => candidate.id === json.runId),
     ).toMatchObject({

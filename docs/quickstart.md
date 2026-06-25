@@ -6,7 +6,7 @@ provider, MCP, or sandbox credentials.
 
 ## Prerequisites
 
-- Node.js 25, matching CI.
+- Node.js 24 LTS, matching CI.
 - pnpm 11.1.3.
 - Docker, optional for local Postgres, Valkey, and MinIO services.
 
@@ -92,20 +92,29 @@ pnpm smoke
 By default the script targets `VITE_BEK_API_URL` or
 `http://localhost:${BEK_SMOKE_API_PORT:-4317}`. If that API is already healthy,
 the script exercises it. If not, it starts `apps/api` with `BEK_STORAGE=memory`,
-`BEK_RUN_ADVANCEMENT=worker_local`, a memory worker queue, no `DATABASE_URL`,
-and no admin token, runs the checks, and stops the process.
+`BEK_RUN_ADVANCEMENT=worker_local`, a memory worker queue,
+`BEK_ALLOW_UNAUTHENTICATED_LOCAL=true`, no `DATABASE_URL`, and no admin token,
+runs the checks, and stops the process. The unauthenticated-local setting is
+only applied to this auto-started localhost API. When `pnpm smoke` reuses an
+already-running API, it does not relax auth; export `BEK_ADMIN_API_TOKEN` if
+that API requires admin authentication.
 
 The smoke flow verifies:
 
 - `/health`
 - `/ready`
-- `/api/bootstrap`
+- `/api/bootstrap`, including that ingress/outbound ledgers are not exposed
 - `/api/setup/status`
 - `/api/policy/evaluate` for allowed read and approval-gated PR policies
-- `/api/runs` creation for a seeded `github.pr` request
+- `/api/runs` creation for a seeded `github.pr` request, including
+  `Idempotency-Key` replay and conflict behavior
 - `/api/runs/:id` pending approval details and run events
 - `/api/approvals/:id/approve`
-- final completed run state and `/api/worker/queue` worker completion state
+- final completed run state, `/api/worker/drain` when worker-local mode is
+  available, and `/api/worker/queue` worker completion state
+- unsigned local Slack mention ingestion when the auto-started local API allows
+  it, plus `/api/outbound/slack` summary and `/api/outbound/slack/drain`
+- `/api/model-usage` totals and `/api/audit-events` run timeline checks
 
 To smoke the restart-safe Postgres worker queue, start Postgres, run migrations,
 and then run:
@@ -121,7 +130,9 @@ pnpm smoke
 
 Set `BEK_SMOKE_START_API=never` when you want the script to fail unless an API
 is already running. If you point the script at an API that requires admin auth,
-export `BEK_ADMIN_API_TOKEN` in the shell that runs `pnpm smoke`.
+export `BEK_ADMIN_API_TOKEN` in the shell that runs `pnpm smoke`; the smoke
+script only sets `BEK_ALLOW_UNAUTHENTICATED_LOCAL=true` for the API process it
+auto-starts itself.
 
 ## Smoke Test A Run Manually
 

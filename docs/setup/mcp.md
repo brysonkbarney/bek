@@ -7,8 +7,10 @@ Bek treats MCP tools as governed capabilities behind the single visible `@bek` t
 The repo includes local MCP gateway productization foundations:
 
 - An in-memory MCP server registry.
+- New MCP server registrations default to `pending`; tests and demos must opt into `active` explicitly.
 - A tool schema cache with deterministic schema hashes.
 - Schema drift quarantine until admin review.
+- Basic fail-closed input validation for the supported JSON Schema subset (`object`, `required`, `type`, and `additionalProperties`) before proxying.
 - A risk classifier for read, draft-write, external-write, and privileged tools.
 - Proxy request objects that bind run, grant, server, schema hash, input hash, risk, approval, and resource.
 - An in-memory per-tenant tool allowlist plus mock transport execution path that enforces server/schema coherence, tenant access, approval status, and credential-reference redaction before returning tool output.

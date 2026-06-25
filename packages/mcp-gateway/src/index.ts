@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { CapabilityGrant, Decision, RiskLevel } from "@bek/core";
 
-export type McpServerStatus = "active" | "disabled" | "quarantined";
+export type McpServerStatus = "active" | "disabled" | "pending" | "quarantined";
 export type McpTransportKind = "stdio" | "http" | "sse" | "in_process";
 export type ToolSchemaStatus = "active" | "quarantined";
 
@@ -141,6 +141,7 @@ export type MockMcpTransportHandler = (
 export type McpProxyExecutionBlockReason =
   | "approval_not_approved"
   | "approval_required"
+  | "invalid_input"
   | "schema_mismatch"
   | "schema_unavailable"
   | "server_unavailable"
@@ -236,8 +237,29 @@ export class ToolSchemaCache {
   private quarantined = new Map<string, CachedToolSchema[]>();
 
   upsert(schema: ToolSchemaInput): ToolSchemaCacheResult {
+    const schemaValidation = validateJsonSchemaShape(schema.inputSchema, "$");
     const next = normalizeToolSchema(schema, "active");
     const current = this.active.get(next.resource);
+
+    if (!schemaValidation.valid) {
+      const reason = `Unsupported MCP input schema for ${next.resource}: ${schemaValidation.reason}`;
+      const quarantined = {
+        ...next,
+        status: "quarantined" as const,
+        quarantineReason: reason,
+      };
+      this.quarantined.set(next.resource, [
+        ...(this.quarantined.get(next.resource) ?? []),
+        quarantined,
+      ]);
+
+      return {
+        status: "quarantined",
+        ...(current ? { active: cloneSchema(current) } : {}),
+        quarantined: cloneSchema(quarantined),
+        reason,
+      };
+    }
 
     if (!current) {
       this.active.set(next.resource, next);
@@ -511,6 +533,15 @@ export function createMcpProxyRequest(
       `Grant ${input.grant.id} does not match ${input.schema.resource}.`,
     );
   }
+  const validation = validateJsonSchemaInput(
+    input.input,
+    input.schema.inputSchema,
+  );
+  if (!validation.valid) {
+    throw new Error(
+      `MCP input for ${input.schema.resource} failed schema validation: ${validation.reason}`,
+    );
+  }
 
   const classified = classifyToolRisk({
     name: input.schema.toolName,
@@ -642,6 +673,306 @@ export function resourceFromTool(serverId: string, toolName: string): string {
   return `mcp:${serverId}/${toolName}`;
 }
 
+interface JsonSchemaValidationResult {
+  valid: boolean;
+  reason?: string | undefined;
+}
+
+function validateJsonSchemaInput(
+  input: Record<string, unknown>,
+  schema: Record<string, unknown>,
+): JsonSchemaValidationResult {
+  const schemaValidation = validateJsonSchemaShape(schema, "$");
+  if (!schemaValidation.valid) {
+    return schemaValidation;
+  }
+
+  return validateJsonSchemaValue(input, schema, "$");
+}
+
+function validateJsonSchemaShape(
+  schema: unknown,
+  path: string,
+): JsonSchemaValidationResult {
+  if (!isPlainRecord(schema)) {
+    return invalidSchema(path, "schema must be an object");
+  }
+
+  const type = schema.type;
+  if (typeof type !== "string") {
+    return invalidSchema(path, "schema must declare a string type");
+  }
+
+  switch (type) {
+    case "boolean":
+    case "integer":
+    case "null":
+    case "number":
+    case "string":
+      return VALID_JSON_SCHEMA_INPUT;
+    case "array": {
+      const items = schema.items;
+      if (items === undefined) {
+        return invalidSchema(path, "array schema must declare items");
+      }
+      return validateJsonSchemaShape(items, `${path}[]`);
+    }
+    case "object": {
+      const properties = readJsonSchemaProperties(schema, path);
+      if (!properties.valid) {
+        return properties;
+      }
+
+      const required = readJsonSchemaRequired(schema, path);
+      if (!required.valid) {
+        return required;
+      }
+
+      const additionalProperties = schema.additionalProperties;
+      if (
+        additionalProperties !== undefined &&
+        typeof additionalProperties !== "boolean" &&
+        !isPlainRecord(additionalProperties)
+      ) {
+        return invalidSchema(
+          path,
+          "additionalProperties must be boolean or a schema object",
+        );
+      }
+
+      for (const [fieldName, propertySchema] of Object.entries(
+        properties.schemas,
+      )) {
+        const propertyResult = validateJsonSchemaShape(
+          propertySchema,
+          `${path}.${fieldName}`,
+        );
+        if (!propertyResult.valid) {
+          return propertyResult;
+        }
+      }
+
+      if (isPlainRecord(additionalProperties)) {
+        return validateJsonSchemaShape(additionalProperties, `${path}.*`);
+      }
+
+      return VALID_JSON_SCHEMA_INPUT;
+    }
+    default:
+      return invalidSchema(path, `unsupported type ${type}`);
+  }
+}
+
+function validateJsonSchemaValue(
+  value: unknown,
+  schema: unknown,
+  path: string,
+): JsonSchemaValidationResult {
+  if (!isPlainRecord(schema)) {
+    return invalidSchema(path, "schema must be an object");
+  }
+
+  const type = schema.type;
+  if (typeof type !== "string") {
+    return invalidSchema(path, "schema must declare a string type");
+  }
+
+  switch (type) {
+    case "object":
+      return validateJsonSchemaObject(value, schema, path);
+    case "array":
+      return validateJsonSchemaArray(value, schema, path);
+    case "boolean":
+      return typeof value === "boolean"
+        ? VALID_JSON_SCHEMA_INPUT
+        : invalidValue(path, "expected boolean");
+    case "integer":
+      return Number.isInteger(value)
+        ? VALID_JSON_SCHEMA_INPUT
+        : invalidValue(path, "expected integer");
+    case "number":
+      return typeof value === "number" && Number.isFinite(value)
+        ? VALID_JSON_SCHEMA_INPUT
+        : invalidValue(path, "expected finite number");
+    case "null":
+      return value === null
+        ? VALID_JSON_SCHEMA_INPUT
+        : invalidValue(path, "expected null");
+    case "string":
+      return typeof value === "string"
+        ? VALID_JSON_SCHEMA_INPUT
+        : invalidValue(path, "expected string");
+    default:
+      return invalidSchema(path, `unsupported type ${type}`);
+  }
+}
+
+function validateJsonSchemaObject(
+  value: unknown,
+  schema: Record<string, unknown>,
+  path: string,
+): JsonSchemaValidationResult {
+  if (!isPlainRecord(value)) {
+    return invalidValue(path, "expected object");
+  }
+
+  const properties = readJsonSchemaProperties(schema, path);
+  if (!properties.valid) {
+    return properties;
+  }
+
+  const required = readJsonSchemaRequired(schema, path);
+  if (!required.valid) {
+    return required;
+  }
+
+  for (const fieldName of required.fields) {
+    if (!Object.hasOwn(value, fieldName)) {
+      return invalidValue(`${path}.${fieldName}`, "missing required property");
+    }
+  }
+
+  const additionalProperties = schema.additionalProperties;
+  if (
+    additionalProperties !== undefined &&
+    typeof additionalProperties !== "boolean" &&
+    !isPlainRecord(additionalProperties)
+  ) {
+    return invalidSchema(
+      path,
+      "additionalProperties must be boolean or a schema object",
+    );
+  }
+
+  for (const [fieldName, fieldValue] of Object.entries(value)) {
+    const propertySchema = properties.schemas[fieldName];
+    if (propertySchema) {
+      const propertyResult = validateJsonSchemaValue(
+        fieldValue,
+        propertySchema,
+        `${path}.${fieldName}`,
+      );
+      if (!propertyResult.valid) {
+        return propertyResult;
+      }
+      continue;
+    }
+
+    if (additionalProperties === false) {
+      return invalidValue(`${path}.${fieldName}`, "unexpected property");
+    }
+
+    if (isPlainRecord(additionalProperties)) {
+      const additionalResult = validateJsonSchemaValue(
+        fieldValue,
+        additionalProperties,
+        `${path}.${fieldName}`,
+      );
+      if (!additionalResult.valid) {
+        return additionalResult;
+      }
+    }
+  }
+
+  return VALID_JSON_SCHEMA_INPUT;
+}
+
+function validateJsonSchemaArray(
+  value: unknown,
+  schema: Record<string, unknown>,
+  path: string,
+): JsonSchemaValidationResult {
+  if (!Array.isArray(value)) {
+    return invalidValue(path, "expected array");
+  }
+
+  const items = schema.items;
+  if (items === undefined) {
+    return invalidSchema(path, "array schema must declare items");
+  }
+
+  if (!isPlainRecord(items)) {
+    return invalidSchema(path, "items must be a schema object");
+  }
+
+  for (const [index, item] of value.entries()) {
+    const itemResult = validateJsonSchemaValue(
+      item,
+      items,
+      `${path}[${index}]`,
+    );
+    if (!itemResult.valid) {
+      return itemResult;
+    }
+  }
+
+  return VALID_JSON_SCHEMA_INPUT;
+}
+
+function readJsonSchemaProperties(
+  schema: Record<string, unknown>,
+  path: string,
+): JsonSchemaValidationResult & { schemas: Record<string, unknown> } {
+  const properties = schema.properties;
+  if (properties === undefined) {
+    return { ...VALID_JSON_SCHEMA_INPUT, schemas: {} };
+  }
+
+  if (!isPlainRecord(properties)) {
+    return {
+      ...invalidSchema(path, "properties must be an object"),
+      schemas: {},
+    };
+  }
+
+  for (const [fieldName, propertySchema] of Object.entries(properties)) {
+    if (!isPlainRecord(propertySchema)) {
+      return {
+        ...invalidSchema(
+          `${path}.${fieldName}`,
+          "property schema must be an object",
+        ),
+        schemas: {},
+      };
+    }
+  }
+
+  return { ...VALID_JSON_SCHEMA_INPUT, schemas: properties };
+}
+
+function readJsonSchemaRequired(
+  schema: Record<string, unknown>,
+  path: string,
+): JsonSchemaValidationResult & { fields: string[] } {
+  const required = schema.required;
+  if (required === undefined) {
+    return { ...VALID_JSON_SCHEMA_INPUT, fields: [] };
+  }
+
+  if (!Array.isArray(required) || !required.every(isString)) {
+    return {
+      ...invalidSchema(path, "required must be an array of strings"),
+      fields: [],
+    };
+  }
+
+  return { ...VALID_JSON_SCHEMA_INPUT, fields: required };
+}
+
+function invalidSchema(
+  path: string,
+  reason: string,
+): JsonSchemaValidationResult {
+  return { valid: false, reason: `unsupported schema at ${path}: ${reason}` };
+}
+
+function invalidValue(
+  path: string,
+  reason: string,
+): JsonSchemaValidationResult {
+  return { valid: false, reason: `${path} ${reason}` };
+}
+
 function validateExecutableRequest(
   input: ExecuteMcpProxyRequestInput,
 ): McpProxyExecutionBlocked | undefined {
@@ -672,6 +1003,18 @@ function validateExecutableRequest(
       input,
       "schema_mismatch",
       `MCP request ${input.request.id} does not match the active server/schema contract.`,
+    );
+  }
+
+  const inputValidation = validateJsonSchemaInput(
+    input.request.input,
+    input.schema.inputSchema,
+  );
+  if (!inputValidation.valid) {
+    return blockExecution(
+      input,
+      "invalid_input",
+      `MCP request ${input.request.id} input failed schema validation: ${inputValidation.reason}`,
     );
   }
 
@@ -778,7 +1121,7 @@ function normalizeServer(server: McpServerRegistration): RegisteredMcpServer {
     displayName: server.displayName,
     transport: server.transport,
     origin: server.origin,
-    status: server.status ?? "active",
+    status: server.status ?? "pending",
   };
   if (server.tags) {
     normalized.tags = [...server.tags];
@@ -1024,6 +1367,24 @@ function stableJson(value: unknown): unknown {
 function cloneRecord(record: Record<string, unknown>): Record<string, unknown> {
   return stableJson(record) as Record<string, unknown>;
 }
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (Object.getPrototypeOf(value) === Object.prototype ||
+      Object.getPrototypeOf(value) === null)
+  );
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+const VALID_JSON_SCHEMA_INPUT: JsonSchemaValidationResult = Object.freeze({
+  valid: true,
+});
 
 const MCP_CREDENTIAL_REDACTION_PATTERNS: Array<{
   pattern: RegExp;
