@@ -8,6 +8,9 @@ SMOKE_STORAGE="${BEK_SMOKE_STORAGE:-memory}"
 SMOKE_WORKER_QUEUE_BACKEND="${BEK_SMOKE_WORKER_QUEUE_BACKEND:-${SMOKE_STORAGE}}"
 API_PID=""
 API_LOG=""
+STARTED_API="false"
+
+export BEK_SMOKE_SLACK_SIGNING_SECRET="${BEK_SMOKE_SLACK_SIGNING_SECRET:-bek-smoke-slack-secret}"
 
 case "${START_API}" in
   auto | never) ;;
@@ -89,8 +92,9 @@ start_api() {
     BEK_STORAGE="${SMOKE_STORAGE}" \
     BEK_WORKER_QUEUE_BACKEND="${SMOKE_WORKER_QUEUE_BACKEND}" \
     BEK_RUN_ADVANCEMENT=worker_local \
-    BEK_DEV_UNSIGNED_SLACK=true \
+    BEK_DEV_UNSIGNED_SLACK=false \
     BEK_SLACK_BACKGROUND_DRAIN=false \
+    SLACK_SIGNING_SECRET="${BEK_SMOKE_SLACK_SIGNING_SECRET}" \
     'BEK_SLACK_USER_PRINCIPAL_MAP={"U123":"principal_admin","T123:U123":"principal_admin"}' \
     BEK_API_PORT="${port}"
   )
@@ -104,6 +108,7 @@ start_api() {
   fi
   env "${env_args[@]}" pnpm --filter @bek/api start >"${API_LOG}" 2>&1 &
   API_PID="$!"
+  STARTED_API="true"
 }
 
 wait_for_api() {
@@ -139,10 +144,15 @@ else
 fi
 
 export API_URL
+export BEK_SMOKE_STARTED_API="${STARTED_API}"
 
 node --input-type=module <<'NODE'
+import { createHmac } from "node:crypto";
+
 const apiUrl = process.env.API_URL;
 const adminToken = process.env.BEK_ADMIN_API_TOKEN;
+const apiStartedBySmoke = process.env.BEK_SMOKE_STARTED_API === "true";
+const slackSigningSecret = process.env.BEK_SMOKE_SLACK_SIGNING_SECRET ?? "bek-smoke-slack-secret";
 
 function assert(condition, message) {
   if (!condition) {
@@ -220,6 +230,27 @@ function postJsonInit(body, headers = {}) {
     body: JSON.stringify(body),
     headers: { "content-type": "application/json", ...headers },
   };
+}
+
+function signedSlackJsonInit(body) {
+  const rawBody = JSON.stringify(body);
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const signature = createSlackSignature(slackSigningSecret, timestamp, rawBody);
+  return {
+    method: "POST",
+    body: rawBody,
+    headers: {
+      "content-type": "application/json",
+      "x-slack-request-timestamp": timestamp,
+      "x-slack-signature": signature,
+    },
+  };
+}
+
+function createSlackSignature(secret, timestamp, rawBody) {
+  return `v0=${createHmac("sha256", secret)
+    .update(`v0:${timestamp}:${rawBody}`)
+    .digest("hex")}`;
 }
 
 async function postJson(path, body, headers = {}) {
@@ -673,7 +704,7 @@ try {
       ts: `${Math.floor(Date.now() / 1000)}.000001`,
     },
   };
-  const slackEvent = await tryJsonRequest("/api/slack/events", postJsonInit(slackEventBody));
+  const slackEvent = await tryJsonRequest("/api/slack/events", signedSlackJsonInit(slackEventBody));
   let slackRunId;
   if (slackEvent.ok && slackEvent.body?.ok === true && slackEvent.body?.runId) {
     slackRunId = slackEvent.body.runId;
@@ -681,9 +712,15 @@ try {
       const slackWorkerDrain = await postJson("/api/worker/drain", { maxItems: 10 });
       assert(slackWorkerDrain.enabled === true, "Slack worker drain should run when worker-local is enabled.");
     }
+  } else if (apiStartedBySmoke) {
+    throw new Error(
+      `Signed Slack ingress failed against the smoke-started API: POST /api/slack/events returned ${slackEvent.status}${
+        slackEvent.body?.error ? ` (${slackEvent.body.error})` : ""
+      }`,
+    );
   } else {
     console.log(
-      `Skipping Slack ingress loop: POST /api/slack/events returned ${slackEvent.status}${
+      `Skipping signed Slack ingress loop for existing API: POST /api/slack/events returned ${slackEvent.status}${
         slackEvent.body?.error ? ` (${slackEvent.body.error})` : ""
       }`,
     );

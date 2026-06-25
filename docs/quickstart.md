@@ -106,11 +106,15 @@ By default the script targets `VITE_BEK_API_URL` or
 `http://localhost:${BEK_SMOKE_API_PORT:-4317}`. If that API is already healthy,
 the script exercises it. If not, it starts `apps/api` with `BEK_STORAGE=memory`,
 `BEK_RUN_ADVANCEMENT=worker_local`, a memory worker queue,
-`BEK_ALLOW_UNAUTHENTICATED_LOCAL=true`, no `DATABASE_URL`, and no admin token,
-runs the checks, and stops the process. The unauthenticated-local setting is
-only applied to this auto-started localhost API. When `pnpm smoke` reuses an
-already-running API, it does not relax auth; export `BEK_ADMIN_API_TOKEN` if
-that API requires admin authentication.
+`BEK_ALLOW_UNAUTHENTICATED_LOCAL=true`, `BEK_DEV_UNSIGNED_SLACK=false`, a
+deterministic `SLACK_SIGNING_SECRET` derived from
+`BEK_SMOKE_SLACK_SIGNING_SECRET`, no `DATABASE_URL`, and no admin token, runs
+the checks, and stops the process. The unauthenticated-local setting and smoke
+signing secret are only applied to this auto-started localhost API. When
+`pnpm smoke` reuses an already-running API, it does not relax auth or override
+that API's Slack signing secret; export `BEK_ADMIN_API_TOKEN` if that API
+requires admin authentication, and set `BEK_SMOKE_SLACK_SIGNING_SECRET` only if
+you want the signed Slack smoke event to match the existing API.
 
 The smoke flow verifies:
 
@@ -125,8 +129,10 @@ The smoke flow verifies:
 - `/api/approvals/:id/approve`
 - final completed run state, `/api/worker/drain` when worker-local mode is
   available, and `/api/worker/queue` worker completion state
-- unsigned local Slack mention ingestion when the auto-started local API allows
-  it, plus `/api/outbound/slack` summary and `/api/outbound/slack/drain`
+- channel/access-bundle/grant governance mutations, invalid grant rejection,
+  model/runtime policy patch and restore, and principal identity linking
+- signed Slack mention ingestion for the auto-started API, plus
+  `/api/outbound/slack` summary and `/api/outbound/slack/drain`
 - `/api/model-usage` totals and `/api/audit-events` run timeline checks
 
 To smoke the restart-safe Postgres worker queue, start Postgres, run migrations,

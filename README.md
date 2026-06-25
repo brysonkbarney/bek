@@ -76,9 +76,10 @@ pnpm smoke
 
 `pnpm smoke` reuses `VITE_BEK_API_URL` when it already points at a healthy
 API. Otherwise it starts a temporary memory-backed API with
-`BEK_RUN_ADVANCEMENT=worker_local`, verifies bootstrap, setup status, policy
-evaluation, approval-gated run creation, worker completion, and approval
-completion, then stops the API process.
+`BEK_RUN_ADVANCEMENT=worker_local`, a deterministic Slack signing secret,
+verifies bootstrap, setup status, governance mutations, policy evaluation,
+approval-gated run creation, worker completion, signed Slack ingress, Slack
+outbox behavior, usage, and audit events, then stops the API process.
 
 To smoke the restart-safe Postgres worker queue, run migrations first and then:
 
