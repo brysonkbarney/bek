@@ -25,6 +25,7 @@ export interface BekApiStoreHandle {
   workerQueueBackend: BekWorkerQueueBackend;
   workerQueuePersistence?: BekWorkerQueuePersistence | undefined;
   modelUsageRepository?: Partial<ModelUsageRepository> | undefined;
+  readinessCheck?: (() => Promise<Record<string, unknown>>) | undefined;
   close: () => Promise<void>;
 }
 
@@ -92,6 +93,10 @@ export async function createApiStoreFromEnv(
       store,
       storageMode,
       workerQueueBackend: selectWorkerQueueBackend(env, storageMode),
+      readinessCheck: async () => ({
+        storageMode,
+        workerQueueBackend: selectWorkerQueueBackend(env, storageMode),
+      }),
       close: () => store.flushChanges(),
     };
   }
@@ -167,17 +172,50 @@ async function createPostgresStoreHandle(
     workerQueueBackend === "postgres"
       ? await createPostgresWorkerQueuePersistence(client, orgId)
       : undefined;
+  const modelUsageRepository = createApiModelUsageRepository(client);
 
   return {
     store,
     storageMode: "postgres",
     workerQueueBackend,
     workerQueuePersistence,
-    modelUsageRepository: createApiModelUsageRepository(client),
+    modelUsageRepository,
+    readinessCheck: () =>
+      checkPostgresReadiness({
+        client,
+        orgId,
+        repository,
+        workerQueueBackend,
+      }),
     close: async () => {
       await store.flushChanges();
       await client.close();
     },
+  };
+}
+
+async function checkPostgresReadiness(input: {
+  client: BekDbClient;
+  orgId: string;
+  repository: DrizzleBekSnapshotRepository;
+  workerQueueBackend: BekWorkerQueueBackend;
+}): Promise<Record<string, unknown>> {
+  const snapshot = await input.repository.readSnapshot(input.orgId);
+  if (!snapshot) {
+    throw new Error(`Bek snapshot ${input.orgId} is not available.`);
+  }
+  if (input.workerQueueBackend === "postgres") {
+    await new DrizzleWorkerQueueRepository(input.client.db).readSnapshot(
+      input.orgId,
+    );
+  }
+  await new DrizzleModelUsageRepository(input.client.db).summarizeUsage({
+    orgId: input.orgId,
+  });
+  return {
+    storageMode: "postgres",
+    workerQueueBackend: input.workerQueueBackend,
+    orgId: input.orgId,
   };
 }
 

@@ -59,6 +59,7 @@ and hosted sandbox implementation.
 Current API entry points:
 
 - `GET /health`
+- `GET /ready`
 - `GET /api/bootstrap`
 - `GET /api/org`
 - `GET /api/agent`

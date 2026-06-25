@@ -695,6 +695,55 @@ describe("Bek API", () => {
     });
   });
 
+  it("returns readiness with persistence checks", async () => {
+    const res = await createApp(new BekStore(), {
+      readinessCheck: async () => ({
+        storageMode: "memory",
+        workerQueueBackend: "memory",
+      }),
+    }).request("/ready");
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: true,
+      name: "bek-api",
+      checks: {
+        store: { ok: true },
+        modelUsage: { ok: true },
+        workerQueue: { ok: true, skipped: true },
+        persistence: {
+          ok: true,
+          details: {
+            storageMode: "memory",
+            workerQueueBackend: "memory",
+          },
+        },
+      },
+    });
+  });
+
+  it("fails readiness and redacts secret-shaped check errors", async () => {
+    const res = await createApp(new BekStore(), {
+      readinessCheck: async () => {
+        throw new Error(
+          "database unavailable for xoxb-secret-token-value12345",
+        );
+      },
+    }).request("/ready");
+
+    expect(res.status).toBe(503);
+    const json = (await res.json()) as {
+      ok: boolean;
+      checks: { persistence: { ok: boolean; error: string } };
+    };
+    expect(json.ok).toBe(false);
+    expect(json.checks.persistence).toMatchObject({
+      ok: false,
+      error: "database unavailable for [redacted:slack-token]",
+    });
+    expect(json.checks.persistence.error).not.toContain("secret-token");
+  });
+
   it("reports setup status for the local product spine", async () => {
     const res = await createApp().request("/api/setup/status");
 

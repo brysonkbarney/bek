@@ -11,6 +11,8 @@ the current OSS spine.
 - [ ] Start Bek with `pnpm dev`.
 - [ ] Open `http://localhost:5173` and confirm the visible handle is `@bek`.
 - [ ] Confirm `GET http://localhost:4317/health` returns `ok: true`.
+- [ ] Confirm `GET http://localhost:4317/ready` returns `ok: true` after
+      migrations and persistence dependencies are available.
 - [ ] Run `pnpm smoke`; it can reuse a running API or start a temporary
       memory-backed API for the local smoke flow.
 - [ ] Keep the local demo unsigned Slack mode disabled unless testing local
@@ -28,8 +30,9 @@ the current OSS spine.
       before first app startup and after pulling schema changes.
 - [ ] Start the containerized app with
       `docker compose --env-file .env.docker --profile app up -d --build`.
-- [ ] Confirm the admin console and API health at `http://localhost:5173` and
-      `http://localhost:4317/health`.
+- [ ] Confirm the admin console, API liveness, and API readiness at
+      `http://localhost:5173`, `http://localhost:4317/health`, and
+      `http://localhost:4317/ready`.
 - [ ] Run `DATABASE_URL=postgres://bek:bek@localhost:54329/bek pnpm db:migrate`
       when testing the Drizzle schema.
 - [ ] Run `DATABASE_URL=postgres://bek:bek@localhost:54329/bek pnpm db:seed`

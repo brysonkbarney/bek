@@ -46,6 +46,7 @@ Open:
 
 - Admin app: http://localhost:5173
 - API health: http://localhost:4317/health
+- API readiness: http://localhost:4317/ready
 
 Run verification:
 

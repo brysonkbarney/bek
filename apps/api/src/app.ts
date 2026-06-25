@@ -79,6 +79,7 @@ export interface CreateAppOptions {
   slackClient?: SlackWebApiClient | undefined;
   workerQueuePersistence?: WorkerQueuePersistenceOptions | undefined;
   modelUsageRepository?: Partial<ModelUsageRepository> | undefined;
+  readinessCheck?: (() => Promise<Record<string, unknown>>) | undefined;
 }
 
 type CreateStoreRunInput = Parameters<BekStore["createRun"]>[0];
@@ -87,6 +88,18 @@ type PublicBekSnapshot = Omit<
   BekSnapshot,
   "ingressDeliveries" | "outboundDeliveries"
 >;
+type ReadinessStepResult =
+  | {
+      ok: true;
+      latencyMs: number;
+      skipped?: boolean | undefined;
+      details?: Record<string, unknown> | undefined;
+    }
+  | {
+      ok: false;
+      latencyMs: number;
+      error: string;
+    };
 
 export function createApp(
   store = new BekStore(),
@@ -587,6 +600,42 @@ export function createApp(
       time: new Date().toISOString(),
     }),
   );
+
+  app.get("/ready", async (c) => {
+    const startedAt = Date.now();
+    const checks: Record<string, ReadinessStepResult> = {};
+
+    await recordReadinessStep(checks, "store", () => store.flushChanges());
+    if (workerController.enabled) {
+      await recordReadinessStep(checks, "workerQueue", () =>
+        workerController.flushChanges(),
+      );
+    } else {
+      checks.workerQueue = readinessSkipped("Worker advancement is disabled.");
+    }
+    await recordReadinessStep(checks, "modelUsage", () =>
+      workerController.flushModelUsageChanges(),
+    );
+    if (options.readinessCheck) {
+      await recordReadinessStep(checks, "persistence", options.readinessCheck);
+    } else {
+      checks.persistence = readinessSkipped(
+        "No external persistence readiness check is configured.",
+      );
+    }
+
+    const ok = Object.values(checks).every((check) => check.ok);
+    return c.json(
+      {
+        ok,
+        name: "bek-api",
+        time: new Date().toISOString(),
+        latencyMs: Date.now() - startedAt,
+        checks,
+      },
+      ok ? 200 : 503,
+    );
+  });
 
   app.get("/api/bootstrap", (c) => c.json(publicSnapshot(store.read())));
   app.get("/api/org", (c) => c.json(store.read().org));
@@ -3281,6 +3330,40 @@ function slackUserMappingText(slackUserId?: string | undefined): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function recordReadinessStep(
+  checks: Record<string, ReadinessStepResult>,
+  key: string,
+  check: () =>
+    | Promise<Record<string, unknown> | void>
+    | Record<string, unknown>
+    | void,
+) {
+  const startedAt = Date.now();
+  try {
+    const details = await check();
+    checks[key] = {
+      ok: true,
+      latencyMs: Date.now() - startedAt,
+      ...(details && Object.keys(details).length > 0 ? { details } : {}),
+    };
+  } catch (error) {
+    checks[key] = {
+      ok: false,
+      latencyMs: Date.now() - startedAt,
+      error: redactSecrets(errorMessage(error)),
+    };
+  }
+}
+
+function readinessSkipped(reason: string): ReadinessStepResult {
+  return {
+    ok: true,
+    skipped: true,
+    latencyMs: 0,
+    details: { reason },
+  };
 }
 
 function safeIdPart(value: string): string {

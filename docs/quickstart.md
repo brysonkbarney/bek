@@ -67,7 +67,8 @@ Open:
 
 - Admin console: `http://localhost:5173`
 - Setup status: `http://localhost:5173/setup`
-- API health: `http://localhost:4317/health`
+- API liveness: `http://localhost:4317/health`
+- API readiness: `http://localhost:4317/ready`
 
 Use the setup and connector cards as the main readiness view once you move
 beyond the zero-config seeded demo.
@@ -97,6 +98,7 @@ and no admin token, runs the checks, and stops the process.
 The smoke flow verifies:
 
 - `/health`
+- `/ready`
 - `/api/bootstrap`
 - `/api/setup/status`
 - `/api/policy/evaluate` for allowed read and approval-gated PR policies

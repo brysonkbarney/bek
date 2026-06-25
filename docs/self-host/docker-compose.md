@@ -77,11 +77,16 @@ docker compose --env-file .env.docker --profile app up --build
 Open:
 
 - Admin console: `http://localhost:5173`
-- API health: `http://localhost:4317/health`
+- API liveness: `http://localhost:4317/health`
+- API readiness: `http://localhost:4317/ready`
 
 The `migrate` service runs `pnpm db:migrate` before the API starts. With
 `BEK_STORAGE=postgres`, the API auto-seeds the demo organization on first boot
 unless `BEK_DB_AUTO_SEED=false`.
+
+The API container healthcheck uses `/ready`, which flushes pending in-process
+state and verifies configured persistence dependencies before Compose marks the
+service healthy.
 
 The API container defaults to `BEK_RUN_ADVANCEMENT=worker_local` and
 `BEK_WORKER_QUEUE_BACKEND=postgres`, so local API/Slack-created runs advance
