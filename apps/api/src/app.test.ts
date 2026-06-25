@@ -5583,6 +5583,72 @@ describe("Bek API", () => {
     });
   });
 
+  it("returns a friendly stale response for expired Slack approval buttons", async () => {
+    process.env.BEK_SLACK_BACKGROUND_DRAIN = "false";
+    mapSlackTestUsers({ "T123:U_APPROVER": "principal_admin" });
+    const store = new BekStore();
+    const slackClient = new FakeSlackWebApiClient();
+    const app = createApp(store, { slackClient });
+    const { run, approval } = await createPrApproval(
+      app,
+      "@bek open an expired Slack PR",
+    );
+    store.upsertApprovalRequest({
+      ...approval,
+      expiresAt: "2000-01-01T00:00:00.000Z",
+    });
+    const rawBody = slackForm({
+      payload: JSON.stringify({
+        type: "block_actions",
+        user: { id: "U_APPROVER" },
+        channel: { id: "C_CHECKOUT" },
+        team: { id: "T123" },
+        actions: [
+          {
+            action_id: "bek.approval.approve",
+            action_ts: "1710000000.000130",
+            value: JSON.stringify({
+              approvalId: approval.id,
+              payloadHash: approval.payloadHash,
+              runId: run.id,
+              action: approval.action,
+            }),
+          },
+        ],
+      }),
+    });
+
+    const res = await app.request("/api/slack/interactivity", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(
+        rawBody,
+        Math.floor(Date.now() / 1000).toString(),
+        "application/x-www-form-urlencoded",
+      ),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-slack-no-retry")).toBe("1");
+    await expect(res.json()).resolves.toMatchObject({
+      ok: true,
+      ignored: true,
+      stale: true,
+      text: "This Bek approval has expired.",
+      approval: {
+        id: approval.id,
+        status: "expired",
+      },
+    });
+    expect(
+      store.read().approvals.find((candidate) => candidate.id === approval.id),
+    ).toMatchObject({
+      status: "expired",
+      decidedAt: expect.any(String),
+    });
+    expect(slackClient.postMessageCalls).toHaveLength(0);
+  });
+
   it("validates slash commands and dedupes Slack command retries", async () => {
     mapSlackTestUser();
     const app = createApp();

@@ -961,8 +961,28 @@ export function createApp(
         text: slackApprovalAlreadyHandledText(approval),
       };
     }
+    if (Date.parse(approval.expiresAt) <= Date.now()) {
+      const expired = expireApprovalForSlack(approval);
+      return {
+        ok: false,
+        stale: true,
+        approval: expired,
+        run,
+        error: "Approval has expired.",
+        text: slackApprovalAlreadyHandledText(expired),
+      };
+    }
 
     return { ok: true, approval, run };
+  }
+
+  function expireApprovalForSlack(approval: ApprovalRequest): ApprovalRequest {
+    const now = new Date().toISOString();
+    return store.upsertApprovalRequest({
+      ...approval,
+      status: "expired",
+      decidedAt: now,
+    });
   }
 
   function slackApprovalAlreadyHandledText(approval: ApprovalRequest): string {
