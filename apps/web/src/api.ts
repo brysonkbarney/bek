@@ -238,6 +238,17 @@ export interface RunDetail {
   approvals: ApprovalRequest[];
 }
 
+export interface ModelUsage {
+  runs: number;
+  totalEstimatedCents: number;
+  totalActualCents: number;
+  modelCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  source: "runs" | "model_usage";
+}
+
 export interface WorkerWorkItem {
   orgId: string;
   runId: string;
@@ -360,6 +371,10 @@ async function apiError(path: string, res: Response): Promise<BekApiError> {
 
 export async function fetchSetupStatus(): Promise<SetupStatus> {
   return jsonRequest<SetupStatus>("/api/setup/status");
+}
+
+export async function fetchModelUsage(): Promise<ModelUsage> {
+  return jsonRequest<ModelUsage>("/api/model-usage");
 }
 
 export function slackInstallStartPath(returnTo = "/connectors"): string {

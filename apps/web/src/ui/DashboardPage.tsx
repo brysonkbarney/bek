@@ -5,8 +5,14 @@ import {
   getCoreRowModel,
   useReactTable,
 } from "@tanstack/react-table";
-import { ShieldCheck, Sparkles, Timer, WalletCards } from "lucide-react";
-import { createRun, fetchBootstrap, type Run } from "../api";
+import { Coins, ShieldCheck, Sparkles, Timer, WalletCards } from "lucide-react";
+import {
+  createRun,
+  fetchBootstrap,
+  fetchModelUsage,
+  type ModelUsage,
+  type Run,
+} from "../api";
 import {
   CostCell,
   EmptyState,
@@ -17,10 +23,14 @@ import {
   SuccessCallout,
   WarningCallout,
 } from "./components";
-import { formatDateTime } from "./product-model";
+import { formatDateTime, formatMoney } from "./product-model";
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
+}
+
+function formatInteger(value: number): string {
+  return new Intl.NumberFormat().format(value);
 }
 
 const columnHelper = createColumnHelper<Run>();
@@ -58,6 +68,10 @@ export function DashboardPage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
+  });
+  const usageQuery = useQuery({
+    queryKey: ["model-usage"],
+    queryFn: fetchModelUsage,
   });
   const runMutation = useMutation({
     mutationFn: createRun,
@@ -129,6 +143,12 @@ export function DashboardPage() {
           )}
         />
       </section>
+
+      <UsageCostPanel
+        usage={usageQuery.data}
+        isLoading={usageQuery.isLoading}
+        isError={usageQuery.isError}
+      />
 
       <section className="grid">
         <article className="panel">
@@ -204,5 +224,71 @@ export function DashboardPage() {
         )}
       </Panel>
     </div>
+  );
+}
+
+function UsageCostPanel({
+  usage,
+  isLoading,
+  isError,
+}: {
+  usage: ModelUsage | undefined;
+  isLoading: boolean;
+  isError: boolean;
+}) {
+  if (isLoading) {
+    return (
+      <Panel title="Usage / Cost">
+        <p className="muted">Loading usage...</p>
+      </Panel>
+    );
+  }
+
+  if (isError || !usage) {
+    return (
+      <Panel title="Usage / Cost">
+        <p className="muted">Usage totals are unavailable.</p>
+      </Panel>
+    );
+  }
+
+  const localTotalCents =
+    usage.totalActualCents > 0
+      ? usage.totalActualCents
+      : usage.totalEstimatedCents;
+
+  return (
+    <Panel
+      title="Usage / Cost"
+      action={<span className="chip">Source: {usage.source}</span>}
+    >
+      <div className="usage-card">
+        <div className="usage-total">
+          <Coins size={22} aria-hidden="true" />
+          <div>
+            <span>Local estimate total</span>
+            <strong>{formatMoney(localTotalCents)}</strong>
+            <small>
+              Run estimate {formatMoney(usage.totalEstimatedCents)}; local
+              actual estimate {formatMoney(usage.totalActualCents)}
+            </small>
+          </div>
+        </div>
+        <div className="usage-stats" aria-label="Model usage totals">
+          <div>
+            <span>Runs</span>
+            <strong>{formatInteger(usage.runs)}</strong>
+          </div>
+          <div>
+            <span>Model calls</span>
+            <strong>{formatInteger(usage.modelCalls)}</strong>
+          </div>
+          <div>
+            <span>Total tokens</span>
+            <strong>{formatInteger(usage.totalTokens)}</strong>
+          </div>
+        </div>
+      </div>
+    </Panel>
   );
 }

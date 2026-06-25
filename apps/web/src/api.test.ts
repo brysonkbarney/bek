@@ -3,6 +3,7 @@ import {
   adminAuthHeaders,
   cancelRunPath,
   clearAdminApiToken,
+  fetchModelUsage,
   hasStoredAdminToken,
   redriveDeadLetterPath,
   readAdminApiToken,
@@ -69,6 +70,35 @@ describe("web API helpers", () => {
     expect(redriveDeadLetterPath("dead/with space")).toBe(
       "/api/worker/dead-letters/dead%2Fwith%20space/redrive",
     );
+  });
+
+  it("fetches model usage totals with admin auth", async () => {
+    const storage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveAdminApiToken("runtime-token");
+    const usage = {
+      runs: 2,
+      totalEstimatedCents: 11,
+      totalActualCents: 9,
+      modelCalls: 3,
+      inputTokens: 2400,
+      outputTokens: 600,
+      totalTokens: 3000,
+      source: "model_usage" as const,
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(String(input)).toBe("http://localhost:4317/api/model-usage");
+      expect(init?.headers).toEqual({ authorization: "Bearer runtime-token" });
+      return new Response(JSON.stringify(usage), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchModelUsage()).resolves.toEqual(usage);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
 

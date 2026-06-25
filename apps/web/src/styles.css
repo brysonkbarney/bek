@@ -329,6 +329,62 @@ h2 {
   padding: 18px;
 }
 
+.usage-card {
+  display: grid;
+  gap: 14px;
+  max-width: 860px;
+}
+
+.usage-total {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.usage-total svg {
+  margin-top: 2px;
+  color: #1d7d54;
+}
+
+.usage-total span,
+.usage-total small,
+.usage-stats span {
+  color: #64756f;
+  font-size: 13px;
+}
+
+.usage-total strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 28px;
+}
+
+.usage-total small {
+  display: block;
+  margin-top: 5px;
+}
+
+.usage-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.usage-stats > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #e1e8e4;
+  border-radius: 8px;
+  background: #fbfdfb;
+}
+
+.usage-stats strong {
+  overflow-wrap: anywhere;
+}
+
 .panel-heading {
   display: flex;
   align-items: center;
@@ -949,6 +1005,10 @@ select {
 
   .header-actions {
     justify-content: flex-start;
+  }
+
+  .usage-stats {
+    grid-template-columns: 1fr;
   }
 
   .timeline li {
