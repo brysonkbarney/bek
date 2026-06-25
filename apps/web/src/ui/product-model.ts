@@ -804,9 +804,13 @@ function modelPricingSetupDetail(status: SetupStatus): string {
     )}.`;
   }
   const mode = status.modelGatewayMode ?? "local";
+  const source = modelPricingSourceLabel(status.modelPricingSource);
+  const notice =
+    status.modelPricingNotice ??
+    "Model costs are local benchmark estimates, not provider-billed spend.";
   return `${status.modelPolicies} model polic${
     status.modelPolicies === 1 ? "y" : "ies"
-  } configured with pricing for ${mode}.`;
+  } configured with ${source} benchmark estimates for ${mode}. ${notice}`;
 }
 
 function modelPricingFact(status: SetupStatus): string {
@@ -814,8 +818,20 @@ function modelPricingFact(status: SetupStatus): string {
     return "Pricing registry: invalid";
   }
   return status.modelPricingReady
-    ? "Pricing registry: ready"
+    ? "Pricing estimates: configured benchmark"
     : `Missing pricing: ${formatPricedModels(status.missingPricedModels)}`;
+}
+
+function modelPricingSourceLabel(
+  source: SetupStatus["modelPricingSource"],
+): string {
+  if (source === "env_registry") {
+    return "environment registry";
+  }
+  if (source === "env_benchmarks") {
+    return "environment override";
+  }
+  return "Bek default";
 }
 
 function runtimeExecutionReady(status: SetupStatus): boolean {

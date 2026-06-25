@@ -61,7 +61,10 @@ For the current AI Gateway path, live execution emits `model.completed` worker
 events with the data needed to populate this table. In Postgres mode, Bek writes
 those events into `model_usage` and `/api/model-usage` prefers the durable
 ledger summary. In memory mode, `/api/model-usage` falls back to run-level
-totals and marks the response with `source: "runs"`.
+totals and marks the response with `source: "runs"`. The API includes a
+`trust` object with durability, cost-basis, provider-reconciliation, and
+completeness fields so admin UI can distinguish ledger-backed local estimates
+from run-level fallbacks.
 
 The API buffers model-usage writes until after run-event persistence has
 flushed, so `model_usage.run_event_id` does not race its foreign-keyed
@@ -73,7 +76,9 @@ recreated during repair or replay.
 Bek's benchmark pricing; it is not a provider invoice amount. Billed-cost
 reconciliation against Vercel AI Gateway or provider dashboards stays as a
 separate operational process and should write explicit reconciliation metadata
-rather than overwriting the local estimate semantics.
+rather than overwriting the local estimate semantics. Until
+`providerReconciled` is true in a future billing path, Bek usage totals are
+operational observability, not finance evidence.
 
 ## Persistence Runtime
 

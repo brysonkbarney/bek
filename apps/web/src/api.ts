@@ -186,6 +186,9 @@ export interface SetupStatus {
   modelPricingReady?: boolean;
   missingPricedModels?: string[];
   modelPricingError?: string | null;
+  modelPricingBasis?: "configured_benchmark";
+  modelPricingSource?: "bek_default" | "env_registry" | "env_benchmarks";
+  modelPricingNotice?: string;
   runtimeProfiles: number;
   runtimeExecutableProfiles?: number;
   runtimeExecutionReady?: boolean;
@@ -546,6 +549,13 @@ export interface ModelUsage {
   outputTokens: number;
   totalTokens: number;
   source: "runs" | "model_usage";
+  trust?: {
+    durability: "durable_ledger" | "run_fallback";
+    costBasis: "bek_benchmark_estimate" | "mixed";
+    providerReconciled: boolean;
+    completeness: "ledger_backed" | "run_totals_only";
+    warnings: string[];
+  };
 }
 
 export interface WorkerWorkItem {

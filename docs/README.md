@@ -73,10 +73,10 @@ checklist when moving beyond the seeded demo.
 ## Cost And Limit Controls
 
 Bek's current model includes per-run budget fields, seeded budget policies,
-model route estimates, run cost totals, and `/api/model-usage`. These are useful
-for product shape and local demos. Production cost control still requires
-persistent ledgers, daily/workspace ceilings, provider call accounting, and
-alerting.
+model route estimates, run cost totals, and `/api/model-usage`. Postgres mode
+uses a durable model-usage ledger, while memory mode falls back to run totals.
+Production cost control still requires daily/workspace ceilings, provider-billed
+reconciliation, and alerting.
 
 ## Before A Real Workspace
 

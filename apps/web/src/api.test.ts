@@ -473,6 +473,15 @@ describe("web API helpers", () => {
       outputTokens: 600,
       totalTokens: 3000,
       source: "model_usage" as const,
+      trust: {
+        durability: "durable_ledger" as const,
+        costBasis: "bek_benchmark_estimate" as const,
+        providerReconciled: false,
+        completeness: "ledger_backed" as const,
+        warnings: [
+          "Costs are unreconciled local estimates from Bek benchmark pricing, not provider-billed spend.",
+        ],
+      },
     };
     const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
       const [input, init] = args;

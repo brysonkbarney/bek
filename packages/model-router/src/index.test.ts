@@ -52,6 +52,17 @@ const benchmarks: ModelBenchmark[] = [
 ];
 
 describe("model router", () => {
+  it("marks default provider pricing as configured benchmark estimates", () => {
+    expect(
+      createDefaultModelProviderRegistry().resolveModel("openai/gpt-5.4")
+        ?.benchmark,
+    ).toMatchObject({
+      pricingBasis: "configured_benchmark",
+      pricingSource: "bek_default",
+      pricingUpdatedAt: "2026-06-25",
+    });
+  });
+
   it("keeps the default model for auto routing when it fits budget", () => {
     const route = selectModel({
       policy,

@@ -30,6 +30,9 @@ export interface ModelBenchmark {
   inputCostPerMillionTokensCents: number;
   outputCostPerMillionTokensCents: number;
   contextWindowTokens: number;
+  pricingBasis?: "configured_benchmark" | undefined;
+  pricingSource?: string | undefined;
+  pricingUpdatedAt?: string | undefined;
 }
 
 export interface ModelProviderModel {
@@ -238,6 +241,12 @@ export function createModelProviderRegistry(
   return new ModelProviderRegistry(providers);
 }
 
+const defaultPricingProvenance = {
+  pricingBasis: "configured_benchmark" as const,
+  pricingSource: "bek_default",
+  pricingUpdatedAt: "2026-06-25",
+};
+
 export function defaultModelProviderRegistrations(): ModelProviderRegistration[] {
   return [
     {
@@ -249,6 +258,7 @@ export function defaultModelProviderRegistrations(): ModelProviderRegistration[]
           id: "openai/gpt-5.4",
           benchmark: {
             model: "openai/gpt-5.4",
+            ...defaultPricingProvenance,
             qualityScore: 95,
             speedScore: 70,
             inputCostPerMillionTokensCents: 125,
@@ -260,6 +270,7 @@ export function defaultModelProviderRegistrations(): ModelProviderRegistration[]
           id: "openai/gpt-5.5",
           benchmark: {
             model: "openai/gpt-5.5",
+            ...defaultPricingProvenance,
             qualityScore: 97,
             speedScore: 68,
             inputCostPerMillionTokensCents: 150,
@@ -278,6 +289,7 @@ export function defaultModelProviderRegistrations(): ModelProviderRegistration[]
           id: "anthropic/claude-sonnet-4.8",
           benchmark: {
             model: "anthropic/claude-sonnet-4.8",
+            ...defaultPricingProvenance,
             qualityScore: 90,
             speedScore: 82,
             inputCostPerMillionTokensCents: 300,
@@ -296,6 +308,7 @@ export function defaultModelProviderRegistrations(): ModelProviderRegistration[]
           id: "openai-compatible/local",
           benchmark: {
             model: "openai-compatible/local",
+            ...defaultPricingProvenance,
             qualityScore: 62,
             speedScore: 100,
             inputCostPerMillionTokensCents: 0,

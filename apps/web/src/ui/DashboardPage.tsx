@@ -256,11 +256,20 @@ function UsageCostPanel({
     usage.totalActualCents > 0
       ? usage.totalActualCents
       : usage.totalEstimatedCents;
+  const sourceLabel =
+    usage.trust?.durability === "durable_ledger"
+      ? "Durable ledger"
+      : usage.trust?.durability === "run_fallback"
+        ? "Run fallback"
+        : `Source: ${usage.source}`;
+  const costWarning =
+    usage.trust?.warnings.find((warning) => warning.includes("Costs")) ??
+    "Unreconciled local estimate, not provider-billed spend.";
 
   return (
     <Panel
       title="Usage / Cost"
-      action={<span className="chip">Source: {usage.source}</span>}
+      action={<span className="chip">{sourceLabel}</span>}
     >
       <div className="usage-card">
         <div className="usage-total">
@@ -272,6 +281,7 @@ function UsageCostPanel({
               Run estimate {formatMoney(usage.totalEstimatedCents)}; local
               actual estimate {formatMoney(usage.totalActualCents)}
             </small>
+            <small>{costWarning}</small>
           </div>
         </div>
         <div className="usage-stats" aria-label="Model usage totals">

@@ -125,6 +125,7 @@ type PublicOutboundDelivery = Omit<
   target?: Record<string, unknown> | undefined;
   payload?: Record<string, unknown> | undefined;
 };
+type ModelUsageSource = "runs" | "model_usage";
 type ReadinessStepResult =
   | {
       ok: true;
@@ -1744,6 +1745,9 @@ export function createApp(
       modelPricingReady: modelPricing.ready,
       missingPricedModels: modelPricing.missing,
       modelPricingError: modelPricing.error,
+      modelPricingBasis: modelPricing.basis,
+      modelPricingSource: modelPricing.source,
+      modelPricingNotice: modelPricing.notice,
       runtimeProfiles: snapshot.runtimeProfiles.length,
       runtimeExecutableProfiles: runtimeReadiness.executableProfiles,
       runtimeExecutionReady: runtimeReadiness.ready,
@@ -2437,9 +2441,11 @@ export function createApp(
       await options.modelUsageRepository?.readModelUsageTotals?.(
         snapshot.org.id,
       );
+    const source: ModelUsageSource = repositoryTotals ? "model_usage" : "runs";
     return c.json({
       ...(repositoryTotals ?? modelUsageTotalsFromRuns(snapshot.runs)),
-      source: repositoryTotals ? "model_usage" : "runs",
+      source,
+      trust: modelUsageTrust(source),
     });
   });
   app.get("/api/runs/:runId", (c) => {
@@ -4279,6 +4285,36 @@ function modelUsageSinkFromRepository(
   };
 }
 
+function modelUsageTrust(source: ModelUsageSource): {
+  durability: "durable_ledger" | "run_fallback";
+  costBasis: "bek_benchmark_estimate";
+  providerReconciled: false;
+  completeness: "ledger_backed" | "run_totals_only";
+  warnings: string[];
+} {
+  if (source === "model_usage") {
+    return {
+      durability: "durable_ledger",
+      costBasis: "bek_benchmark_estimate",
+      providerReconciled: false,
+      completeness: "ledger_backed",
+      warnings: [
+        "Costs are unreconciled local estimates from Bek benchmark pricing, not provider-billed spend.",
+      ],
+    };
+  }
+  return {
+    durability: "run_fallback",
+    costBasis: "bek_benchmark_estimate",
+    providerReconciled: false,
+    completeness: "run_totals_only",
+    warnings: [
+      "Token and model-call totals are unavailable in run fallback mode.",
+      "Costs are unreconciled local estimates from Bek benchmark pricing, not provider-billed spend.",
+    ],
+  };
+}
+
 function publicPlace(place: PlaceScope): PlaceScope {
   const { metadata, ...rest } = place;
   const publicPlaceScope: PlaceScope = { ...rest };
@@ -5301,10 +5337,17 @@ function modelPricingReadiness(snapshot: BekSnapshot): {
   ready: boolean;
   missing: string[];
   error: string | null;
+  basis: "configured_benchmark";
+  source: "bek_default" | "env_registry" | "env_benchmarks";
+  notice: string;
 } {
   const policyModels = modelPolicyIds(snapshot);
+  const source = modelPricingSourceFromEnv();
+  const basis = "configured_benchmark";
+  const notice =
+    "Model costs are Bek estimates from configured benchmark pricing, not live provider catalog data or invoice evidence.";
   if (policyModels.length === 0) {
-    return { ready: false, missing: [], error: null };
+    return { ready: false, missing: [], error: null, basis, source, notice };
   }
   try {
     const registry = createModelProviderRegistryFromEnv();
@@ -5320,14 +5363,39 @@ function modelPricingReadiness(snapshot: BekSnapshot): {
       ready: missing.length === 0,
       missing,
       error: null,
+      basis,
+      source,
+      notice,
     };
   } catch (error) {
     return {
       ready: false,
       missing: policyModels,
       error: error instanceof Error ? error.message : String(error),
+      basis,
+      source,
+      notice,
     };
   }
+}
+
+function modelPricingSourceFromEnv():
+  | "bek_default"
+  | "env_registry"
+  | "env_benchmarks" {
+  if (
+    process.env.BEK_MODEL_PROVIDER_REGISTRY_JSON?.trim() ||
+    process.env.BEK_MODEL_PROVIDER_REGISTRY_PATH?.trim()
+  ) {
+    return "env_registry";
+  }
+  if (
+    process.env.BEK_MODEL_BENCHMARKS_JSON?.trim() ||
+    process.env.BEK_MODEL_BENCHMARKS_PATH?.trim()
+  ) {
+    return "env_benchmarks";
+  }
+  return "bek_default";
 }
 
 function modelPolicyIds(snapshot: BekSnapshot): string[] {

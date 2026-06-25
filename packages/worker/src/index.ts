@@ -3233,7 +3233,7 @@ function parseModelBenchmarks(value: unknown, label: string): ModelBenchmark[] {
 
 function parseModelBenchmark(value: unknown, label: string): ModelBenchmark {
   const record = requireRecord(value, label);
-  return {
+  const benchmark: ModelBenchmark = {
     model: requireString(record.model, `${label}.model`),
     qualityScore: requireNonNegativeNumber(
       record.qualityScore,
@@ -3256,6 +3256,28 @@ function parseModelBenchmark(value: unknown, label: string): ModelBenchmark {
       `${label}.contextWindowTokens`,
     ),
   };
+  const pricingBasis = optionalPricingBasis(
+    record.pricingBasis,
+    `${label}.pricingBasis`,
+  );
+  const pricingSource = optionalString(
+    record.pricingSource,
+    `${label}.pricingSource`,
+  );
+  const pricingUpdatedAt = optionalString(
+    record.pricingUpdatedAt,
+    `${label}.pricingUpdatedAt`,
+  );
+  if (pricingBasis) {
+    benchmark.pricingBasis = pricingBasis;
+  }
+  if (pricingSource) {
+    benchmark.pricingSource = pricingSource;
+  }
+  if (pricingUpdatedAt) {
+    benchmark.pricingUpdatedAt = pricingUpdatedAt;
+  }
+  return benchmark;
 }
 
 function parseProviderKind(value: unknown, label: string): ModelProviderKind {
@@ -3305,6 +3327,27 @@ function requireString(value: unknown, label: string): string {
     throw new Error(`${label} must be a non-empty string.`);
   }
   return value.trim();
+}
+
+function optionalString(value: unknown, label: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return requireString(value, label);
+}
+
+function optionalPricingBasis(
+  value: unknown,
+  label: string,
+): ModelBenchmark["pricingBasis"] {
+  if (value === undefined) {
+    return undefined;
+  }
+  const basis = requireString(value, label);
+  if (basis !== "configured_benchmark") {
+    throw new Error(`${label} must be configured_benchmark.`);
+  }
+  return basis;
 }
 
 function requireBoolean(value: unknown, label: string): boolean {

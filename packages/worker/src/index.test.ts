@@ -1565,6 +1565,9 @@ describe("worker runtime service", () => {
           inputCostPerMillionTokensCents: 10,
           outputCostPerMillionTokensCents: 20,
           contextWindowTokens: 128_000,
+          pricingBasis: "configured_benchmark",
+          pricingSource: "operator_pricing_sheet",
+          pricingUpdatedAt: "2026-06-25",
         },
       ]),
     });
@@ -1574,6 +1577,9 @@ describe("worker runtime service", () => {
       provider: { id: "openrouter", kind: "custom" },
       benchmark: {
         outputCostPerMillionTokensCents: 20,
+        pricingBasis: "configured_benchmark",
+        pricingSource: "operator_pricing_sheet",
+        pricingUpdatedAt: "2026-06-25",
       },
     });
 

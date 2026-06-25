@@ -151,7 +151,8 @@ These product items block broad design-partner rollout, not a code-only release 
 
 - Per-run model budgets are visible in model policies.
 - Current cost totals are demo/local fields and `/api/model-usage`, not a
-  production billing ledger.
+  production billing ledger; `/api/model-usage.trust.providerReconciled` is
+  currently false.
 - Hosted or shared pilots need persistent usage accounting by org, channel,
   model, runtime, and tool.
 - Daily/workspace ceilings, alerting, and budget step-up approvals block hosted

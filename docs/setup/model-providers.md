@@ -114,16 +114,20 @@ The current repo has the product primitives for cost control:
 - model usage ledger helpers for estimates and local actuals,
 - run-level estimated and actual cost fields,
 - `/api/model-usage` summary that prefers the durable ledger in Postgres mode
-  and falls back to run-level totals in memory mode.
+  and falls back to run-level totals in memory mode,
+- setup status fields that expose pricing provenance and the estimate caveat.
 
 These are not yet invoice-grade billing controls. Live AI Gateway execution
 emits `model.completed` events, Postgres-backed API instances persist those
 calls to `model_usage`, and `/api/model-usage` reports
-`source: "model_usage"` when it is reading that ledger. Bek now fails closed
-for budget-enforced routes without pricing metadata and pauses over-budget
-routes for approval, but before a shared workspace or hosted beta it still
-needs daily/workspace ceilings, billed provider response reconciliation, and
-alerts.
+`source: "model_usage"` with `trust.durability: "durable_ledger"` when it is
+reading that ledger. Setup status reports `modelPricingBasis`,
+`modelPricingSource`, and `modelPricingNotice`; default seed IDs and pricing
+must still be verified against the live provider catalog before production use.
+Bek now fails closed for budget-enforced routes without pricing metadata and
+pauses over-budget routes for approval, but before a shared workspace or hosted
+beta it still needs daily/workspace ceilings, billed provider response
+reconciliation, and alerts.
 
 Model routing is useful today for local demos and self-hosted pilots, but it is
 not yet a full provider management product. Admins can edit `provider/model`

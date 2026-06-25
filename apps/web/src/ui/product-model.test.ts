@@ -26,6 +26,10 @@ const readySetup: SetupStatus = {
   modelPricingReady: true,
   missingPricedModels: [],
   modelPricingError: null,
+  modelPricingBasis: "configured_benchmark",
+  modelPricingSource: "bek_default",
+  modelPricingNotice:
+    "Model costs are Bek estimates from configured benchmark pricing, not live provider catalog data or invoice evidence.",
   runtimeProfiles: 1,
   runtimeExecutableProfiles: 1,
   runtimeExecutionReady: true,
@@ -205,11 +209,25 @@ describe("admin product helpers", () => {
       complete: true,
       route: "/settings",
     });
+    expect(checklist.find((step) => step.id === "model-policy")).toEqual(
+      expect.objectContaining({
+        complete: true,
+        detail: expect.stringContaining("not live provider catalog data"),
+      }),
+    );
     expect(operations.find((step) => step.id === "admin-auth")).toMatchObject({
       complete: true,
       detail: "Using a browser-entered admin token.",
       primaryAction: { route: "/settings" },
     });
+    expect(operations.find((step) => step.id === "model-runtime")).toEqual(
+      expect.objectContaining({
+        complete: true,
+        facts: expect.arrayContaining([
+          "Pricing estimates: configured benchmark",
+        ]),
+      }),
+    );
     expect(operations.find((step) => step.id === "github-policy")).toEqual(
       expect.objectContaining({
         complete: true,

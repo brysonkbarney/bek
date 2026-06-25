@@ -126,9 +126,11 @@ Gateway/private models, set exactly one of:
 - `BEK_MODEL_BENCHMARKS_JSON` or `BEK_MODEL_BENCHMARKS_PATH` for benchmark
   pricing overlays on top of the built-in registry.
 
-`/api/setup/status` reports `modelPricingReady`, `missingPricedModels`, and
-`modelPricingError` so operators can verify the worker will not fail closed
-before trying a live Gateway run.
+`/api/setup/status` reports `modelPricingReady`, `missingPricedModels`,
+`modelPricingError`, `modelPricingBasis`, `modelPricingSource`, and
+`modelPricingNotice` so operators can verify the worker will not fail closed
+before trying a live Gateway run and can see that Bek costs are configured
+benchmark estimates, not provider invoice evidence.
 
 For Gateway execution:
 
@@ -145,8 +147,10 @@ For Gateway execution:
 - Reconcile the durable `model_usage` ledger against Gateway/provider dashboards
   as a separate process. In Postgres mode, `/api/model-usage` totals come from
   the durable ledger and return `source: "model_usage"`; in memory mode they
-  fall back to run-level fields with `source: "runs"`. Neither source is
-  provider-billed evidence until reconciliation is added.
+  fall back to run-level fields with `source: "runs"`. The response also
+  includes `trust.durability`, `trust.costBasis`, `trust.providerReconciled`,
+  `trust.completeness`, and `trust.warnings`. Neither source is provider-billed
+  evidence until reconciliation is added.
 
 ## Secret Handling
 

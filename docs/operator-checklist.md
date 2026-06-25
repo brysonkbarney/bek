@@ -143,6 +143,10 @@ the current OSS spine.
       private Gateway models must be present in Bek's pricing registry through
       `BEK_MODEL_PROVIDER_REGISTRY_*` or `BEK_MODEL_BENCHMARKS_*`; otherwise
       budget-enforced routes fail closed before a provider call.
+- [ ] Confirm `/api/setup/status` reports
+      `modelPricingBasis: "configured_benchmark"` and review
+      `modelPricingSource` plus `modelPricingNotice` with the operator who owns
+      provider pricing.
 - [ ] Set per-run budgets low for pilots.
 - [ ] Decide which channels or bundles can call expensive models.
 - [ ] For Vercel AI Gateway execution, set
@@ -158,8 +162,12 @@ the current OSS spine.
       ID, and fallback metadata.
 - [ ] Treat `actualCostCents` in Bek usage records as a local estimated actual,
       not as provider-billed cost.
-- [ ] Verify `/api/model-usage` returns `source: "model_usage"` in Postgres mode
-      before using ledger totals for shared budget enforcement.
+- [ ] Verify `/api/model-usage` returns `source: "model_usage"` and
+      `trust.durability: "durable_ledger"` in Postgres mode before using
+      ledger totals for shared budget enforcement.
+- [ ] Verify `/api/model-usage` still reports
+      `trust.providerReconciled: false`; do not present these totals as
+      invoice-grade spend.
 - [ ] Blocked: add billed-cost reconciliation against Gateway/provider
       dashboards before issuing invoices or making finance reports.
 - [ ] Blocked: add daily/workspace ceilings and alerting before hosted beta.

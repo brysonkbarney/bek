@@ -1168,6 +1168,11 @@ describe("Bek API", () => {
       modelPricingReady: true,
       missingPricedModels: [],
       modelPricingError: null,
+      modelPricingBasis: "configured_benchmark",
+      modelPricingSource: "bek_default",
+      modelPricingNotice: expect.stringContaining(
+        "not live provider catalog data",
+      ),
       runtimeProfiles: 2,
       runtimeExecutableProfiles: 1,
       runtimeExecutionReady: false,
@@ -1833,6 +1838,17 @@ describe("Bek API", () => {
       runs: 1,
       totalEstimatedCents: 4,
       totalActualCents: 3,
+      source: "runs",
+      trust: {
+        durability: "run_fallback",
+        costBasis: "bek_benchmark_estimate",
+        providerReconciled: false,
+        completeness: "run_totals_only",
+        warnings: expect.arrayContaining([
+          "Token and model-call totals are unavailable in run fallback mode.",
+          "Costs are unreconciled local estimates from Bek benchmark pricing, not provider-billed spend.",
+        ]),
+      },
     });
     await expect(expectJson(app, "/api/runs/run_demo")).resolves.toMatchObject({
       run: { id: "run_demo" },
@@ -1905,6 +1921,15 @@ describe("Bek API", () => {
       outputTokens: 600,
       totalTokens: 3000,
       source: "model_usage",
+      trust: {
+        durability: "durable_ledger",
+        costBasis: "bek_benchmark_estimate",
+        providerReconciled: false,
+        completeness: "ledger_backed",
+        warnings: [
+          "Costs are unreconciled local estimates from Bek benchmark pricing, not provider-billed spend.",
+        ],
+      },
     });
   });
 

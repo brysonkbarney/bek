@@ -183,6 +183,10 @@ const setupStatusFixture = {
   modelPricingReady: true,
   missingPricedModels: [],
   modelPricingError: null,
+  modelPricingBasis: "configured_benchmark",
+  modelPricingSource: "bek_default",
+  modelPricingNotice:
+    "Model costs are Bek estimates from configured benchmark pricing, not live provider catalog data or invoice evidence.",
   runtimeProfiles: 1,
   runtimeExecutableProfiles: 1,
   runtimeExecutionReady: true,
@@ -335,6 +339,16 @@ const modelUsageFixture = {
   outputTokens: 450,
   totalTokens: 1650,
   source: "runs",
+  trust: {
+    durability: "run_fallback",
+    costBasis: "bek_benchmark_estimate",
+    providerReconciled: false,
+    completeness: "run_totals_only",
+    warnings: [
+      "Token and model-call totals are unavailable in run fallback mode.",
+      "Costs are unreconciled local estimates from Bek benchmark pricing, not provider-billed spend.",
+    ],
+  },
 } satisfies ModelUsage;
 
 const workerQueueFixture = {
