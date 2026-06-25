@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import {
   createSlackOAuthState,
   createSlackSignature,
@@ -19,6 +20,7 @@ const managedEnvKeys = [
   "BEK_ALLOW_LEGACY_SLACK_USER_MAP",
   "BEK_ALLOW_UNAUTHENTICATED_LOCAL",
   "BEK_ADMIN_API_TOKEN",
+  "BEK_ADMIN_ORIGINS",
   "BEK_REQUIRE_ADMIN_AUTH",
   "BEK_CREDENTIAL_KEY_ID",
   "BEK_CREDENTIAL_MASTER_KEY",
@@ -157,6 +159,16 @@ function configureFakeSlackOAuth() {
   process.env.SLACK_REDIRECT_URI =
     "http://localhost:4317/api/slack/oauth/callback";
   process.env.SLACK_STATE_SECRET = "fake-state-secret";
+}
+
+function signedSlackOAuthState(payload: Record<string, unknown>) {
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString(
+    "base64url",
+  );
+  const signature = createHmac("sha256", process.env.SLACK_STATE_SECRET!)
+    .update(encodedPayload)
+    .digest("base64url");
+  return `v1.${encodedPayload}.${signature}`;
 }
 
 function mapSlackTestUser(
@@ -3263,6 +3275,35 @@ describe("Bek API", () => {
     });
   });
 
+  it("drops unsafe Slack install return targets before signing OAuth state", async () => {
+    process.env.BEK_ADMIN_API_TOKEN = "test-admin-token";
+    configureFakeSlackOAuth();
+
+    const res = await createApp().request(
+      "/api/slack/install-url?return_to=https%3A%2F%2Fevil.example%2Fsteal",
+      {
+        headers: { authorization: "Bearer test-admin-token" },
+      },
+    );
+    const json = (await res.json()) as { url: string };
+
+    expect(res.status).toBe(200);
+    const url = new URL(json.url);
+    const state = verifySlackOAuthState({
+      stateSecret: process.env.SLACK_STATE_SECRET,
+      state: url.searchParams.get("state") ?? undefined,
+    });
+    expect(state).toMatchObject({
+      ok: true,
+      payload: {
+        callbackMode: "redirect",
+      },
+    });
+    if (state.ok) {
+      expect(state.payload.returnTo).toBeUndefined();
+    }
+  });
+
   it("redirects Slack install with signed OAuth state", async () => {
     configureFakeSlackOAuth();
 
@@ -3292,6 +3333,28 @@ describe("Bek API", () => {
       expect(state.payload.returnTo).toBe("/settings/slack");
       expect(state.payload.callbackMode).toBeUndefined();
     }
+  });
+
+  it("pins Slack OAuth callback redirects to configured admin origins", async () => {
+    configureFakeSlackOAuth();
+    process.env.BEK_ADMIN_ORIGINS = "http://localhost:5173";
+    const state = signedSlackOAuthState({
+      nonce: "unsafe-return",
+      issuedAt: Math.floor(Date.now() / 1000),
+      returnTo: "https://evil.example/phish",
+      callbackMode: "redirect",
+    });
+
+    const res = await createApp().request(
+      `/api/slack/oauth/callback?code=fake-code&state=${encodeURIComponent(
+        state,
+      )}`,
+    );
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe(
+      "http://localhost:5173/connectors?slack_install=validated",
+    );
   });
 
   it("handles Slack OAuth callback errors before token exchange", async () => {

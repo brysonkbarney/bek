@@ -10,33 +10,33 @@ The user asked for 25 subagents. We will run them in batches because the local a
 
 ## Workstreams
 
-| #   | Workstream                                 | Status  |
-| --- | ------------------------------------------ | ------- |
-| 01  | Product/API/data architecture              | done    |
-| 02  | Admin UI/UX plan                           | done    |
-| 03  | Slack ingress/run/runtime flow             | done    |
-| 04  | Security/test/battle-test strategy         | done    |
-| 05  | API/backend gap review                     | done    |
-| 06  | Admin UI QA review                         | done    |
-| 07  | Security and battle-test review            | done    |
-| 08  | Docs/GitHub/launch readiness               | done    |
-| 09  | Data persistence/Postgres migration review | done    |
-| 10  | Launch/community/repo readiness docs       | done    |
-| 11  | Security battle-test implementation        | done    |
-| 12  | Runtime/sandbox architecture               | done    |
-| 13  | Slack install/interactivity foundations    | done    |
-| 14  | Durable worker/orchestrator foundation     | done    |
-| 15  | GitHub repo workflow foundation            | done    |
-| 16  | Frontend accessibility/responsive review   | done    |
-| 17  | Model router/cost review                   | done    |
-| 18  | Memory/knowledge review                    | pending |
-| 19  | Audit/observability review                 | running |
-| 20  | Tenant isolation review                    | done    |
-| 21  | Prompt-injection red-team                  | pending |
-| 22  | Sandbox provider implementation review     | done    |
-| 23  | CI/supply-chain review                     | done    |
-| 24  | Hosted/cloud packaging review              | running |
-| 25  | Sales/demo/readiness review                | pending |
+| #   | Workstream                                 | Status |
+| --- | ------------------------------------------ | ------ |
+| 01  | Product/API/data architecture              | done   |
+| 02  | Admin UI/UX plan                           | done   |
+| 03  | Slack ingress/run/runtime flow             | done   |
+| 04  | Security/test/battle-test strategy         | done   |
+| 05  | API/backend gap review                     | done   |
+| 06  | Admin UI QA review                         | done   |
+| 07  | Security and battle-test review            | done   |
+| 08  | Docs/GitHub/launch readiness               | done   |
+| 09  | Data persistence/Postgres migration review | done   |
+| 10  | Launch/community/repo readiness docs       | done   |
+| 11  | Security battle-test implementation        | done   |
+| 12  | Runtime/sandbox architecture               | done   |
+| 13  | Slack install/interactivity foundations    | done   |
+| 14  | Durable worker/orchestrator foundation     | done   |
+| 15  | GitHub repo workflow foundation            | done   |
+| 16  | Frontend accessibility/responsive review   | done   |
+| 17  | Model router/cost review                   | done   |
+| 18  | Memory/knowledge review                    | done   |
+| 19  | Audit/observability review                 | done   |
+| 20  | Tenant isolation review                    | done   |
+| 21  | Prompt-injection red-team                  | done   |
+| 22  | Sandbox provider implementation review     | done   |
+| 23  | CI/supply-chain review                     | done   |
+| 24  | Hosted/cloud packaging review              | done   |
+| 25  | Sales/demo/readiness review                | done   |
 
 ## Current Findings Folded In
 
@@ -67,6 +67,29 @@ The user asked for 25 subagents. We will run them in batches because the local a
 - Slack OAuth default scopes now include `channels:read` and `groups:read` for
   channel discovery, and the Channels UI blocks importing channels the bot has
   not joined.
+- Slack OAuth return targets are normalized to admin-console-relative paths
+  before signing state and again before callback redirects, so a malicious or
+  stale signed state cannot redirect an operator off the configured admin
+  origin.
+- Memory is not implemented yet. Bek currently has the governance spine that
+  future memory can attach to, but no source/chunk/embedding/citation store,
+  retrieval API, retention/deletion workflow, or ACL-before-context-injection
+  tests.
+- Frontend QA flagged first-run setup routing, approvals review UX, worker
+  operation confirmations, mobile run virtualization, mobile nav density,
+  Slack discovery responsiveness, install-state remediation, and richer run
+  detail evidence as the next product-polish blockers before a sellable beta.
+- Sales/demo readiness is credible for the local OSS admin-console flow and a
+  hand-held Slack pilot, but not for hosted GA. Missing launch assets include a
+  demo video/GIF, golden Slack setup packet, sales-safe claims sheet, pricing
+  packaging, waitlist page, and hosted beta security/compliance packet.
+- Model routing and per-run budget preflight are implemented primitives, but
+  provider catalogs, benchmark refresh, daily/workspace budget enforcement,
+  forecast UI, and billed-cost reconciliation are not production-grade yet.
+- Audit is currently a run-event/timeline surface, not a customer-grade
+  append-only audit ledger. The DB has an `audit_events` table, but Bek still
+  needs a first-class audit repository, exactly-once side-effect audit writes,
+  tool-usage persistence, health wiring, exports, and an Audit explorer UI.
 - Hosted/multi-tenant, admin/RBAC, real runtimes, arbitrary MCP connectors,
   live GitHub execution, and Slack durable inbox/outbox leasing remain explicit
   blockers rather than marketing claims.
@@ -87,3 +110,9 @@ The user asked for 25 subagents. We will run them in batches because the local a
 | Pascal the 2nd    | MCP connector audit                     | done   |
 | Ramanujan the 2nd | Runtime/sandbox audit                   | done   |
 | Boyle the 2nd     | GitHub workflow readiness audit         | done   |
+| Pasteur the 2nd   | Memory/knowledge architecture audit     | done   |
+| Newton the 2nd    | Prompt-injection red-team               | done   |
+| Hooke the 2nd     | Audit/observability audit               | done   |
+| Lagrange the 2nd  | Model/cost/budget audit                 | done   |
+| Popper the 2nd    | Frontend QA/conversion audit            | done   |
+| Fermat the 2nd    | Sales/demo/readiness audit              | done   |

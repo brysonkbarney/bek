@@ -120,6 +120,30 @@ Future high-risk entry points:
 9. Model/tool retry loops create uncontrolled provider spend or repeated
    external writes.
 
+## Prompt-Injection Backlog
+
+The highest-risk current path is untrusted Slack text becoming the model prompt
+without a central content envelope. Before live repo/MCP/sandbox chaining, Bek
+needs:
+
+- A shared untrusted-content envelope before every model call, carrying source,
+  trust level, delimiters, max length, and instruction hierarchy.
+- Tests for Slack text, repo file contents, MCP output, model output, and
+  sandbox stdout that contain "ignore previous instructions", fake approvals,
+  fake audit lines, log-poisoning strings, and token-exfiltration requests.
+- Provenance fields on run/audit events: origin, trusted/untrusted flag, raw
+  sealed hash, redacted hash, and display mode.
+- Explicit admin activation for first-seen MCP schemas in production, plus
+  output-schema validation and malicious harmless-name tool tests.
+- Production removal of bundled admin tokens and persistent bearer-token
+  reliance in the browser; prefer short-lived server-issued sessions, CSP, and
+  Trusted Types before hosted beta.
+- Sandbox egress tests for DNS rebinding, IPv6-mapped addresses, metadata
+  hostnames, and post-resolution private/link-local IP denial.
+- Prompt/input length caps beyond raw request body size, Slack app-mention
+  normalization, team-scoped Slack principal mappings in production, and
+  generic production error responses for unexpected exceptions.
+
 ## Existing Mitigations In The Repo
 
 - Slack request signatures fail closed unless local unsigned mode is explicitly

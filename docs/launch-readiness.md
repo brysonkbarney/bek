@@ -12,6 +12,9 @@ Bek should launch in stages. The current repo is good enough to show the product
 - Slack outbound posting can use stored OAuth bot tokens or `SLACK_BOT_TOKEN`
   to post thread replies, approval buttons, approval decisions, final answers,
   and delivery diagnostics back into the run timeline.
+- Slack OAuth return targets are normalized to admin-console-relative paths
+  before state signing and before callback redirects, so install callbacks stay
+  pinned to the configured admin origin.
 - Tests cover policy deny precedence, wildcard scoping, Slack signature tamper/replay, approval tamper/self-approval/double approval/expiry, API behavior, model routing, MCP manifest generation, and redaction.
 - DB, runtime, sandbox, model-router, MCP, Slack, core, API, and web package contracts exist.
 - Release candidates should pass `pnpm format:check` and `pnpm check` before
@@ -44,6 +47,9 @@ Bek can be public as an OSS release candidate when the repo has:
 - Docs that state current limits plainly: hosted-grade credential broker/KMS is
   pending, no real GitHub writes, no production sandbox execution yet, and the
   local worker queue is not a durable multi-instance queue.
+- Node 24 LTS setup is documented for demos and contributors. The repo ships
+  `.nvmrc` with `24`, and demo hosts should run `nvm use` or an equivalent
+  Node 24 pin before `pnpm install`.
 
 ## Product
 
@@ -66,6 +72,10 @@ These product items block broad design-partner rollout, not a code-only release 
   OAuth bot tokens or `SLACK_BOT_TOKEN`; hosted installs still need managed
   KMS/broker custody, rotation, revocation, access audit, and durable outbound
   delivery retries.
+- Memory is a stance page and future architecture boundary, not an implemented
+  knowledge store. Org-wide memory still needs source/chunk/embedding/citation
+  storage, retrieval, ACL-before-injection enforcement, retention/deletion, and
+  prompt-injection tests.
 - API has typed errors, bounded request bodies, signed public callback ingress,
   and per-process rate limiting.
 - Docker Compose starts local dependencies and an app profile with Postgres
@@ -108,6 +118,13 @@ These product items block broad design-partner rollout, not a code-only release 
 - Public README explains the one-teammate thesis in 60 seconds.
 - Demo GIF/video shows Slack-to-run-to-approval-to-audit.
 - Docs explain OSS vs hosted.
+- Sales-safe claims sheet distinguishes the working local OSS spine,
+  self-hosted pilots, hosted waitlist, and explicit non-claims.
+- Golden demo packet includes screenshots/video, Slack app manifest, known-good
+  env values, HTTPS tunnel recipe, seed walkthrough, and anti-claims.
+- Hosted pricing and packaging doc explains waitlist/design-partner status,
+  likely SKUs, included usage assumptions, overage posture, support tiers, and
+  compliance/security gates without promising self-serve GA.
 - GitHub repo has issues, templates, security policy, license, roadmap, and contribution guide.
 - Hosted waitlist/signup exists.
 - First three design partners can install with handholding.

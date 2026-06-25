@@ -41,6 +41,7 @@ import {
   buildSlackEventDurableKey,
   createSlackOAuthState,
   exchangeSlackOAuthCode,
+  normalizeOAuthReturnTo,
   normalizeSlackEvent,
   parseSlackRetryHeaders,
   parseSlackCommand,
@@ -3507,7 +3508,7 @@ function slackInstallAuthorization(input: {
   const scopes = slackBotScopes();
   const state = createSlackOAuthState({
     stateSecret: process.env.SLACK_STATE_SECRET!,
-    returnTo: input.returnTo,
+    returnTo: normalizeOAuthReturnTo(input.returnTo),
     callbackMode: input.callbackMode,
   });
   const url = new URL("https://slack.com/oauth/v2/authorize");
@@ -3523,7 +3524,10 @@ function adminReturnUrl(
   params: Record<string, string>,
 ): string {
   const origin = adminOrigins()[0] ?? "http://localhost:5173";
-  const url = new URL(returnTo ?? "/connectors", origin);
+  const url = new URL(
+    normalizeOAuthReturnTo(returnTo) ?? "/connectors",
+    origin,
+  );
   for (const [key, value] of Object.entries(params)) {
     url.searchParams.set(key, value);
   }

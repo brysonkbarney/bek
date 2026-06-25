@@ -21,6 +21,9 @@ practical.
 - Writes require approval unless an admin explicitly configures otherwise.
 - Sandbox execution must not receive raw provider keys.
 - Memory retrieval must enforce ACLs before context injection.
+- Slack messages, repo files, MCP/tool output, model output, and sandbox output
+  are untrusted data until wrapped with provenance and separated from system
+  instructions.
 - Local encrypted OAuth token storage depends on protecting
   `BEK_CREDENTIAL_MASTER_KEY`; a database backup plus that key can decrypt
   local-vault envelopes.

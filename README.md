@@ -121,6 +121,10 @@ deterministic runner smoke tests for the worker contract.
   readiness checks.
 - [Hosted Bek](./docs/commercial/hosted.md): managed offering positioning and
   what remains admin-owned.
+- [Sales-safe claims](./docs/commercial/claims.md): what the current product
+  can and cannot claim.
+- [Hosted packaging draft](./docs/commercial/pricing.md): design-partner
+  packaging hypothesis and paid-beta gates.
 
 ## External Credentials
 

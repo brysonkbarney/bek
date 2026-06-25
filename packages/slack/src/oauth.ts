@@ -320,7 +320,9 @@ function redactSecret(secret: string): string {
   return `${secret.slice(0, 4)}...${secret.slice(-4)}`;
 }
 
-function normalizeOAuthReturnTo(value: string | undefined): string | undefined {
+export function normalizeOAuthReturnTo(
+  value: string | undefined,
+): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed || !trimmed.startsWith("/") || trimmed.startsWith("//")) {
     return undefined;

@@ -2,6 +2,15 @@
 
 Status: package contract, not yet wired into `apps/api`.
 
+Bek's current admin **Audit** page is a timeline-style run-event surface, not a
+customer-grade append-only audit ledger. The database schema has an
+`audit_events` table, but the API does not yet write structured audit rows for
+every admin mutation, Slack ingress/outbox transition, GitHub webhook/action,
+worker transition, model call, tool call, credential lease, or sandbox action.
+Treat audit as a launch blocker for hosted beta until the durable repository,
+side-effect emitters, export path, health checks, and UI explorer are wired end
+to end.
+
 Bek's observability layer is intentionally storage-neutral. The
 `@bek/observability` package gives runtime, worker, API, and future DB adapters a
 shared way to shape audit events without deciding where those events are stored
@@ -71,3 +80,23 @@ accepts both shapes. Durable adapters should preserve these fields:
 Side-effecting code should emit events before returning user-visible success so
 operators can reconstruct what happened even when Slack delivery, model calls,
 or tool calls fail after the side effect.
+
+## Customer-Grade Audit Backlog
+
+Before Bek can claim hosted/customer auditability, implement these pieces:
+
+- First-class `audit_events` repository with append-only writes, cursor
+  filtering, redaction, data hashes, export checkpoints, and optional hash
+  chaining.
+- Schema fields for schema version, trace ID, attempt, category, source
+  surface, request metadata, run-event/delivery links, event hash, previous
+  hash, actor snapshot, and result status.
+- Structured audit emitters for admin CRUD, approval decisions, Slack ingress
+  and outbox, GitHub webhooks/writes/tokens, worker claims/settlement, model
+  calls, MCP/tool calls, credential leases, and sandbox actions.
+- `tool_usage` repository and summaries matching the existing model-usage
+  ledger shape.
+- `/api/audit-events` backed by durable audit rows plus redaction-safe NDJSON
+  export, not only run timeline events.
+- Audit explorer UI with filters, resource/run/provider/risk columns, detail
+  drawer, export, and hash/redaction status.

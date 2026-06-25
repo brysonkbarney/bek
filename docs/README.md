@@ -21,6 +21,8 @@ budgets, and approvals behind it.
 | Review security scope      | [Security entry points](./security/threat-model-entry-points.md)                    |
 | Compare alternatives       | [Alternatives](./comparison/alternatives.md)                                        |
 | Position hosted Bek        | [Hosted Bek](./commercial/hosted.md)                                                |
+| Keep claims honest         | [Sales-safe claims](./commercial/claims.md)                                         |
+| Draft hosted packaging     | [Hosted packaging draft](./commercial/pricing.md)                                   |
 
 ## Current Product Boundary
 
