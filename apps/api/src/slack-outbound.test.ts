@@ -105,6 +105,104 @@ describe("SlackOutboundDelivery", () => {
     });
   });
 
+  it("retries Slack rate limits and records Retry-After diagnostics", async () => {
+    const store = new BekStore();
+    const run = createCompletedSlackRun(store);
+    const client = new SequenceSlackWebApiClient([
+      {
+        ok: false,
+        error: "ratelimited",
+        retryAfterSeconds: 0,
+      },
+      {
+        ok: true,
+        channel: "C_CHECKOUT",
+        ts: "1710000000.000124",
+      },
+    ]);
+    const delivery = new SlackOutboundDelivery(store, client, {
+      env: {},
+      retryDelayMs: 10_000,
+    });
+
+    await delivery.deliverRunOutcome(run.id, {
+      channelId: "C_CHECKOUT",
+      teamId: "T123",
+    });
+
+    expect(client.postMessageCalls).toHaveLength(2);
+    expect(store.read().events[0]).toMatchObject({
+      runId: run.id,
+      message: "Slack final_answer message posted after 2 attempts.",
+      data: {
+        slackOutbound: {
+          kind: "final_answer",
+          ok: true,
+          channel: "C_CHECKOUT",
+          attempts: 2,
+          retried: true,
+          attemptLog: [
+            {
+              attempt: 1,
+              ok: false,
+              error: "ratelimited",
+              failureCategory: "rate_limited",
+              retryable: true,
+              retryDelayMs: 0,
+            },
+            { attempt: 2, ok: true },
+          ],
+        },
+      },
+    });
+  });
+
+  it("returns positive Slack Retry-After delays to the scheduler without sleeping", async () => {
+    const store = new BekStore();
+    const run = createCompletedSlackRun(store);
+    const client = new SequenceSlackWebApiClient([
+      {
+        ok: false,
+        error: "ratelimited",
+        retryAfterSeconds: 2,
+      },
+    ]);
+    const delivery = new SlackOutboundDelivery(store, client, {
+      env: {},
+      retryDelayMs: 10_000,
+    });
+
+    const result = await delivery.deliverRunOutcome(run.id, {
+      channelId: "C_CHECKOUT",
+      teamId: "T123",
+    });
+
+    expect(result).toMatchObject({
+      attempted: true,
+      ok: false,
+      error: "ratelimited",
+      retryable: true,
+      retryDelayMs: 2000,
+    });
+    expect(client.postMessageCalls).toHaveLength(1);
+    expect(store.read().events[0]).toMatchObject({
+      runId: run.id,
+      message: "Slack final_answer message failed: ratelimited.",
+      data: {
+        slackOutbound: {
+          kind: "final_answer",
+          ok: false,
+          channel: "C_CHECKOUT",
+          attempts: 1,
+          error: "ratelimited",
+          failureCategory: "rate_limited",
+          retryable: true,
+          retryDelayMs: 2000,
+        },
+      },
+    });
+  });
+
   it("does not retry permanent Slack failures and redacts stored errors", async () => {
     const store = new BekStore();
     const run = createCompletedSlackRun(store);

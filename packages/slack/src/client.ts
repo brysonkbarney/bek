@@ -41,6 +41,7 @@ export type SlackWebApiMessageResult =
   | {
       ok: false;
       error: string;
+      retryAfterSeconds?: number | undefined;
     };
 
 export type SlackWebApiChannelListResult =
@@ -52,6 +53,7 @@ export type SlackWebApiChannelListResult =
   | {
       ok: false;
       error: string;
+      retryAfterSeconds?: number | undefined;
     };
 
 export interface SlackWebApiClient {
@@ -148,6 +150,10 @@ export class SlackWebApiHttpClient implements SlackWebApiClient {
       return {
         ok: false,
         error: `Slack Web API conversations.list returned non-JSON HTTP ${response.status}.`,
+        ...optionalNumber(
+          "retryAfterSeconds",
+          retryAfterSeconds(response.headers),
+        ),
       };
     }
     if (!isRecord(raw)) {
@@ -160,6 +166,10 @@ export class SlackWebApiHttpClient implements SlackWebApiClient {
       return {
         ok: false,
         error: slackWebApiError(raw, response.status),
+        ...optionalNumber(
+          "retryAfterSeconds",
+          retryAfterSeconds(response.headers),
+        ),
       };
     }
     if (!Array.isArray(raw.channels)) {
@@ -222,6 +232,10 @@ export class SlackWebApiHttpClient implements SlackWebApiClient {
       return {
         ok: false,
         error: `Slack Web API ${method} returned non-JSON HTTP ${response.status}.`,
+        ...optionalNumber(
+          "retryAfterSeconds",
+          retryAfterSeconds(response.headers),
+        ),
       };
     }
     if (!isRecord(raw)) {
@@ -234,6 +248,10 @@ export class SlackWebApiHttpClient implements SlackWebApiClient {
       return {
         ok: false,
         error: slackWebApiError(raw, response.status),
+        ...optionalNumber(
+          "retryAfterSeconds",
+          retryAfterSeconds(response.headers),
+        ),
       };
     }
 
@@ -376,4 +394,22 @@ function optionalString<K extends string>(
   value: string | undefined,
 ): Partial<Record<K, string>> {
   return value ? ({ [key]: value } as Partial<Record<K, string>>) : {};
+}
+
+function optionalNumber<K extends string>(
+  key: K,
+  value: number | undefined,
+): Partial<Record<K, number>> {
+  return value === undefined
+    ? {}
+    : ({ [key]: value } as Partial<Record<K, number>>);
+}
+
+function retryAfterSeconds(headers: Headers): number | undefined {
+  const value = headers.get("retry-after")?.trim();
+  if (!value) {
+    return undefined;
+  }
+  const seconds = Number.parseInt(value, 10);
+  return Number.isSafeInteger(seconds) && seconds >= 0 ? seconds : undefined;
 }

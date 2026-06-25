@@ -63,6 +63,7 @@ interface SlackOutboundAttemptDiagnostic {
   error?: string | undefined;
   failureCategory?: SlackOutboundFailureCategory | undefined;
   retryable?: boolean | undefined;
+  retryDelayMs?: number | undefined;
 }
 
 interface SlackOutboundPostResult {
@@ -75,6 +76,7 @@ export interface SlackOutboundDeliveryResult {
   ok: boolean;
   error?: string | undefined;
   retryable?: boolean | undefined;
+  retryDelayMs?: number | undefined;
 }
 
 export interface SlackPreparedOutboundMessage {
@@ -328,6 +330,7 @@ export class SlackOutboundDelivery {
       ok: delivery.result.ok,
       error: delivery.result.ok ? undefined : finalAttempt?.error,
       retryable: delivery.result.ok ? undefined : finalAttempt?.retryable,
+      retryDelayMs: delivery.result.ok ? undefined : finalAttempt?.retryDelayMs,
     };
   }
 
@@ -346,11 +349,19 @@ export class SlackOutboundDelivery {
         return { result, attempts };
       }
 
+      if (
+        diagnostic.failureCategory === "rate_limited" &&
+        diagnostic.retryDelayMs !== undefined &&
+        diagnostic.retryDelayMs > 0
+      ) {
+        return { result, attempts };
+      }
+
       if (!diagnostic.retryable || attempt >= this.maxPostAttempts) {
         return { result, attempts };
       }
 
-      await sleep(this.retryDelayMs * attempt);
+      await sleep(diagnostic.retryDelayMs ?? this.retryDelayMs * attempt);
     }
 
     const fallback: SlackWebApiMessageResult = {
@@ -443,6 +454,7 @@ export class SlackOutboundDelivery {
             ? undefined
             : finalAttempt?.failureCategory,
           retryable: result.ok ? undefined : finalAttempt?.retryable,
+          retryDelayMs: result.ok ? undefined : finalAttempt?.retryDelayMs,
           attemptLog: attemptCount > 1 ? delivery.attempts : undefined,
         }),
       }),
@@ -476,6 +488,7 @@ function combineSlackDeliveryResults(
     ok: false,
     error: failed.error,
     retryable: failed.retryable,
+    retryDelayMs: failed.retryDelayMs,
   };
 }
 
@@ -502,12 +515,14 @@ function slackOutboundAttemptDiagnostic(
   }
 
   const classification = classifySlackOutboundFailure(result.error);
+  const retryDelayMs = slackRetryDelayMs(result);
   return {
     attempt,
     ok: false,
     error: sanitizeSlackOutboundError(result.error),
     failureCategory: classification.category,
     retryable: classification.retryable,
+    ...(retryDelayMs !== undefined ? { retryDelayMs } : {}),
   };
 }
 
@@ -541,7 +556,7 @@ function classifySlackOutboundFailure(
       normalized,
     )
   ) {
-    return { category: "rate_limited", retryable: false };
+    return { category: "rate_limited", retryable: true };
   }
 
   if (
@@ -581,6 +596,15 @@ function classifySlackOutboundFailure(
   }
 
   return { category: "unknown", retryable: false };
+}
+
+function slackRetryDelayMs(
+  result: SlackWebApiMessageResult,
+): number | undefined {
+  if (result.ok || result.retryAfterSeconds === undefined) {
+    return undefined;
+  }
+  return Math.max(0, Math.ceil(result.retryAfterSeconds * 1000));
 }
 
 function sanitizeSlackOutboundError(error: string): string {

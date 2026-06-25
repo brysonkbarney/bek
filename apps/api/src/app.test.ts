@@ -117,6 +117,35 @@ class BlockingSlackWebApiClient implements SlackWebApiClient {
   }
 }
 
+class RateLimitedSlackWebApiClient implements SlackWebApiClient {
+  readonly postMessageCalls: SlackPostMessageInput[] = [];
+
+  async postMessage(
+    input: SlackPostMessageInput,
+  ): Promise<SlackWebApiMessageResult> {
+    this.postMessageCalls.push(structuredClone(input));
+    return {
+      ok: false,
+      error: "ratelimited",
+      retryAfterSeconds: 2,
+    };
+  }
+
+  async updateMessage(): Promise<SlackWebApiMessageResult> {
+    throw new Error("Unexpected Slack updateMessage call.");
+  }
+
+  async postEphemeral(): Promise<SlackWebApiMessageResult> {
+    throw new Error("Unexpected Slack postEphemeral call.");
+  }
+
+  async listChannels(): Promise<
+    Awaited<ReturnType<SlackWebApiClient["listChannels"]>>
+  > {
+    throw new Error("Unexpected Slack listChannels call.");
+  }
+}
+
 function signedSlackHeaders(
   rawBody: string,
   timestamp = Math.floor(Date.now() / 1000).toString(),
@@ -4794,9 +4823,9 @@ describe("Bek API", () => {
     });
   });
 
-  it("records Slack outbound failures without failing accepted events", async () => {
+  it("records permanent Slack outbound failures without failing accepted events", async () => {
     mapSlackTestUser();
-    const slackClient = new FakeSlackWebApiClient({ failWith: "ratelimited" });
+    const slackClient = new FakeSlackWebApiClient({ failWith: "invalid_auth" });
     const app = createApp(new BekStore(), { slackClient });
     const payload = {
       event_id: "EvOutboundFailure",
@@ -4823,17 +4852,73 @@ describe("Bek API", () => {
       events: expect.arrayContaining([
         expect.objectContaining({
           message: expect.stringContaining(
-            "Slack final_answer message failed: ratelimited.",
+            "Slack final_answer message failed: invalid_auth.",
           ),
           data: expect.objectContaining({
             slackOutbound: expect.objectContaining({
               ok: false,
-              error: "ratelimited",
+              error: "invalid_auth",
               channel: "C_CHECKOUT",
+              failureCategory: "auth",
+              retryable: false,
             }),
           }),
         }),
       ]),
+    });
+  });
+
+  it("reschedules Slack outbox deliveries after rate limits", async () => {
+    process.env.BEK_SLACK_BACKGROUND_DRAIN = "false";
+    mapSlackTestUser();
+    const store = new BekStore();
+    const slackClient = new RateLimitedSlackWebApiClient();
+    const app = createApp(store, { slackClient });
+    const payload = {
+      event_id: "EvOutboundRateLimitReschedule",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek hello while Slack is rate limited",
+        ts: "1710000000.000031",
+      },
+    };
+
+    const accepted = await app.request("/api/slack/events", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    expect(accepted.status).toBe(200);
+    expect(slackClient.postMessageCalls).toHaveLength(0);
+
+    const beforeDrain = Date.now();
+    const drain = await app.request("/api/outbound/slack/drain", {
+      method: "POST",
+      body: JSON.stringify({}),
+      headers: { "content-type": "application/json" },
+    });
+    expect(drain.status).toBe(200);
+    expect(slackClient.postMessageCalls).toHaveLength(1);
+    const delivery = store.read().outboundDeliveries[0];
+    expect(delivery).toMatchObject({
+      provider: "slack",
+      status: "queued",
+      attempts: 1,
+      lastError: "ratelimited",
+    });
+    expect(Date.parse(delivery!.nextAttemptAt!)).toBeGreaterThanOrEqual(
+      beforeDrain + 1_500,
+    );
+    await expect(drain.json()).resolves.toMatchObject({
+      outbound: {
+        deliveries: [
+          expect.objectContaining({
+            status: "queued",
+            lastError: "ratelimited",
+          }),
+        ],
+      },
     });
   });
 

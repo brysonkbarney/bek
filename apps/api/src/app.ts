@@ -587,7 +587,8 @@ export function createApp(
               id: delivering.id,
               error: result.error ?? "Slack outbound delivery failed.",
               retryable: result.retryable,
-              retryDelayMs: result.retryable === false ? 0 : 5_000,
+              retryDelayMs:
+                result.retryDelayMs ?? (result.retryable === false ? 0 : 5_000),
             }),
       );
     }

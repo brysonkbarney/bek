@@ -167,6 +167,25 @@ describe("Slack Web API HTTP client", () => {
     });
   });
 
+  it("preserves Retry-After metadata for Slack rate limits", async () => {
+    const rateLimited = new SlackWebApiHttpClient({
+      token: "xoxb-test-token",
+      fetch: async () =>
+        Response.json(
+          { ok: false, error: "ratelimited" },
+          { status: 429, headers: { "retry-after": "7" } },
+        ),
+    });
+
+    await expect(
+      rateLimited.postMessage({ channel: "C123", text: "Hello" }),
+    ).resolves.toEqual({
+      ok: false,
+      error: "ratelimited",
+      retryAfterSeconds: 7,
+    });
+  });
+
   it("lists channels with bearer auth and bot membership", async () => {
     const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
     const client = new SlackWebApiHttpClient({
