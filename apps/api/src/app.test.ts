@@ -5397,7 +5397,8 @@ describe("Bek API", () => {
     process.env.BEK_SLACK_BACKGROUND_DRAIN = "false";
     mapSlackTestUsers({ "T123:U_APPROVER": "principal_admin" });
     const slackClient = new FakeSlackWebApiClient();
-    const app = createApp(new BekStore(), { slackClient });
+    const store = new BekStore();
+    const app = createApp(store, { slackClient });
     const { run, approval } = await createPrApproval(
       app,
       "@bek open a Slack PR",
@@ -5477,6 +5478,55 @@ describe("Bek API", () => {
       deduped: true,
     });
     expect(slackClient.postMessageCalls).toHaveLength(2);
+
+    const stalePayload = {
+      ...payload,
+      actions: [
+        {
+          ...payload.actions[0],
+          action_ts: "1710000000.000101",
+        },
+      ],
+    };
+    const staleBody = slackForm({ payload: JSON.stringify(stalePayload) });
+    const stale = await app.request("/api/slack/interactivity", {
+      method: "POST",
+      body: staleBody,
+      headers: signedSlackHeaders(
+        staleBody,
+        Math.floor(Date.now() / 1000).toString(),
+        "application/x-www-form-urlencoded",
+      ),
+    });
+    expect(stale.status).toBe(200);
+    expect(stale.headers.get("x-slack-no-retry")).toBe("1");
+    await expect(stale.json()).resolves.toMatchObject({
+      ok: true,
+      ignored: true,
+      stale: true,
+      text: "Bek already approved this request.",
+      approval: {
+        id: approval.id,
+        status: "approved",
+        decidedByPrincipalId: "principal_admin",
+      },
+    });
+    expect(slackClient.postMessageCalls).toHaveLength(2);
+    expect(store.read().ingressDeliveries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "slack.interaction",
+          status: "ignored",
+          approvalId: approval.id,
+          response: expect.objectContaining({
+            approvalId: approval.id,
+            status: "approved",
+            stale: true,
+            requestedDecision: "approved",
+          }),
+        }),
+      ]),
+    );
   });
 
   it("applies Slack approval decisions through persisted principal identities", async () => {

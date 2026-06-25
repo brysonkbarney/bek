@@ -841,6 +841,14 @@ export function createApp(
     interaction: SlackApprovalInteraction,
   ):
     | { ok: true; approval: ApprovalRequest; run: Run }
+    | {
+        ok: false;
+        stale: true;
+        approval: ApprovalRequest;
+        run: Run;
+        error: string;
+        text: string;
+      }
     | { ok: false; error: string; text: string } {
     const invalid = (
       error: string,
@@ -885,6 +893,12 @@ export function createApp(
       return invalid(
         "Slack approval action does not match the pending approval.",
         "Bek rejected this approval because it does not match the requested action.",
+      );
+    }
+    if (interaction.payloadHash !== approval.payloadHash) {
+      return invalid(
+        "Slack approval payload hash does not match the request.",
+        "Bek rejected this approval because the button payload is stale or invalid.",
       );
     }
     if (!interaction.teamId) {
@@ -937,7 +951,31 @@ export function createApp(
       }
     }
 
+    if (approval.status !== "pending") {
+      return {
+        ok: false,
+        stale: true,
+        approval,
+        run,
+        error: `Approval is already ${approval.status}.`,
+        text: slackApprovalAlreadyHandledText(approval),
+      };
+    }
+
     return { ok: true, approval, run };
+  }
+
+  function slackApprovalAlreadyHandledText(approval: ApprovalRequest): string {
+    if (approval.status === "approved") {
+      return "Bek already approved this request.";
+    }
+    if (approval.status === "denied") {
+      return "Bek already denied this request.";
+    }
+    if (approval.status === "expired") {
+      return "This Bek approval has expired.";
+    }
+    return "Bek already handled this approval request.";
   }
 
   function enqueueSlackOutcomesForWorkerDrain(
@@ -2194,6 +2232,40 @@ export function createApp(
 
     const context = validateSlackApprovalInteractionContext(interaction);
     if (!context.ok) {
+      if ("stale" in context && context.stale) {
+        const response = {
+          ...buildSlackEphemeralResponse({
+            ok: true,
+            ignored: true,
+            reason: context.error,
+            text: context.text,
+          }),
+          stale: true,
+          approval: {
+            id: context.approval.id,
+            status: context.approval.status,
+            decidedByPrincipalId: context.approval.decidedByPrincipalId ?? null,
+            decidedAt: context.approval.decidedAt ?? null,
+          },
+        };
+        if (interactionKey) {
+          store.recordIngressDelivery({
+            key: interactionKey,
+            kind: "slack.interaction",
+            status: "ignored",
+            approvalId: context.approval.id,
+            response: {
+              approvalId: context.approval.id,
+              status: context.approval.status,
+              stale: true,
+              requestedDecision: interaction.decision,
+            },
+          });
+          await flushChangesWithDeliveryRollback(interactionKey);
+        }
+        markSlackNoRetry(c);
+        return c.json(withSlackRetryMetadata(response, retry));
+      }
       markSlackNoRetry(c);
       return c.json(
         withSlackRetryMetadata(
