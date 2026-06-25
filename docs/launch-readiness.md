@@ -43,6 +43,8 @@ Bek can be public as an OSS release candidate when the repo has:
   SBOM/provenance attestations.
 - Local quickstart that reliably starts API and web.
 - Browser-verified admin console.
+- Browser E2E includes both fixture-backed navigation coverage and a real API
+  demo-run approval/audit flow.
 - Smoke script that validates readiness, governance mutations, approval-gated
   run creation, approval decision, worker state, signed Slack and GitHub
   webhook ingress, usage, audit events, and Slack outbox behavior.
