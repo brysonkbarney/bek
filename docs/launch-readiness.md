@@ -15,6 +15,8 @@ Bek should launch in stages. The current repo is good enough to show the product
 - Slack OAuth return targets are normalized to admin-console-relative paths
   before state signing and before callback redirects, so install callbacks stay
   pinned to the configured admin origin.
+- MCP servers can be registered, listed, status-updated, and audited through
+  the API and Connectors page, with new registrations defaulting to `pending`.
 - Tests cover policy deny precedence, wildcard scoping, Slack signature tamper/replay, approval tamper/self-approval/double approval/expiry, API behavior, model routing, MCP manifest generation, and redaction.
 - DB, runtime, sandbox, model-router, MCP, Slack, core, API, and web package contracts exist.
 - Release candidates should pass `pnpm format:check` and `pnpm check` before
@@ -47,7 +49,8 @@ Bek can be public as an OSS release candidate when the repo has:
   demo-run approval/audit flow.
 - Smoke script that validates readiness, governance mutations, approval-gated
   run creation, approval decision, worker state, signed Slack and GitHub
-  webhook ingress, usage, audit events, and Slack outbox behavior.
+  webhook ingress, MCP connector registration, usage, audit events, and Slack
+  outbox behavior.
 - Docs that state current limits plainly: hosted-grade credential broker/KMS is
   pending, GitHub writes are disabled by default and limited to approved
   hash-bound draft PR workflows, no production sandbox execution yet, and the
@@ -129,7 +132,8 @@ These product items block broad design-partner rollout, not a code-only release 
 - MCP schema drift is quarantined.
 - Tenant isolation tests pass.
 - Access admin mutations emit durable audit events with their side effects, and
-  the smoke script asserts grant create/update/place-attach audit rows.
+  the smoke script asserts grant create/update/place-attach and MCP server
+  registration/update audit rows.
 - CORS stays allowlisted and admin API auth is mandatory for hosted/prod.
 - Slack unsigned demo mode cannot work in production.
 

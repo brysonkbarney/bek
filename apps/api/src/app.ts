@@ -364,6 +364,14 @@ export function createApp(
     });
   }
 
+  function adminPrincipalId(c: Context<BekHonoEnv>): string {
+    const adminAuth = c.get("adminAuth");
+    if (!adminAuth) {
+      throw new Error("Admin auth context is missing.");
+    }
+    return adminAuth.principalId;
+  }
+
   function ensureSlackReadAccessForChannel(channel: PlaceScope) {
     const resource = `slack:${channel.externalId}`;
     const snapshot = store.read();
@@ -1698,6 +1706,87 @@ export function createApp(
   app.get("/api/connectors/slack", (c) =>
     c.json(slackInstallSummaries(store.read())),
   );
+  app.get("/api/connectors/mcp", (c) =>
+    c.json(
+      store
+        .read()
+        .connectorInstalls.filter(
+          (install) => install.kind === "mcp" && install.provider === "mcp",
+        )
+        .map(publicConnectorInstall),
+    ),
+  );
+  app.post("/api/connectors/mcp", async (c) => {
+    const body = createMcpConnectorSchema.parse(await c.req.json());
+    validateMcpOrigin(body.transport, body.origin);
+    const before = findMcpConnectorInstall(store.read(), body.serverId);
+    const install = store.upsertConnectorInstall({
+      id: before?.id ?? `connector_mcp_${body.serverId}`,
+      kind: "mcp",
+      provider: "mcp",
+      externalId: before?.externalId ?? body.serverId,
+      displayName: body.displayName,
+      status: before?.status ?? "pending",
+      installedByPrincipalId:
+        before?.installedByPrincipalId ?? adminPrincipalId(c),
+      metadata: {
+        ...(before?.metadata ?? {}),
+        serverId: before?.externalId ?? body.serverId,
+        transport: body.transport,
+        origin: body.origin,
+        tags: body.tags ?? [],
+        source: "admin",
+      },
+    });
+    recordAdminAuditEvent(c, {
+      action: before ? "mcp_server.updated" : "mcp_server.registered",
+      resourceType: "mcp_server",
+      resourceId: install.externalId,
+      message: `${before ? "Updated" : "Registered"} MCP server ${install.displayName}.`,
+      data: { before, after: install },
+    });
+    await store.flushChanges();
+    return c.json(publicConnectorInstall(install), before ? 200 : 201);
+  });
+  app.patch("/api/connectors/mcp/:serverId", async (c) => {
+    const serverId = mcpServerIdSchema.parse(c.req.param("serverId"));
+    const before = findMcpConnectorInstall(store.read(), serverId);
+    if (!before) {
+      return c.json({ error: "MCP connector not found" }, 404);
+    }
+    const body = updateMcpConnectorSchema.parse(await c.req.json());
+    const nextTransport =
+      body.transport ?? mcpTransportMetadata(before.metadata, "transport");
+    const nextOrigin = body.origin ?? stringMetadata(before.metadata, "origin");
+    validateMcpOrigin(nextTransport, nextOrigin);
+    const install = store.upsertConnectorInstall({
+      id: before.id,
+      kind: "mcp",
+      provider: "mcp",
+      externalId: before.externalId ?? serverId,
+      displayName: body.displayName ?? before.displayName,
+      status: body.status ?? before.status,
+      installedByPrincipalId:
+        before.installedByPrincipalId ?? adminPrincipalId(c),
+      metadata: {
+        ...(before.metadata ?? {}),
+        serverId: before.externalId ?? serverId,
+        transport: nextTransport,
+        origin: nextOrigin,
+        tags: body.tags ?? arrayMetadata(before.metadata, "tags"),
+        source: stringMetadata(before.metadata, "source") ?? "admin",
+      },
+    });
+    recordAdminAuditEvent(c, {
+      action: "mcp_server.updated",
+      resourceType: "mcp_server",
+      resourceId: install.externalId,
+      message: `Updated MCP server ${install.displayName}.`,
+      data: { before, after: install },
+    });
+    await store.flushChanges();
+    return c.json(publicConnectorInstall(install));
+  });
   app.get("/api/slack/channels/discover", async (c) => {
     const resolvedClient = resolveSlackDiscoveryClient();
     if (!resolvedClient) {
@@ -3328,6 +3417,51 @@ const updateChannelSchema = createChannelSchema
     message: "At least one field must be provided.",
   });
 
+const mcpServerIdSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9_-]+$/, {
+    message:
+      "MCP server id may only contain letters, numbers, hyphens, and underscores.",
+  });
+
+const mcpTransportSchema = z.enum(["stdio", "http", "sse", "in_process"]);
+const mcpTagSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(48)
+  .regex(/^[A-Za-z0-9_.:-]+$/, {
+    message:
+      "MCP tags may only contain letters, numbers, periods, colons, underscores, and hyphens.",
+  });
+const mcpConnectorStatusSchema = z.enum([
+  "pending",
+  "active",
+  "paused",
+  "revoked",
+  "error",
+]);
+
+const createMcpConnectorSchema = z
+  .object({
+    serverId: mcpServerIdSchema,
+    displayName: z.string().trim().min(1).max(120),
+    transport: mcpTransportSchema,
+    origin: z.string().trim().min(1).max(512),
+    tags: z.array(mcpTagSchema).max(12).optional(),
+  })
+  .strict();
+
+const updateMcpConnectorSchema = createMcpConnectorSchema
+  .omit({ serverId: true })
+  .extend({ status: mcpConnectorStatusSchema })
+  .partial()
+  .refine(hasAtLeastOneField, {
+    message: "At least one field must be provided.",
+  });
+
 const createAccessBundleSchema = z
   .object({
     name: z.string().min(1),
@@ -3759,6 +3893,79 @@ function findAccessGrant(
     throw new Error("Grant not found.");
   }
   return structuredClone(grant);
+}
+
+function findMcpConnectorInstall(
+  snapshot: BekSnapshot,
+  serverId: string,
+): ConnectorInstall | undefined {
+  return snapshot.connectorInstalls.find(
+    (install) =>
+      install.kind === "mcp" &&
+      install.provider === "mcp" &&
+      (install.externalId === serverId ||
+        stringMetadata(install.metadata, "serverId") === serverId),
+  );
+}
+
+function validateMcpOrigin(
+  transport: z.infer<typeof mcpTransportSchema> | undefined,
+  origin: string | undefined,
+) {
+  if (!transport) {
+    throw new Error("MCP transport is required.");
+  }
+  if (!origin) {
+    throw new Error("MCP origin is required.");
+  }
+  if (containsCredentialLikeMcpOrigin(origin)) {
+    throw new Error("MCP origin must not include credentials or secrets.");
+  }
+
+  if (transport === "http" || transport === "sse") {
+    let parsed: URL;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      throw new Error("MCP http and sse origins must be valid HTTPS URLs.");
+    }
+    if (parsed.protocol !== "https:") {
+      throw new Error("MCP http and sse origins must use HTTPS.");
+    }
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+      throw new Error(
+        "MCP http and sse origins must not include credentials, query strings, or fragments.",
+      );
+    }
+    return;
+  }
+
+  if (transport === "stdio") {
+    if (/[\r\n`$<>|;&]/.test(origin) || origin.includes("$(")) {
+      throw new Error(
+        "MCP stdio origins must not include shell metacharacters.",
+      );
+    }
+    return;
+  }
+
+  if (!/^builtin:[A-Za-z0-9_.:-]+$/.test(origin)) {
+    throw new Error(
+      "MCP in-process origins must use a builtin:<id> reference.",
+    );
+  }
+}
+
+function containsCredentialLikeMcpOrigin(origin: string): boolean {
+  return (
+    /\b(?:token|secret|password|api[_-]?key|access[_-]?token)\s*[:=]\s*\S+/i.test(
+      origin,
+    ) ||
+    /(?:^|\s)--(?:token|secret|password|api-key|api_key|access-token|access_token|key)(?:=|\s+\S+)/i.test(
+      origin,
+    ) ||
+    /\bbearer\s+[A-Za-z0-9._~+/-]+=*/i.test(origin)
+  );
 }
 
 function safeGitHubBranchIdPart(value: string): string {
@@ -4600,6 +4807,14 @@ function stringMetadata(
 ): string | undefined {
   const value = metadata?.[key];
   return typeof value === "string" ? value : undefined;
+}
+
+function mcpTransportMetadata(
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): z.infer<typeof mcpTransportSchema> | undefined {
+  const parsed = mcpTransportSchema.safeParse(stringMetadata(metadata, key));
+  return parsed.success ? parsed.data : undefined;
 }
 
 function numberMetadata(

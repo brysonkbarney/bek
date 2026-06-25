@@ -503,7 +503,7 @@ test("loads the admin overview and navigates representative routes", async ({
   await nav.getByRole("link", { name: "Connectors", exact: true }).click();
   await expect(
     page.getByRole("heading", {
-      name: "Slack, repos, MCP tools, sandboxes, and model providers plug into one agent.",
+      name: "Slack, repos, MCP registries, sandboxes, and model providers are governed behind one agent.",
     }),
   ).toBeVisible();
   await expect(page.getByText("Redo", { exact: true })).toBeVisible();

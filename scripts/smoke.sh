@@ -523,6 +523,33 @@ try {
     "Principal external identity link should persist.",
   );
 
+  const mcpServerId = `smoke-${smokeSuffix}`;
+  const mcpConnector = await postJson("/api/connectors/mcp", {
+    serverId: mcpServerId,
+    displayName: `Smoke MCP ${smokeSuffix}`,
+    transport: "stdio",
+    origin: "node ./smoke-mcp.js",
+    tags: ["smoke"],
+  });
+  assert(mcpConnector.id === `connector_mcp_${mcpServerId}`, "MCP connector registration should use a stable id.");
+  assert(mcpConnector.status === "pending", "MCP connector registration should start pending by default.");
+
+  const patchedMcpConnector = await patchJson(`/api/connectors/mcp/${mcpServerId}`, {
+    status: "active",
+    origin: "local:smoke-mcp",
+  });
+  assert(patchedMcpConnector.status === "active", "MCP connector patch should update status.");
+  assert(
+    patchedMcpConnector.metadata?.origin === "local:smoke-mcp",
+    "MCP connector patch should update origin metadata.",
+  );
+
+  const mcpConnectors = assertArray(await jsonRequest("/api/connectors/mcp"), "MCP connector list should be an array.");
+  assert(
+    mcpConnectors.some((install) => install.id === `connector_mcp_${mcpServerId}` && install.status === "active"),
+    "MCP connector list should include the registered smoke server.",
+  );
+
   const governanceAuditEvents = assertArray(
     await jsonRequest("/api/audit-events"),
     "Governance audit endpoint should return an array.",
@@ -547,6 +574,28 @@ try {
         event.data?.after?.decision === "deny",
     ),
     "Audit events should include the smoke access grant before/after update.",
+  );
+  assert(
+    governanceAuditEvents.some(
+      (event) =>
+        event.action === "mcp_server.registered" &&
+        event.resourceId === mcpServerId &&
+        !event.data?.before &&
+        event.data?.after?.id === `connector_mcp_${mcpServerId}` &&
+        event.data?.after?.status === "pending",
+    ),
+    "Audit events should include the smoke MCP registration.",
+  );
+  assert(
+    governanceAuditEvents.some(
+      (event) =>
+        event.action === "mcp_server.updated" &&
+        event.resourceId === mcpServerId &&
+        event.data?.before?.status === "pending" &&
+        event.data?.after?.status === "active" &&
+        event.data?.after?.metadata?.origin === "local:smoke-mcp",
+    ),
+    "Audit events should include the smoke MCP update.",
   );
 
   const deletedGrant = await deleteJson(`/api/access-bundles/${bundle.id}/grants/${grant.id}`);

@@ -446,6 +446,14 @@ export interface ConnectorInstall {
   updatedAt: string;
 }
 
+export type McpTransportKind = "stdio" | "http" | "sse" | "in_process";
+export type McpConnectorStatus =
+  | "pending"
+  | "active"
+  | "paused"
+  | "revoked"
+  | "error";
+
 export interface CredentialRecord {
   id: string;
   connectorInstallId?: string;
@@ -740,6 +748,39 @@ export async function discoverSlackChannels(
   } = {},
 ): Promise<SlackChannelDiscovery> {
   return jsonRequest<SlackChannelDiscovery>(slackChannelDiscoveryPath(input));
+}
+
+export async function registerMcpConnector(input: {
+  serverId: string;
+  displayName: string;
+  transport: McpTransportKind;
+  origin: string;
+  tags?: string[];
+}): Promise<ConnectorInstall> {
+  return jsonRequest<ConnectorInstall>("/api/connectors/mcp", {
+    method: "POST",
+    body: JSON.stringify(input),
+    headers: { "content-type": "application/json" },
+  });
+}
+
+export async function updateMcpConnector(input: {
+  serverId: string;
+  status?: McpConnectorStatus;
+  displayName?: string;
+  transport?: McpTransportKind;
+  origin?: string;
+  tags?: string[];
+}): Promise<ConnectorInstall> {
+  const { serverId, ...body } = input;
+  return jsonRequest<ConnectorInstall>(
+    `/api/connectors/mcp/${encodeURIComponent(serverId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    },
+  );
 }
 
 export async function updateAgent(input: {

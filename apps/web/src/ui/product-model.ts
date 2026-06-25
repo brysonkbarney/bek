@@ -663,6 +663,9 @@ export function connectorSummaries(data: Bootstrap): Array<{
   const mcpGrantCount = grantResources.filter((resource) =>
     resource.startsWith("mcp:"),
   ).length;
+  const mcpConnectorCount = data.connectorInstalls.filter(
+    (install) => install.kind === "mcp" && install.provider === "mcp",
+  ).length;
   const sandboxGrantCount = grantResources.filter((resource) =>
     resource.startsWith("sandbox:"),
   ).length;
@@ -713,9 +716,17 @@ export function connectorSummaries(data: Bootstrap): Array<{
     {
       id: "mcp",
       name: "MCP Gateway",
-      status: mcpGrantCount > 0 ? "configured" : "ready",
-      detail: "Tool grants are mediated through access bundles and approvals.",
-      metric: `${mcpGrantCount} tool grants`,
+      status:
+        mcpConnectorCount > 0
+          ? "registered"
+          : mcpGrantCount > 0
+            ? "policy configured"
+            : "ready",
+      detail:
+        mcpConnectorCount > 0
+          ? "Registered servers are ready for schema, risk, and grant review."
+          : "Tool grants are mediated through access bundles and approvals.",
+      metric: `${mcpConnectorCount} servers / ${mcpGrantCount} grants`,
       route: "/access-bundles",
       actionLabel: "Open access",
     },

@@ -2,14 +2,14 @@
 
 This is a positioning guide, not a vendor feature audit.
 
-| Category             | Common pattern                                         | Bek pattern                                                                |
-| -------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------- |
-| Bot directory        | Users choose the right bot for each task.              | Users tag one teammate: `@bek`.                                            |
-| Workflow automation  | Admins build fixed flows for known tasks.              | Bek can route open-ended requests through governed capabilities.           |
-| Chat-only assistant  | Assistant answers from available context.              | Bek also models tools, repos, runtimes, approvals, budgets, and audit.     |
-| Raw MCP client       | Tools are exposed directly to a model or user session. | MCP tools are classified, bundled, approved, proxied, and audited.         |
-| Model-specific agent | UX, capability, and model are coupled.                 | Admin policy can change model providers without changing the Slack handle. |
-| Self-hosted scripts  | Teams wire ad hoc secrets and permissions.             | Bek centralizes channel-scoped access bundles and approval policy.         |
+| Category             | Common pattern                                         | Bek pattern                                                                                                                  |
+| -------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| Bot directory        | Users choose the right bot for each task.              | Users tag one teammate: `@bek`.                                                                                              |
+| Workflow automation  | Admins build fixed flows for known tasks.              | Bek can route open-ended requests through governed capabilities.                                                             |
+| Chat-only assistant  | Assistant answers from available context.              | Bek also models tools, repos, runtimes, approvals, budgets, and audit.                                                       |
+| Raw MCP client       | Tools are exposed directly to a model or user session. | MCP access is designed to flow through registration, bundles, approvals, and audit; live proxying is still being integrated. |
+| Model-specific agent | UX, capability, and model are coupled.                 | Admin policy can change model providers without changing the Slack handle.                                                   |
+| Self-hosted scripts  | Teams wire ad hoc secrets and permissions.             | Bek centralizes channel-scoped access bundles and approval policy.                                                           |
 
 ## Where Bek Should Win
 

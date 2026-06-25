@@ -24,6 +24,9 @@ sound ambitious, but the claims need to match the code that exists today.
 - GitHub webhook verification and setup previews exist; opt-in GitHub execution
   can validate the approved workflow locally or open a deterministic,
   hash-bound draft PR in real mode after approval.
+- MCP server registration/listing/status updates exist in the API and
+  Connectors page; new registrations default to `pending`, and Postgres-backed
+  deployments persist registration/update audit rows.
 - Bek is designed to support many models, runtimes, MCP tools, repos, and
   sandboxes behind one visible teammate.
 - Hosted Bek is planned as a managed design-partner/waitlist offering.
@@ -36,9 +39,10 @@ sound ambitious, but the claims need to match the code that exists today.
   workflow behind approval, not full AI-generated repo work.
 - Do not claim production sandbox/OpenCode repo orchestration. Runtime and
   sandbox contracts exist, but hosted production execution is still a blocker.
-- Do not claim arbitrary live MCP transport support. MCP governance contracts
-  exist, but customer MCP execution still needs durable storage, approval, and
-  worker-only invocation.
+- Do not claim arbitrary live MCP transport support. MCP registration and
+  governance contracts exist, but customer MCP execution still needs durable
+  schema/allowlist storage, credentialed transports, approval, and worker-only
+  invocation.
 - Do not claim org-wide memory. The current Memory page is a stance page; Bek
   does not yet have source/chunk/embedding/citation storage or retrieval.
 - Do not claim customer-grade audit export. Bek persists durable audit rows for

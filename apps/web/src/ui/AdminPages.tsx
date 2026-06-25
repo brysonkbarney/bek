@@ -41,6 +41,8 @@ import {
   hasBuildTimeAdminToken,
   hasStoredAdminToken,
   linkPrincipalExternalIdentity,
+  registerMcpConnector,
+  updateMcpConnector,
   updateAccessBundle,
   updateGrant,
   updateModelPolicy,
@@ -50,8 +52,11 @@ import {
   type ApprovalRequest,
   type Bootstrap,
   type CapabilityGrant,
+  type ConnectorInstall,
   type DiscoveredSlackChannel,
   type GitHubSetupPreview,
+  type McpConnectorStatus,
+  type McpTransportKind,
   type ModelPolicy,
   type Run,
   type RunEvent,
@@ -2002,6 +2007,11 @@ export function ConnectorsPage() {
   const [copiedSlackManifest, setCopiedSlackManifest] = useState(false);
   const [slackPrincipalId, setSlackPrincipalId] = useState("");
   const [slackUserId, setSlackUserId] = useState("");
+  const [mcpServerId, setMcpServerId] = useState("");
+  const [mcpDisplayName, setMcpDisplayName] = useState("");
+  const [mcpTransport, setMcpTransport] = useState<McpTransportKind>("stdio");
+  const [mcpOrigin, setMcpOrigin] = useState("");
+  const [mcpTags, setMcpTags] = useState("");
   const slackManifestMutation = useMutation({
     mutationFn: fetchSlackManifest,
     onSuccess: () => setCopiedSlackManifest(false),
@@ -2023,6 +2033,21 @@ export function ConnectorsPage() {
       return queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
     },
   });
+  const mcpRegisterMutation = useMutation({
+    mutationFn: registerMcpConnector,
+    onSuccess: () => {
+      setMcpServerId("");
+      setMcpDisplayName("");
+      setMcpTransport("stdio");
+      setMcpOrigin("");
+      setMcpTags("");
+      return queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
+    },
+  });
+  const mcpStatusMutation = useMutation({
+    mutationFn: updateMcpConnector,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["bootstrap"] }),
+  });
   const slackInstallResult = new URLSearchParams(window.location.search).get(
     "slack_install",
   );
@@ -2038,8 +2063,17 @@ export function ConnectorsPage() {
   const githubSummary = connectorSummaries(data).find(
     (connector) => connector.id === "github",
   );
+  const mcpSummary = connectorSummaries(data).find(
+    (connector) => connector.id === "mcp",
+  );
   const otherConnectors = connectorSummaries(data).filter(
-    (connector) => connector.id !== "slack" && connector.id !== "github",
+    (connector) =>
+      connector.id !== "slack" &&
+      connector.id !== "github" &&
+      connector.id !== "mcp",
+  );
+  const mcpConnectors = data.connectorInstalls.filter(
+    (install) => install.kind === "mcp" && install.provider === "mcp",
   );
   const humanPrincipals = (data.principals ?? []).filter(
     (principal) => principal.kind === "human",
@@ -2059,12 +2093,20 @@ export function ConnectorsPage() {
     Boolean(slackTeamId) &&
     trimmedSlackUserId.length > 0 &&
     !slackIdentityMutation.isPending;
+  const trimmedMcpServerId = mcpServerId.trim();
+  const trimmedMcpDisplayName = mcpDisplayName.trim();
+  const trimmedMcpOrigin = mcpOrigin.trim();
+  const canRegisterMcp =
+    /^[A-Za-z0-9_-]+$/.test(trimmedMcpServerId) &&
+    trimmedMcpDisplayName.length > 0 &&
+    trimmedMcpOrigin.length > 0 &&
+    !mcpRegisterMutation.isPending;
 
   return (
     <div className="page">
       <PageHeader
         eyebrow="Connectors"
-        title="Slack, repos, MCP tools, sandboxes, and model providers plug into one agent."
+        title="Slack, repos, MCP registries, sandboxes, and model providers are governed behind one agent."
       />
       {slackInstallResult === "installed" ? (
         <SuccessCallout>Slack workspace connected.</SuccessCallout>
@@ -2357,6 +2399,44 @@ export function ConnectorsPage() {
           onRefresh={() => void refetchGitHubSetup()}
         />
       ) : null}
+      {mcpSummary ? (
+        <McpConnectorPanel
+          connector={mcpSummary}
+          connectors={mcpConnectors}
+          serverId={mcpServerId}
+          displayName={mcpDisplayName}
+          transport={mcpTransport}
+          origin={mcpOrigin}
+          tags={mcpTags}
+          canSubmit={canRegisterMcp}
+          isPending={mcpRegisterMutation.isPending}
+          isError={mcpRegisterMutation.isError}
+          isSuccess={mcpRegisterMutation.isSuccess}
+          statusSaved={mcpStatusMutation.isSuccess}
+          error={mcpRegisterMutation.error}
+          onServerIdChange={setMcpServerId}
+          onDisplayNameChange={setMcpDisplayName}
+          onTransportChange={setMcpTransport}
+          onOriginChange={setMcpOrigin}
+          onTagsChange={setMcpTags}
+          onStatusChange={(serverId, status) =>
+            mcpStatusMutation.mutate({ serverId, status })
+          }
+          statusChangePending={mcpStatusMutation.isPending}
+          onSubmit={() =>
+            mcpRegisterMutation.mutate({
+              serverId: trimmedMcpServerId,
+              displayName: trimmedMcpDisplayName,
+              transport: mcpTransport,
+              origin: trimmedMcpOrigin,
+              tags: mcpTags
+                .split(",")
+                .map((tag) => tag.trim())
+                .filter(Boolean),
+            })
+          }
+        />
+      ) : null}
       <section className="connector-grid">
         {otherConnectors.map((connector) => (
           <Panel
@@ -2382,6 +2462,218 @@ export function ConnectorsPage() {
       </section>
     </div>
   );
+}
+
+function McpConnectorPanel({
+  connector,
+  connectors,
+  serverId,
+  displayName,
+  transport,
+  origin,
+  tags,
+  canSubmit,
+  isPending,
+  isError,
+  isSuccess,
+  statusSaved,
+  error,
+  onServerIdChange,
+  onDisplayNameChange,
+  onTransportChange,
+  onOriginChange,
+  onTagsChange,
+  onStatusChange,
+  statusChangePending,
+  onSubmit,
+}: {
+  connector: ConnectorSummary;
+  connectors: ConnectorInstall[];
+  serverId: string;
+  displayName: string;
+  transport: McpTransportKind;
+  origin: string;
+  tags: string;
+  canSubmit: boolean;
+  isPending: boolean;
+  isError: boolean;
+  isSuccess: boolean;
+  statusSaved: boolean;
+  error: unknown;
+  onServerIdChange: (value: string) => void;
+  onDisplayNameChange: (value: string) => void;
+  onTransportChange: (value: McpTransportKind) => void;
+  onOriginChange: (value: string) => void;
+  onTagsChange: (value: string) => void;
+  onStatusChange: (serverId: string, status: McpConnectorStatus) => void;
+  statusChangePending: boolean;
+  onSubmit: () => void;
+}) {
+  return (
+    <Panel
+      title="MCP Gateway"
+      action={<StatusBadge value={connector.status} />}
+    >
+      {isError ? (
+        <WarningCallout>
+          {errorMessage(error, "Bek could not register that MCP server.")}
+        </WarningCallout>
+      ) : null}
+      {isSuccess ? <SuccessCallout>MCP server saved.</SuccessCallout> : null}
+      {statusSaved ? (
+        <SuccessCallout>MCP server status saved.</SuccessCallout>
+      ) : null}
+      <div className="connector-card">
+        <div className="connector-icon">
+          <Database size={20} aria-hidden="true" />
+        </div>
+        <div>
+          <strong>{connector.metric}</strong>
+          <p className="muted">{connector.detail}</p>
+        </div>
+      </div>
+      <form
+        className="settings-grid compact-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (canSubmit) {
+            onSubmit();
+          }
+        }}
+      >
+        <label>
+          Server ID
+          <input
+            value={serverId}
+            placeholder="linear"
+            onChange={(event) => onServerIdChange(event.target.value)}
+          />
+          <span className="field-hint">
+            Used in tool resources such as mcp:linear/create_issue.
+          </span>
+        </label>
+        <label>
+          Display name
+          <input
+            value={displayName}
+            placeholder="Linear"
+            onChange={(event) => onDisplayNameChange(event.target.value)}
+          />
+        </label>
+        <label>
+          Transport
+          <select
+            value={transport}
+            onChange={(event) =>
+              onTransportChange(event.target.value as McpTransportKind)
+            }
+          >
+            <option value="stdio">stdio</option>
+            <option value="http">http</option>
+            <option value="sse">sse</option>
+            <option value="in_process">in_process</option>
+          </select>
+        </label>
+        <label>
+          Origin
+          <input
+            value={origin}
+            placeholder="npx @linear/mcp-server"
+            onChange={(event) => onOriginChange(event.target.value)}
+          />
+        </label>
+        <label>
+          Tags
+          <input
+            value={tags}
+            placeholder="issues, support"
+            onChange={(event) => onTagsChange(event.target.value)}
+          />
+        </label>
+        <div className="form-actions">
+          <button
+            className="primary"
+            disabled={!canSubmit}
+            aria-busy={isPending}
+          >
+            {isPending ? "Registering..." : "Register Server"}
+          </button>
+          <Link to={connector.route} className="secondary">
+            {connector.actionLabel}
+            <ExternalLink size={14} aria-hidden="true" />
+          </Link>
+        </div>
+      </form>
+      {connectors.length === 0 ? (
+        <EmptyState
+          title="No MCP servers registered"
+          body="Register an MCP server candidate before schema, risk, and grant review."
+        />
+      ) : (
+        <div className="bundle-list">
+          {connectors.map((install) => (
+            <div className="bundle" key={install.id}>
+              <strong>{install.displayName}</strong>
+              <span>{install.externalId}</span>
+              <span>
+                {String(install.metadata?.transport ?? "unknown")} -{" "}
+                {String(install.metadata?.origin ?? "no origin")}
+              </span>
+              <StatusBadge value={install.status} />
+              <div className="form-actions connector-actions">
+                {install.status !== "active" ? (
+                  <button
+                    className="secondary"
+                    disabled={statusChangePending}
+                    onClick={() =>
+                      onStatusChange(mcpConnectorServerId(install), "active")
+                    }
+                    type="button"
+                  >
+                    Activate
+                  </button>
+                ) : (
+                  <button
+                    className="secondary"
+                    disabled={statusChangePending}
+                    onClick={() =>
+                      onStatusChange(mcpConnectorServerId(install), "paused")
+                    }
+                    type="button"
+                  >
+                    Pause
+                  </button>
+                )}
+                {install.status !== "revoked" ? (
+                  <button
+                    className="secondary"
+                    disabled={statusChangePending}
+                    onClick={() =>
+                      onStatusChange(mcpConnectorServerId(install), "revoked")
+                    }
+                    type="button"
+                  >
+                    Revoke
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function mcpConnectorServerId(install: ConnectorInstall): string {
+  const metadataServerId = install.metadata?.serverId;
+  if (install.externalId) {
+    return install.externalId;
+  }
+  if (typeof metadataServerId === "string" && metadataServerId.length > 0) {
+    return metadataServerId;
+  }
+  return install.id.replace(/^connector_mcp_/, "");
 }
 
 function GitHubConnectorPanel({

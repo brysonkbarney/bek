@@ -30,7 +30,9 @@ This repository is a working OSS product spine for Bek. It runs locally without 
 - Slack helpers with fail-closed signature verification, OAuth state, OAuth code exchange, local encrypted install-token storage, slash-command parsing, direct-message handling, channel membership/lifecycle handling, approval interactions, message rendering, and Web API posting through vaulted OAuth tokens or `SLACK_BOT_TOKEN`.
 - Signed GitHub webhook ingress with delivery dedupe and normalized installation, pull request, and check-run metadata; approved GitHub worker execution is opt-in with fake and real modes.
 - `worker_local` run advancement for local/API/Slack flows, including runtime events, policy approvals, runtime-requested approvals, resume after approval, and final run cost/status. The worker queue can run memory-backed for zero-config demos or Postgres-backed for restart-safe self-hosting.
-- Model-router and MCP-gateway packages with provider-neutral routing/tool-manifest tests.
+- Model-router and MCP-gateway packages with provider-neutral
+  routing/tool-manifest tests, plus admin-facing MCP server registration and
+  status/audit rows.
 - Runtime and sandbox contract packages for AI SDK, OpenCode, Docker, Vercel Sandbox, and E2B style adapters.
 - Drizzle/Postgres schema and snapshot repository for the launch data model.
 - Docker Compose profiles for Postgres, Valkey, MinIO, API/web containers, and
@@ -79,8 +81,8 @@ API. Otherwise it starts a temporary memory-backed API with
 `BEK_RUN_ADVANCEMENT=worker_local`, a deterministic Slack signing secret,
 verifies bootstrap, setup status, governance mutations, policy evaluation,
 approval-gated run creation, worker completion, signed Slack and GitHub webhook
-ingress, Slack outbox behavior, usage, and audit events, then stops the API
-process.
+ingress, MCP connector registration/update, Slack outbox behavior, usage, and
+audit events, then stops the API process.
 
 To smoke the restart-safe Postgres worker queue, run migrations first and then:
 

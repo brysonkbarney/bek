@@ -2,9 +2,11 @@ import { expect, test } from "@playwright/test";
 
 test("creates and approves a demo run against the real API", async ({
   page,
-}) => {
+}, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
+  const mcpServerId = `docs-${testInfo.workerIndex}-${Date.now()}`;
+  const mcpDisplayName = `Docs MCP ${mcpServerId}`;
 
   await page.goto("/");
   await expect(
@@ -13,13 +15,27 @@ test("creates and approves a demo run against the real API", async ({
     }),
   ).toBeVisible();
 
+  const nav = page.getByRole("navigation", { name: "Bek admin navigation" });
+  await nav.getByRole("link", { name: "Connectors", exact: true }).click();
+  await expect(
+    page.getByRole("heading", {
+      name: "Slack, repos, MCP registries, sandboxes, and model providers are governed behind one agent.",
+    }),
+  ).toBeVisible();
+  await page.getByLabel("Server ID").fill(mcpServerId);
+  await page.getByLabel("Display name").fill(mcpDisplayName);
+  await page.getByLabel("Origin").fill("npx @bek/docs-mcp");
+  await page.getByRole("button", { name: "Register Server" }).click();
+  await expect(page.getByText("MCP server saved.")).toBeVisible();
+  await expect(page.getByText(mcpDisplayName)).toBeVisible();
+  await page.getByRole("button", { name: "Activate" }).click();
+  await expect(page.getByText("MCP server status saved.")).toBeVisible();
+
+  await nav.getByRole("link", { name: "Overview", exact: true }).click();
   await page.getByRole("button", { name: "Demo PR Run" }).click();
   await expect(page.getByText("Demo run started.")).toBeVisible();
 
-  await page
-    .getByRole("navigation", { name: "Bek admin navigation" })
-    .getByRole("link", { name: "Approvals", exact: true })
-    .click();
+  await nav.getByRole("link", { name: "Approvals", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Risky Bek actions wait for approval." }),
   ).toBeVisible();
@@ -33,14 +49,17 @@ test("creates and approves a demo run against the real API", async ({
     .click();
   await expect(page.getByText("Approval decision saved.")).toBeVisible();
 
-  await page
-    .getByRole("navigation", { name: "Bek admin navigation" })
-    .getByRole("link", { name: "Audit", exact: true })
-    .click();
+  await nav.getByRole("link", { name: "Audit", exact: true }).click();
   await expect(
     page.getByRole("heading", {
       name: "Every policy decision and action should leave a trail.",
     }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(`Registered MCP server ${mcpDisplayName}.`),
+  ).toBeVisible();
+  await expect(
+    page.getByText(`Updated MCP server ${mcpDisplayName}.`),
   ).toBeVisible();
   await expect(page.getByText("approval.decided").first()).toBeVisible();
   await expect(page.getByText("run.completed").first()).toBeVisible();

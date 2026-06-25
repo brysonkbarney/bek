@@ -18,6 +18,7 @@ import {
   githubSetupPath,
   linkPrincipalExternalIdentity,
   redriveDeadLetterPath,
+  registerMcpConnector,
   readAdminApiToken,
   readBekApiUrl,
   saveAdminApiToken,
@@ -26,6 +27,7 @@ import {
   slackOutboxPath,
   updateAccessBundle,
   updateGrant,
+  updateMcpConnector,
 } from "./api";
 
 describe("web API helpers", () => {
@@ -521,6 +523,104 @@ describe("web API helpers", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(fetchAuditEvents()).resolves.toEqual(auditEvents);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("registers MCP connectors with admin auth", async () => {
+    const storage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveAdminApiToken("runtime-token");
+    const connector = {
+      id: "connector_mcp_linear",
+      kind: "mcp",
+      provider: "mcp",
+      externalId: "linear",
+      displayName: "Linear",
+      status: "pending",
+      metadata: {
+        serverId: "linear",
+        transport: "stdio",
+        origin: "npx @linear/mcp-server",
+        tags: ["issues"],
+      },
+      createdAt: "2026-06-24T18:00:00.000Z",
+      updatedAt: "2026-06-24T18:00:00.000Z",
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(String(input)).toBe("http://localhost:4317/api/connectors/mcp");
+      expect(init?.method).toBe("POST");
+      expect(init?.headers).toEqual({
+        authorization: "Bearer runtime-token",
+        "content-type": "application/json",
+      });
+      expect(JSON.parse(String(init?.body))).toEqual({
+        serverId: "linear",
+        displayName: "Linear",
+        transport: "stdio",
+        origin: "npx @linear/mcp-server",
+        tags: ["issues"],
+      });
+      return new Response(JSON.stringify(connector), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      registerMcpConnector({
+        serverId: "linear",
+        displayName: "Linear",
+        transport: "stdio",
+        origin: "npx @linear/mcp-server",
+        tags: ["issues"],
+      }),
+    ).resolves.toEqual(connector);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("updates MCP connectors with admin auth", async () => {
+    const storage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveAdminApiToken("runtime-token");
+    const connector = {
+      id: "connector_mcp_docs",
+      kind: "mcp",
+      provider: "mcp",
+      externalId: "docs",
+      displayName: "Docs MCP",
+      status: "active",
+      metadata: {
+        serverId: "docs",
+        transport: "stdio",
+        origin: "npx @bek/docs-mcp",
+        tags: ["docs"],
+      },
+      createdAt: "2026-06-24T18:00:00.000Z",
+      updatedAt: "2026-06-24T18:00:00.000Z",
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(String(input)).toBe(
+        "http://localhost:4317/api/connectors/mcp/docs",
+      );
+      expect(init?.method).toBe("PATCH");
+      expect(init?.headers).toEqual({
+        authorization: "Bearer runtime-token",
+        "content-type": "application/json",
+      });
+      expect(JSON.parse(String(init?.body))).toEqual({ status: "active" });
+      return new Response(JSON.stringify(connector), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      updateMcpConnector({ serverId: "docs", status: "active" }),
+    ).resolves.toEqual(connector);
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 

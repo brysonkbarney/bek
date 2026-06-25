@@ -167,12 +167,16 @@ the current OSS spine.
 ## MCP And Tools
 
 - [ ] Register only MCP servers operated by the team or explicitly trusted.
+- [ ] Keep newly registered MCP servers in `pending` until schema discovery,
+      tool risk classification, and access-bundle grants have been reviewed.
 - [ ] Treat server names, tool descriptions, schemas, arguments, and outputs as
       untrusted.
-- [ ] Require approval for write, external-write, or privileged tools.
+- [ ] Require approval for `write_external` or `privileged` tools; treat
+      `write_draft` as non-production mutation unless reviewed otherwise.
 - [ ] Quarantine schema drift until an admin reviews it.
-- [ ] Blocked: implement live MCP transport, credential handling, redaction, and
-      audit integration before production tool calls.
+- [ ] Blocked: implement live MCP transport, credential handling, output
+      redaction, schema/allowlist storage, and worker-only invocation before
+      production tool calls.
 
 ## Runtime And Sandbox
 

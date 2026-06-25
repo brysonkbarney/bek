@@ -2252,6 +2252,185 @@ describe("Bek API", () => {
     );
   });
 
+  it("registers, updates, lists, and audits MCP connector servers", async () => {
+    const app = createApp();
+    const created = await app.request("/api/connectors/mcp", {
+      method: "POST",
+      body: JSON.stringify({
+        serverId: "linear",
+        displayName: "Linear",
+        transport: "stdio",
+        origin: "npx @linear/mcp-server",
+        tags: ["issues"],
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(created.status).toBe(201);
+    await expect(created.json()).resolves.toMatchObject({
+      id: "connector_mcp_linear",
+      kind: "mcp",
+      provider: "mcp",
+      externalId: "linear",
+      displayName: "Linear",
+      status: "pending",
+      installedByPrincipalId: "principal_admin",
+      metadata: {
+        serverId: "linear",
+        transport: "stdio",
+        origin: "npx @linear/mcp-server",
+        tags: ["issues"],
+        source: "admin",
+      },
+    });
+
+    const updated = await app.request("/api/connectors/mcp/linear", {
+      method: "PATCH",
+      body: JSON.stringify({
+        status: "active",
+        transport: "http",
+        origin: "https://linear.example.test/mcp",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(updated.status).toBe(200);
+    await expect(updated.json()).resolves.toMatchObject({
+      id: "connector_mcp_linear",
+      status: "active",
+      metadata: {
+        transport: "http",
+        origin: "https://linear.example.test/mcp",
+        tags: ["issues"],
+      },
+    });
+
+    const reregistered = await app.request("/api/connectors/mcp", {
+      method: "POST",
+      body: JSON.stringify({
+        serverId: "linear",
+        displayName: "Linear Updated",
+        transport: "stdio",
+        origin: "npx @linear/mcp-server",
+        tags: ["issues", "triage"],
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(reregistered.status).toBe(200);
+    await expect(reregistered.json()).resolves.toMatchObject({
+      id: "connector_mcp_linear",
+      displayName: "Linear Updated",
+      status: "active",
+      metadata: {
+        transport: "stdio",
+        origin: "npx @linear/mcp-server",
+        tags: ["issues", "triage"],
+      },
+    });
+
+    await expect(expectJson(app, "/api/connectors/mcp")).resolves.toEqual([
+      expect.objectContaining({
+        id: "connector_mcp_linear",
+        kind: "mcp",
+        provider: "mcp",
+        status: "active",
+      }),
+    ]);
+
+    await expect(expectJson(app, "/api/audit-events")).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "mcp_server.registered",
+          actorPrincipalId: "principal_admin",
+          resourceType: "mcp_server",
+          resourceId: "linear",
+          data: expect.objectContaining({
+            adminAuthMethod: "local_bypass",
+            after: expect.objectContaining({
+              id: "connector_mcp_linear",
+              status: "pending",
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          action: "mcp_server.updated",
+          resourceType: "mcp_server",
+          resourceId: "linear",
+          data: expect.objectContaining({
+            before: expect.objectContaining({ status: "pending" }),
+            after: expect.objectContaining({ status: "active" }),
+          }),
+        }),
+      ]),
+    );
+
+    const invalid = await app.request("/api/connectors/mcp", {
+      method: "POST",
+      body: JSON.stringify({
+        serverId: "bad/server",
+        displayName: "Bad",
+        transport: "stdio",
+        origin: "local:bad",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(invalid.status).toBe(400);
+
+    const activeOnCreate = await app.request("/api/connectors/mcp", {
+      method: "POST",
+      body: JSON.stringify({
+        serverId: "badstatus",
+        displayName: "Bad Status",
+        transport: "stdio",
+        origin: "npx @bad/mcp-server",
+        status: "active",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(activeOnCreate.status).toBe(400);
+
+    const credentialOrigin = await app.request("/api/connectors/mcp", {
+      method: "POST",
+      body: JSON.stringify({
+        serverId: "secretorigin",
+        displayName: "Secret Origin",
+        transport: "http",
+        origin: "https://token:secret@example.test/mcp",
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(credentialOrigin.status).toBe(400);
+
+    const incompatibleTransport = await app.request(
+      "/api/connectors/mcp/linear",
+      {
+        method: "PATCH",
+        body: JSON.stringify({ transport: "http" }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(incompatibleTransport.status).toBe(400);
+
+    const emptyPatch = await app.request("/api/connectors/mcp/linear", {
+      method: "PATCH",
+      body: JSON.stringify({}),
+      headers: { "content-type": "application/json" },
+    });
+    expect(emptyPatch.status).toBe(400);
+
+    const missing = await app.request("/api/connectors/mcp/missing", {
+      method: "PATCH",
+      body: JSON.stringify({ status: "paused" }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(missing.status).toBe(404);
+
+    const invalidPatchId = await app.request("/api/connectors/mcp/bad%20id", {
+      method: "PATCH",
+      body: JSON.stringify({ status: "paused" }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(invalidPatchId.status).toBe(400);
+  });
+
   it("handles access bundle idempotency and invalid grant mutations", async () => {
     const app = createApp();
     const bundleRes = await app.request("/api/access-bundles", {
