@@ -18,7 +18,8 @@ lands. A pilot stack should have its own:
 - `BEK_ORG_ID`, admin token, and credential vault key.
 - Public API callback host and admin web origin.
 - Slack app or Slack workspace install.
-- GitHub App installation ID when repo writes are enabled.
+- Signed GitHub App webhooks when repo writes are enabled, so Bek can persist
+  repo-to-installation bindings before approved worker execution.
 
 Do not point multiple unrelated Slack workspaces at one API process and rely on
 policy alone for tenant isolation. The current API process is single-tenant in

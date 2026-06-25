@@ -91,6 +91,7 @@ export interface GitHubCommitWorkflowPlan {
 export interface CreateGitHubDraftPullRequestWorkflowPlanInput {
   repository: string | GitHubRepoRef;
   installationId: string | number;
+  repositoryId?: string | number | undefined;
   title: string;
   headBranch: string;
   baseBranch?: string | undefined;
@@ -117,6 +118,7 @@ export interface GitHubDraftPullRequestWorkflowPlan {
   resource: string;
   repository: GitHubRepoResource;
   installationId: string;
+  repositoryId?: number | undefined;
   tokenRequest: GitHubInstallationTokenRequest;
   branch: GitHubBranchWorkflowPlan;
   commit: GitHubCommitWorkflowPlan;
@@ -134,6 +136,7 @@ export interface GitHubDraftPullRequestWorkflowApprovalPayload {
   resource: string;
   repository: GitHubRepoResource;
   installationId: string;
+  repositoryId?: number | undefined;
   branch: {
     baseBranch: string;
     headBranch: string;
@@ -229,6 +232,7 @@ export function createGitHubDraftPullRequestWorkflowPlan(
 ): GitHubDraftPullRequestWorkflowPlan {
   const repository = parseGitHubRepoResource(input.repository);
   const installationId = normalizeGitHubInstallationId(input.installationId);
+  const repositoryId = normalizeOptionalRepositoryId(input.repositoryId);
   const branch = createGitHubBranchWorkflowPlan({
     repository,
     installationId,
@@ -269,6 +273,7 @@ export function createGitHubDraftPullRequestWorkflowPlan(
     tokenRequest: createGitHubInstallationTokenRequest({
       installationId,
       repository,
+      ...(repositoryId !== undefined ? { repositoryIds: [repositoryId] } : {}),
       permissions: {
         contents: "write",
         metadata: "read",
@@ -289,6 +294,7 @@ export function createGitHubDraftPullRequestWorkflowPlan(
       labels: pullRequest.labels,
       reviewers: pullRequest.reviewers,
       installationId,
+      repositoryId,
     }),
     steps: [
       "mint_installation_token",
@@ -297,6 +303,9 @@ export function createGitHubDraftPullRequestWorkflowPlan(
       "open_draft_pull_request",
     ],
   };
+  if (repositoryId !== undefined) {
+    plan.repositoryId = repositoryId;
+  }
   addRunMetadata(plan, input);
   return plan;
 }
@@ -332,6 +341,9 @@ export function createGitHubDraftPullRequestWorkflowApprovalPayload(
     approvalHashInput: structuredClone(plan.approvalHashInput),
     steps: [...plan.steps],
   };
+  if (plan.repositoryId !== undefined) {
+    payload.repositoryId = plan.repositoryId;
+  }
   addRunMetadata(payload, plan);
   return payload;
 }
@@ -342,6 +354,7 @@ export function createGitHubDraftPullRequestWorkflowPlanFromApprovalPayload(
   return createGitHubDraftPullRequestWorkflowPlan({
     repository: payload.repository,
     installationId: payload.installationId,
+    repositoryId: payload.repositoryId,
     title: payload.pullRequest.title,
     body: payload.pullRequest.body,
     baseBranch: payload.branch.baseBranch,
@@ -382,6 +395,23 @@ export function normalizeGitHubCommitSha(value: string): string {
   const normalized = value.trim().toLowerCase();
   if (!/^[0-9a-f]{40}$/.test(normalized)) {
     throw new Error("GitHub commit SHA must be a 40 character hex string.");
+  }
+  return normalized;
+}
+
+function normalizeOptionalRepositoryId(
+  value: string | number | undefined,
+): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const normalized = typeof value === "number" ? value : Number(value.trim());
+  if (
+    !Number.isSafeInteger(normalized) ||
+    normalized <= 0 ||
+    (typeof value === "string" && !/^\d+$/.test(value.trim()))
+  ) {
+    throw new Error("GitHub repository id must be a positive safe integer.");
   }
   return normalized;
 }

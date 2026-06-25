@@ -121,8 +121,9 @@ the current OSS spine.
       proven safe.
 - [ ] Keep `BEK_GITHUB_EXECUTION=disabled` until the workspace is ready for
       approved repo writes; use `fake` first, then `real`.
-- [ ] For real execution, set `GITHUB_APP_INSTALLATION_ID` for the repos being
-      piloted and verify `/ready` reports `githubExecution` as ready.
+- [ ] For real execution, deliver signed `installation` and
+      `installation_repositories` webhooks before creating repo-write runs, then
+      verify `/api/setup/status` has no missing GitHub repo bindings.
 - [ ] Blocked: replace the deterministic Bek run manifest PR with
       AI-generated repo diffs produced inside an isolated runtime.
 - [ ] Blocked: persist expanded audit events and hosted token-broker records for

@@ -477,13 +477,8 @@ export function resolveGitHubExecutionFromEnv(
   }
 
   const validation = validateGitHubAppConfig(env);
-  const errors = [
-    ...validation.errors,
-    ...(installationId
-      ? []
-      : ["GITHUB_APP_INSTALLATION_ID is required for real GitHub execution."]),
-  ];
-  if (errors.length > 0 || !validation.config || !installationId) {
+  const errors = [...validation.errors];
+  if (errors.length > 0 || !validation.config) {
     return {
       status: {
         mode,
@@ -512,8 +507,12 @@ export function resolveGitHubExecutionFromEnv(
         apiBaseUrl: env.GITHUB_API_BASE_URL,
         userAgent: "bek-api-worker",
       }),
-      approvalPlanProvider:
-        createDefaultGitHubDraftPullRequestPlanProvider(installationId),
+      ...(installationId
+        ? {
+            approvalPlanProvider:
+              createDefaultGitHubDraftPullRequestPlanProvider(installationId),
+          }
+        : {}),
       planProvider: approvedGitHubDraftPullRequestPlanFromApproval,
     },
   };

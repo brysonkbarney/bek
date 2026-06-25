@@ -8,6 +8,7 @@ export interface GitHubRepoResource extends GitHubRepoRef {
   fullName: string;
   resource: string;
   url: string;
+  repositoryId?: number | undefined;
 }
 
 export function formatGitHubRepoResource(input: GitHubRepoRef): string {

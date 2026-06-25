@@ -8,6 +8,7 @@ import { normalizeGitHubInstallationId } from "./tokens";
 
 export interface CreateGitHubPullRequestWriteApprovalHashInputInput extends CreateGitHubPullRequestProposalInput {
   installationId?: string | number | undefined;
+  repositoryId?: string | number | undefined;
   existingPullRequestNumber?: number | undefined;
   headCommitSha?: string | undefined;
 }
@@ -34,6 +35,7 @@ export interface GitHubPullRequestWriteApprovalHashInput {
   labels: string[];
   reviewers: string[];
   installationId?: string | undefined;
+  repositoryId?: number | undefined;
   existingPullRequestNumber?: number | undefined;
   headCommitSha?: string | undefined;
 }
@@ -75,6 +77,9 @@ export function createGitHubPullRequestWriteApprovalHashInput(
         input.installationId,
       );
     }
+    if (input.repositoryId !== undefined) {
+      hashInput.repositoryId = normalizeRepositoryId(input.repositoryId);
+    }
     if (input.existingPullRequestNumber !== undefined) {
       hashInput.existingPullRequestNumber = normalizePullRequestNumber(
         input.existingPullRequestNumber,
@@ -110,6 +115,18 @@ function normalizePullRequestNumber(value: number): number {
     throw new Error("GitHub pull request number must be a positive integer.");
   }
   return value;
+}
+
+function normalizeRepositoryId(value: string | number): number {
+  const normalized = typeof value === "number" ? value : Number(value.trim());
+  if (
+    !Number.isSafeInteger(normalized) ||
+    normalized <= 0 ||
+    (typeof value === "string" && !/^\d+$/.test(value.trim()))
+  ) {
+    throw new Error("GitHub repository id must be a positive safe integer.");
+  }
+  return normalized;
 }
 
 function normalizeSha(value: string): string {

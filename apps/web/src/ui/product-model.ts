@@ -256,7 +256,9 @@ export function setupOperationsFromStatus(
   const githubExecutionReady = Boolean(
     status.githubExecutionEnabled && status.githubExecutionReady,
   );
-  const githubReady = githubPolicyReady && githubExecutionReady;
+  const githubBindingsReady = githubRepoBindingsReady(status);
+  const githubReady =
+    githubPolicyReady && githubExecutionReady && githubBindingsReady;
   const workspace = status.slackWorkspaceName ?? status.slackWorkspaceId;
   const operations: SetupOperation[] = [
     {
@@ -390,6 +392,7 @@ export function setupOperationsFromStatus(
         status.githubGrantCount === 1 ? "" : "s"
       }`,
       githubExecutionFact(status),
+      githubRepoBindingFact(status),
       "Governed through access policy",
     ],
     primaryAction: {
@@ -609,6 +612,11 @@ function modelPricingFact(status: SetupStatus): string {
 }
 
 function githubExecutionSetupDetail(status: SetupStatus): string {
+  if (!githubRepoBindingsReady(status)) {
+    return `Repo grants are attached, but real GitHub execution is missing installation bindings for ${formatGithubRepoBindings(
+      status.missingGithubRepoBindings,
+    )}.`;
+  }
   if (status.githubExecutionEnabled && status.githubExecutionReady) {
     return "Repo grants are attached and GitHub App execution is ready.";
   }
@@ -629,6 +637,28 @@ function githubExecutionFact(status: SetupStatus): string {
     return `Execution: blocked (${mode})`;
   }
   return `Execution: disabled (${mode})`;
+}
+
+function githubRepoBindingsReady(status: SetupStatus): boolean {
+  return (
+    status.githubExecutionMode !== "real" ||
+    status.githubRepoBindingsReady === true ||
+    (status.missingGithubRepoBindings?.length ?? 0) === 0
+  );
+}
+
+function githubRepoBindingFact(status: SetupStatus): string {
+  if (status.githubExecutionMode !== "real") {
+    return "Repo bindings: not required";
+  }
+  const missing = status.missingGithubRepoBindings?.length ?? 0;
+  return missing === 0
+    ? "Repo bindings: ready"
+    : `Repo bindings: missing ${missing}`;
+}
+
+function formatGithubRepoBindings(resources: string[] | undefined): string {
+  return resources?.length ? resources.join(", ") : "configured repo grants";
 }
 
 function githubExecutionErrorSummary(status: SetupStatus): string {

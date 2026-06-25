@@ -32,6 +32,8 @@ const readySetup: SetupStatus = {
   githubExecutionReady: true,
   githubExecutionNetworkCalls: "github_on_approved_worker_run",
   githubExecutionErrors: [],
+  githubRepoBindingsReady: true,
+  missingGithubRepoBindings: [],
   pendingApprovals: 0,
   readyForLocalDemo: true,
   readyForWorkspace: true,
@@ -164,6 +166,31 @@ describe("admin product helpers", () => {
           "Execution: disabled (disabled)",
         ]),
         primaryAction: { label: "Open GitHub setup", route: "/connectors" },
+      }),
+    );
+  });
+
+  it("keeps real GitHub execution incomplete when repo installation bindings are missing", () => {
+    const operations = setupOperationsFromStatus(
+      {
+        ...readySetup,
+        githubRepoBindingsReady: false,
+        missingGithubRepoBindings: ["github:redohq/checkout"],
+        readyForWorkspace: false,
+      },
+      {
+        adminAuthDetail: "Using a browser-entered admin token.",
+        adminAuthenticated: true,
+      },
+    );
+
+    expect(operations.find((step) => step.id === "github-policy")).toEqual(
+      expect.objectContaining({
+        complete: false,
+        status: "policy configured",
+        detail:
+          "Repo grants are attached, but real GitHub execution is missing installation bindings for github:redohq/checkout.",
+        facts: expect.arrayContaining(["Repo bindings: missing 1"]),
       }),
     );
   });

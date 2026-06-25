@@ -188,6 +188,8 @@ const setupStatusFixture = {
   githubExecutionReady: true,
   githubExecutionNetworkCalls: "github_on_approved_worker_run",
   githubExecutionErrors: [],
+  githubRepoBindingsReady: true,
+  missingGithubRepoBindings: [],
   pendingApprovals: 1,
   readyForLocalDemo: true,
   readyForWorkspace: true,

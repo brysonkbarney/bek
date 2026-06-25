@@ -305,9 +305,10 @@ function normalizePullRequestNumbers(value: unknown): number[] {
 function repositoryFromRecord(
   record: Record<string, unknown>,
 ): GitHubRepoResource {
+  const repositoryId = optionalPositiveInteger(record.id);
   const fullName = stringField(record, "full_name");
   if (fullName) {
-    return parseGitHubRepoResource(fullName);
+    return assignRepositoryId(parseGitHubRepoResource(fullName), repositoryId);
   }
   const owner = maybeRecord(record.owner);
   const ownerLogin = owner ? stringField(owner, "login") : undefined;
@@ -315,7 +316,19 @@ function repositoryFromRecord(
   if (!ownerLogin || !name) {
     throw new Error("GitHub repository payload must include owner and name.");
   }
-  return parseGitHubRepoResource({ owner: ownerLogin, repo: name });
+  return assignRepositoryId(
+    parseGitHubRepoResource({ owner: ownerLogin, repo: name }),
+    repositoryId,
+  );
+}
+
+function assignRepositoryId(
+  repository: GitHubRepoResource,
+  repositoryId: number | undefined,
+): GitHubRepoResource {
+  return repositoryId === undefined
+    ? repository
+    : { ...repository, repositoryId };
 }
 
 function normalizeDeliveryId(value: string): string {
@@ -388,6 +401,22 @@ function booleanField(
 ): boolean | undefined {
   const value = record[key];
   return typeof value === "boolean" ? value : undefined;
+}
+
+function optionalPositiveInteger(value: unknown): number | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    if (Number.isSafeInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  throw new Error("GitHub repository id must be a positive integer.");
 }
 
 function requiredString(value: unknown, label: string): string {

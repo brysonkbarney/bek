@@ -3621,6 +3621,19 @@ function validatePlannedGitHubDraftPullRequestPlan(
       "GitHub PR approval hash input installation does not match the workflow plan.",
     );
   }
+  if (plan.approvalHashInput.repositoryId !== plan.repositoryId) {
+    throw new Error(
+      "GitHub PR approval hash input repository id does not match the workflow plan.",
+    );
+  }
+  if (
+    plan.repositoryId !== undefined &&
+    !plan.tokenRequest.repositoryIds?.includes(plan.repositoryId)
+  ) {
+    throw new Error(
+      "GitHub PR token request repository id does not match the workflow plan.",
+    );
+  }
 }
 
 function runtimeFailureResult(error: unknown): RuntimeResult {

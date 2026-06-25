@@ -77,7 +77,10 @@ import {
   type RunAdvancementMode,
   type WorkerQueuePersistenceOptions,
 } from "./worker-runtime";
-import { createModelProviderRegistryFromEnv } from "@bek/worker";
+import {
+  createModelProviderRegistryFromEnv,
+  type WorkerGitHubDraftPullRequestExecutionOptions,
+} from "@bek/worker";
 import {
   modelUsageTotalsFromRuns,
   type ModelUsageRepository,
@@ -152,13 +155,18 @@ export function createApp(
     options.modelUsageRepository,
   );
   const githubExecution = resolveGitHubExecutionFromEnv();
+  const githubDraftPullRequest = githubExecution.executor;
+  if (githubDraftPullRequest && githubExecution.status.mode === "real") {
+    githubDraftPullRequest.approvalPlanProvider =
+      createGitHubDraftPullRequestPlanProviderFromStore(store);
+  }
   const workerController = new LocalWorkerController(
     store,
     options.runAdvancement ?? runAdvancementModeFromEnv(),
     {
       persistence: options.workerQueuePersistence,
       modelUsageSink,
-      githubDraftPullRequest: githubExecution.executor,
+      githubDraftPullRequest,
     },
   );
   const slackOutbound = createSlackOutboundDelivery(store, {
@@ -273,7 +281,7 @@ export function createApp(
       advanceMode: workerController.enabled ? "worker" : "inline_stub",
       deferApproval:
         workerController.enabled &&
-        Boolean(githubExecution.installationId) &&
+        Boolean(githubDraftPullRequest?.approvalPlanProvider) &&
         input.capability === "github.pr",
     };
     const run = store.createRun(runInput);
@@ -598,6 +606,210 @@ export function createApp(
         firstSeenAt: now,
       },
     });
+  }
+
+  function persistGitHubInstallationEvent(
+    event: NormalizedGitHubWebhookEvent,
+  ): Record<string, unknown> | undefined {
+    if (event.type !== "github.installation") {
+      return undefined;
+    }
+
+    const now = new Date().toISOString();
+    const status = githubInstallStatusFromAction(event.action);
+    const install = store.upsertConnectorInstall({
+      id: `connector_github_installation_${event.installationId}`,
+      kind: "github",
+      provider: "github",
+      externalId: event.installationId,
+      displayName:
+        event.accountLogin ?? `GitHub installation ${event.installationId}`,
+      status,
+      metadata: {
+        accountLogin: event.accountLogin,
+        repositorySelection: event.repositorySelection,
+        installationId: event.installationId,
+        source: event.eventName,
+        lastWebhookAction: event.action,
+        syncedAt: now,
+      },
+    });
+
+    const upserted = event.repositories.map((repository) =>
+      upsertGitHubRepoPlace(repository, install, now, "active"),
+    );
+    const added = event.repositoriesAdded.map((repository) =>
+      upsertGitHubRepoPlace(repository, install, now, "active"),
+    );
+    const removed = event.repositoriesRemoved.map((repository) =>
+      markGitHubRepoPlaceStatus(repository, install, now, "removed"),
+    );
+    let revoked = 0;
+    if (status === "revoked") {
+      revoked = revokeGitHubRepoPlacesForInstall(install, now);
+    }
+
+    return {
+      installId: install.id,
+      installStatus: install.status,
+      upsertedRepositories: upserted.length,
+      addedRepositories: added.length,
+      removedRepositories: removed.length,
+      revokedRepositories: revoked,
+    };
+  }
+
+  function upsertGitHubRepoPlace(
+    repository: GitHubRepoResource,
+    install: ConnectorInstall,
+    now: string,
+    status: string,
+  ): PlaceScope {
+    const existing = findGitHubRepoPlace(repository, install);
+    const metadata = githubRepoPlaceMetadata(
+      repository,
+      install,
+      now,
+      status,
+      existing?.metadata,
+    );
+    if (existing) {
+      return store.updatePlace(existing.id, {
+        name: repository.fullName,
+        externalId: githubRepoPlaceExternalId(repository),
+        sensitivity: "restricted",
+        metadata,
+      });
+    }
+    return store.createPlace({
+      kind: "github_repo",
+      provider: "github",
+      externalId: githubRepoPlaceExternalId(repository),
+      name: repository.fullName,
+      sensitivity: "restricted",
+      metadata: {
+        ...metadata,
+        firstSeenAt: now,
+      },
+    });
+  }
+
+  function markGitHubRepoPlaceStatus(
+    repository: GitHubRepoResource,
+    install: ConnectorInstall,
+    now: string,
+    status: string,
+  ): PlaceScope | undefined {
+    const existing = findGitHubRepoPlace(repository, install);
+    if (!existing) {
+      return undefined;
+    }
+    return store.updatePlace(existing.id, {
+      metadata: {
+        ...(existing.metadata ?? {}),
+        status,
+        ...(status === "removed" ? { removedAt: now } : {}),
+        ...(status === "revoked" ? { revokedAt: now } : {}),
+        lastSeenAt: now,
+      },
+    });
+  }
+
+  function revokeGitHubRepoPlacesForInstall(
+    install: ConnectorInstall,
+    now: string,
+  ): number {
+    let revoked = 0;
+    for (const place of store.read().places) {
+      if (
+        place.kind !== "github_repo" ||
+        place.provider !== "github" ||
+        stringMetadata(place.metadata, "connectorInstallId") !== install.id
+      ) {
+        continue;
+      }
+      store.updatePlace(place.id, {
+        metadata: {
+          ...(place.metadata ?? {}),
+          status: "revoked",
+          revokedAt: now,
+          lastSeenAt: now,
+        },
+      });
+      revoked += 1;
+    }
+    return revoked;
+  }
+
+  function findGitHubRepoPlace(
+    repository: GitHubRepoResource,
+    install: ConnectorInstall,
+  ): PlaceScope | undefined {
+    const externalId = githubRepoPlaceExternalId(repository);
+    return store
+      .read()
+      .places.find(
+        (place) =>
+          place.kind === "github_repo" &&
+          place.provider === "github" &&
+          (place.externalId === externalId ||
+            stringMetadata(place.metadata, "resource") ===
+              repository.resource) &&
+          stringMetadata(place.metadata, "connectorInstallId") === install.id,
+      );
+  }
+
+  function githubRepoPlaceMetadata(
+    repository: GitHubRepoResource,
+    install: ConnectorInstall,
+    now: string,
+    status: string,
+    existing: Record<string, unknown> | undefined,
+  ): Record<string, unknown> {
+    const {
+      removedAt: _removedAt,
+      revokedAt: _revokedAt,
+      repositoryId: _repositoryId,
+      ...existingMetadata
+    } = existing ?? {};
+    return {
+      ...existingMetadata,
+      source: "github_webhook",
+      status,
+      connectorInstallId: install.id,
+      installationId: install.externalId,
+      accountLogin: stringMetadata(install.metadata, "accountLogin"),
+      repositorySelection: stringMetadata(
+        install.metadata,
+        "repositorySelection",
+      ),
+      resource: repository.resource,
+      owner: repository.owner,
+      repo: repository.repo,
+      fullName: repository.fullName,
+      ...(repository.repositoryId !== undefined
+        ? { repositoryId: repository.repositoryId }
+        : {}),
+      lastSeenAt: now,
+    };
+  }
+
+  function githubRepoPlaceExternalId(repository: GitHubRepoResource): string {
+    return repository.repositoryId !== undefined
+      ? String(repository.repositoryId)
+      : repository.resource;
+  }
+
+  function githubInstallStatusFromAction(
+    action: string,
+  ): ConnectorInstall["status"] {
+    if (action === "deleted") {
+      return "revoked";
+    }
+    if (action === "suspend") {
+      return "paused";
+    }
+    return "active";
   }
 
   function handleSlackChannelLeftEvent(
@@ -1361,6 +1573,7 @@ export function createApp(
     const githubGrantCount = snapshot.accessBundles
       .flatMap((bundle) => bundle.grants)
       .filter((grant) => grant.resource.startsWith("github:")).length;
+    const githubBindingReadiness = githubRepoGrantBindingReadiness(snapshot);
     const singleVisibleAgent = snapshot.agent.handle === "@bek";
     const modelPricing = modelPricingReadiness(snapshot);
     const readyForLocalDemo =
@@ -1372,7 +1585,9 @@ export function createApp(
     const githubExecutionReadyForWorkspace =
       githubGrantCount > 0 &&
       githubExecution.status.enabled &&
-      githubExecution.status.ready;
+      githubExecution.status.ready &&
+      (githubExecution.status.mode !== "real" ||
+        githubBindingReadiness.missing.length === 0);
     const readyForWorkspace =
       readyForLocalDemo &&
       slackInstall?.status === "active" &&
@@ -1409,6 +1624,8 @@ export function createApp(
       githubExecutionReady: githubExecution.status.ready,
       githubExecutionNetworkCalls: githubExecution.status.networkCalls,
       githubExecutionErrors: githubExecution.status.errors,
+      githubRepoBindingsReady: githubBindingReadiness.missing.length === 0,
+      missingGithubRepoBindings: githubBindingReadiness.missing,
       pendingApprovals: pendingApprovals.length,
       readyForLocalDemo,
       readyForWorkspace,
@@ -1631,8 +1848,10 @@ export function createApp(
       );
     }
 
+    const persistence = persistGitHubInstallationEvent(normalized);
     const response = normalizedGitHubWebhookResponse(normalized, {
       bodyHash,
+      persistence,
     });
     store.recordIngressDelivery({
       provider: "github",
@@ -3260,6 +3479,155 @@ function publicPlace(place: PlaceScope): PlaceScope {
   return publicPlaceScope;
 }
 
+function createGitHubDraftPullRequestPlanProviderFromStore(
+  store: BekStore,
+): NonNullable<
+  WorkerGitHubDraftPullRequestExecutionOptions["approvalPlanProvider"]
+> {
+  return ({ context }) => {
+    const repositoryResource = context.run.resource;
+    if (!repositoryResource) {
+      throw new Error("GitHub PR planning requires a repo resource.");
+    }
+    const binding = resolveGitHubRepoBinding(store.read(), repositoryResource);
+    const safeRunId = safeGitHubBranchIdPart(context.run.id).toLowerCase();
+    return createGitHubDraftPullRequestWorkflowPlan({
+      repository: binding.repository,
+      installationId: binding.installationId,
+      repositoryId: binding.repositoryId,
+      title: `Bek run ${context.run.id}`,
+      body: [
+        "Approved Bek GitHub workflow.",
+        "",
+        `Run: ${context.run.id}`,
+        `Requester: ${context.run.requesterPrincipalId}`,
+        `Resource: ${binding.repository.resource}`,
+      ].join("\n"),
+      headBranch: `bek/${safeRunId}`,
+      commitMessage: `Bek run ${context.run.id}`,
+      changes: [
+        {
+          path: `.bek/runs/${safeRunId}.md`,
+          content: [
+            "# Bek GitHub Workflow",
+            "",
+            `Run: ${context.run.id}`,
+            `Requester: ${context.run.requesterPrincipalId}`,
+            `Resource: ${binding.repository.resource}`,
+            "",
+          ].join("\n"),
+        },
+      ],
+      labels: ["bek"],
+      runId: context.run.id,
+      requesterPrincipalId: context.run.requesterPrincipalId,
+    });
+  };
+}
+
+function resolveGitHubRepoBinding(
+  snapshot: BekSnapshot,
+  resource: string,
+): {
+  repository: GitHubRepoResource;
+  installationId: string;
+  repositoryId?: number | undefined;
+  connectorInstallId: string;
+  placeId: string;
+} {
+  const repository = parseGitHubRepoResource(resource);
+  const candidates = snapshot.places.filter(
+    (place) =>
+      place.kind === "github_repo" &&
+      place.provider === "github" &&
+      stringMetadata(place.metadata, "resource") === repository.resource &&
+      stringMetadata(place.metadata, "status") === "active",
+  );
+  const active = candidates
+    .map((place) => {
+      const connectorInstallId = stringMetadata(
+        place.metadata,
+        "connectorInstallId",
+      );
+      const install = snapshot.connectorInstalls.find(
+        (candidate) =>
+          candidate.id === connectorInstallId &&
+          candidate.kind === "github" &&
+          candidate.provider === "github" &&
+          candidate.status === "active",
+      );
+      return install ? { place, install } : undefined;
+    })
+    .filter(
+      (
+        entry,
+      ): entry is {
+        place: PlaceScope;
+        install: ConnectorInstall;
+      } => entry !== undefined,
+    );
+
+  if (active.length === 0) {
+    throw new Error(
+      `GitHub repo ${repository.resource} is not bound to an active GitHub App installation.`,
+    );
+  }
+  if (active.length > 1) {
+    throw new Error(
+      `GitHub repo ${repository.resource} has multiple active GitHub App installation bindings.`,
+    );
+  }
+
+  const first = active[0];
+  if (!first) {
+    throw new Error(
+      `GitHub repo ${repository.resource} is not bound to an active GitHub App installation.`,
+    );
+  }
+  const { place, install } = first;
+  const installationId =
+    stringMetadata(place.metadata, "installationId") ?? install.externalId;
+  if (!installationId) {
+    throw new Error(
+      `GitHub repo ${repository.resource} is missing its installation id binding.`,
+    );
+  }
+  return {
+    repository,
+    installationId,
+    repositoryId: numberMetadata(place.metadata, "repositoryId"),
+    connectorInstallId: install.id,
+    placeId: place.id,
+  };
+}
+
+function githubRepoGrantBindingReadiness(snapshot: BekSnapshot): {
+  required: string[];
+  missing: string[];
+} {
+  const required = Array.from(
+    new Set(
+      snapshot.accessBundles
+        .flatMap((bundle) => bundle.grants)
+        .map((grant) => grant.resource)
+        .filter((resource) => resource.startsWith("github:")),
+    ),
+  ).sort();
+  const missing = required.filter((resource) => {
+    try {
+      resolveGitHubRepoBinding(snapshot, resource);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  return { required, missing };
+}
+
+function safeGitHubBranchIdPart(value: string): string {
+  return value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-") || "run";
+}
+
 function publicRun(run: Run): Run {
   return {
     ...run,
@@ -3775,7 +4143,10 @@ function isSupportedGitHubWebhookEvent(
 
 function normalizedGitHubWebhookResponse(
   event: NormalizedGitHubWebhookEvent,
-  input: { bodyHash: string },
+  input: {
+    bodyHash: string;
+    persistence?: Record<string, unknown> | undefined;
+  },
 ): Record<string, unknown> {
   const response: Record<string, unknown> = {
     ok: true,
@@ -3810,6 +4181,7 @@ function normalizedGitHubWebhookResponse(
       repositoriesRemovedCount: event.repositoriesRemoved.length,
     };
   }
+  assignDefined(response, "persistence", input.persistence);
   return response;
 }
 
@@ -3995,6 +4367,16 @@ function stringMetadata(
 ): string | undefined {
   const value = metadata?.[key];
   return typeof value === "string" ? value : undefined;
+}
+
+function numberMetadata(
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): number | undefined {
+  const value = metadata?.[key];
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
 function arrayMetadata(

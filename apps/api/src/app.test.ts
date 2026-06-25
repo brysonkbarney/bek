@@ -690,6 +690,228 @@ describe("Bek API", () => {
     expect(JSON.stringify(delivery)).not.toContain("Ship Bek");
   });
 
+  it("persists GitHub installation webhooks as connector installs and repo places", async () => {
+    const store = new BekStore();
+    const payload = {
+      action: "created",
+      installation: {
+        id: 12345,
+        account: { login: "RedoHQ" },
+        repository_selection: "selected",
+      },
+      repositories: [
+        { id: 112233, full_name: "RedoHQ/Checkout" },
+        { id: 445566, full_name: "RedoHQ/Warehouse" },
+      ],
+      sender: { login: "octocat" },
+    };
+    const rawBody = JSON.stringify(payload);
+
+    const res = await createApp(store).request("/api/github/webhooks", {
+      method: "POST",
+      body: rawBody,
+      headers: signedGitHubHeaders(rawBody, {
+        eventName: "installation",
+        deliveryId: "delivery-install-created",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json).toMatchObject({
+      ok: true,
+      type: "github.installation",
+      eventName: "installation",
+      action: "created",
+      installationId: "12345",
+      installation: {
+        repositorySelection: "selected",
+        repositoryCount: 2,
+      },
+      persistence: {
+        installStatus: "active",
+        upsertedRepositories: 2,
+      },
+    });
+    expect(JSON.stringify(json)).not.toContain("redohq/checkout");
+    const snapshot = store.read();
+    expect(snapshot.connectorInstalls[0]).toMatchObject({
+      id: "connector_github_installation_12345",
+      kind: "github",
+      provider: "github",
+      externalId: "12345",
+      displayName: "RedoHQ",
+      status: "active",
+      metadata: expect.objectContaining({
+        accountLogin: "RedoHQ",
+        repositorySelection: "selected",
+        installationId: "12345",
+        source: "installation",
+      }),
+    });
+    expect(
+      snapshot.places
+        .filter((place) => place.kind === "github_repo")
+        .map((place) => ({
+          externalId: place.externalId,
+          name: place.name,
+          sensitivity: place.sensitivity,
+          metadata: place.metadata,
+        })),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          externalId: "112233",
+          name: "redohq/checkout",
+          sensitivity: "restricted",
+          metadata: expect.objectContaining({
+            connectorInstallId: "connector_github_installation_12345",
+            installationId: "12345",
+            resource: "github:redohq/checkout",
+            repositoryId: 112233,
+            status: "active",
+          }),
+        }),
+        expect.objectContaining({
+          externalId: "445566",
+          name: "redohq/warehouse",
+          sensitivity: "restricted",
+          metadata: expect.objectContaining({
+            resource: "github:redohq/warehouse",
+            repositoryId: 445566,
+            status: "active",
+          }),
+        }),
+      ]),
+    );
+    const delivery = snapshot.ingressDeliveries.find(
+      (candidate) =>
+        candidate.key ===
+        "github:webhook:installation:delivery-install-created",
+    );
+    expect(JSON.stringify(delivery)).not.toContain("redohq/checkout");
+  });
+
+  it("marks removed GitHub installation repositories inactive without deleting places", async () => {
+    const store = new BekStore();
+    const app = createApp(store);
+    const installBody = JSON.stringify({
+      action: "created",
+      installation: {
+        id: 12345,
+        account: { login: "RedoHQ" },
+        repository_selection: "selected",
+      },
+      repositories: [{ id: 112233, full_name: "RedoHQ/Checkout" }],
+    });
+    const removeBody = JSON.stringify({
+      action: "removed",
+      installation: {
+        id: 12345,
+        account: { login: "RedoHQ" },
+        repository_selection: "selected",
+      },
+      repositories_removed: [{ id: 112233, full_name: "RedoHQ/Checkout" }],
+    });
+
+    await app.request("/api/github/webhooks", {
+      method: "POST",
+      body: installBody,
+      headers: signedGitHubHeaders(installBody, {
+        eventName: "installation",
+        deliveryId: "delivery-install-before-remove",
+      }),
+    });
+    const res = await app.request("/api/github/webhooks", {
+      method: "POST",
+      body: removeBody,
+      headers: signedGitHubHeaders(removeBody, {
+        eventName: "installation_repositories",
+        deliveryId: "delivery-install-repo-removed",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      persistence: {
+        removedRepositories: 1,
+      },
+    });
+    const checkoutPlaces = store
+      .read()
+      .places.filter(
+        (place) =>
+          place.kind === "github_repo" && place.externalId === "112233",
+      );
+    expect(checkoutPlaces).toHaveLength(1);
+    expect(checkoutPlaces[0]).toMatchObject({
+      metadata: expect.objectContaining({
+        status: "removed",
+        removedAt: expect.any(String),
+      }),
+    });
+  });
+
+  it("revokes GitHub repo places when an installation is deleted", async () => {
+    const store = new BekStore();
+    const app = createApp(store);
+    const installBody = JSON.stringify({
+      action: "created",
+      installation: {
+        id: 12345,
+        account: { login: "RedoHQ" },
+        repository_selection: "selected",
+      },
+      repositories: [{ id: 112233, full_name: "RedoHQ/Checkout" }],
+    });
+    const deleteBody = JSON.stringify({
+      action: "deleted",
+      installation: {
+        id: 12345,
+        account: { login: "RedoHQ" },
+        repository_selection: "selected",
+      },
+      repositories: [{ id: 112233, full_name: "RedoHQ/Checkout" }],
+    });
+
+    await app.request("/api/github/webhooks", {
+      method: "POST",
+      body: installBody,
+      headers: signedGitHubHeaders(installBody, {
+        eventName: "installation",
+        deliveryId: "delivery-install-before-delete",
+      }),
+    });
+    const res = await app.request("/api/github/webhooks", {
+      method: "POST",
+      body: deleteBody,
+      headers: signedGitHubHeaders(deleteBody, {
+        eventName: "installation",
+        deliveryId: "delivery-install-deleted",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      persistence: {
+        installStatus: "revoked",
+        revokedRepositories: 1,
+      },
+    });
+    expect(store.read().connectorInstalls[0]).toMatchObject({
+      externalId: "12345",
+      status: "revoked",
+    });
+    expect(
+      store.read().places.find((place) => place.externalId === "112233"),
+    ).toMatchObject({
+      metadata: expect.objectContaining({
+        status: "revoked",
+        revokedAt: expect.any(String),
+      }),
+    });
+  });
+
   it("keeps Slack and GitHub webhook signatures isolated", async () => {
     process.env.SLACK_SIGNING_SECRET = "test-slack-secret";
     const slackBody = JSON.stringify({
@@ -977,8 +1199,8 @@ describe("Bek API", () => {
     expect(json.checks.githubExecution.error).toContain(
       "GITHUB_APP_ID is required.",
     );
-    expect(json.checks.githubExecution.error).toContain(
-      "GITHUB_APP_INSTALLATION_ID is required for real GitHub execution.",
+    expect(json.checks.githubExecution.error).not.toContain(
+      "GITHUB_APP_INSTALLATION_ID",
     );
     expect(JSON.stringify(json)).not.toContain("definitely-secret");
   });
@@ -987,7 +1209,6 @@ describe("Bek API", () => {
     clearGitHubEnv();
     process.env.BEK_GITHUB_EXECUTION = "real";
     process.env.GITHUB_APP_ID = "12345";
-    process.env.GITHUB_APP_INSTALLATION_ID = "999";
     process.env.GITHUB_APP_PRIVATE_KEY = testGitHubPrivateKey;
     process.env.GITHUB_APP_WEBHOOK_SECRET = "a-webhook-secret-with-length";
     process.env.GITHUB_API_BASE_URL = "https://api.github.test";
@@ -1016,6 +1237,8 @@ describe("Bek API", () => {
       githubExecutionMode: "real",
       githubExecutionReady: true,
       githubExecutionNetworkCalls: "github_on_approved_worker_run",
+      githubRepoBindingsReady: false,
+      missingGithubRepoBindings: ["github:redohq/checkout"],
     });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
@@ -2796,6 +3019,70 @@ describe("Bek API", () => {
       },
     );
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("plans real GitHub PR approvals from persisted repo installation bindings", async () => {
+    clearGitHubEnv();
+    process.env.BEK_GITHUB_EXECUTION = "real";
+    process.env.GITHUB_APP_ID = "12345";
+    process.env.GITHUB_APP_PRIVATE_KEY = testGitHubPrivateKey;
+    process.env.GITHUB_APP_WEBHOOK_SECRET = "a-webhook-secret-with-length";
+    process.env.GITHUB_API_BASE_URL = "https://api.github.test";
+    const store = new BekStore();
+    const app = createApp(store, {
+      runAdvancement: "worker_local",
+    });
+    const webhookBody = JSON.stringify({
+      action: "created",
+      installation: {
+        id: 12345,
+        account: { login: "RedoHQ" },
+        repository_selection: "selected",
+      },
+      repositories: [{ id: 112233, full_name: "RedoHQ/Checkout" }],
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const webhook = await app.request("/api/github/webhooks", {
+      method: "POST",
+      body: webhookBody,
+      headers: signedGitHubHeaders(webhookBody, {
+        eventName: "installation",
+        deliveryId: "delivery-real-plan-install",
+      }),
+    });
+    expect(webhook.status).toBe(200);
+
+    const { run, approval } = await createPrApproval(
+      app,
+      "@bek open a real bound GitHub PR",
+    );
+
+    expect(run.status).toBe("awaiting_approval");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const detail = (await (
+      await app.request(`/api/runs/${run.id}`)
+    ).json()) as {
+      approvals: Array<{
+        id: string;
+        payloadMetadata?: {
+          installationId?: string;
+          repositoryId?: number;
+          approvalHashInput?: { repositoryId?: number };
+        };
+      }>;
+    };
+    expect(detail.approvals.find((item) => item.id === approval.id)).toEqual(
+      expect.objectContaining({
+        payloadMetadata: expect.objectContaining({
+          installationId: "12345",
+          repositoryId: 112233,
+          approvalHashInput: expect.objectContaining({
+            repositoryId: 112233,
+          }),
+        }),
+      }),
+    );
   });
 
   it("persists and resumes runtime-requested local worker approvals", async () => {

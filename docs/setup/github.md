@@ -69,7 +69,9 @@ GITHUB_API_BASE_URL= # optional, defaults to https://api.github.com
 GITHUB_APP_ID=12345
 GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
 GITHUB_APP_WEBHOOK_SECRET=...
-GITHUB_APP_INSTALLATION_ID=456789
+# Optional for setup previews. Real worker execution resolves installation IDs
+# from persisted GitHub installation webhooks.
+GITHUB_APP_INSTALLATION_ID=
 ```
 
 `GITHUB_WEBHOOK_SECRET` is still accepted as a deprecated alias while older
@@ -97,7 +99,8 @@ The route performs local validation only. It:
 - Validates `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, and `GITHUB_APP_WEBHOOK_SECRET` with the shared GitHub config helper.
 - Reads GitHub grants from access bundles and parses canonical repo resources such as `github:redohq/checkout`.
 - Merges required installation permissions for the granted capabilities.
-- Returns a repo-scoped installation token request preview using `GITHUB_APP_INSTALLATION_ID`.
+- Returns a repo-scoped installation token request preview using the
+  `installationId` query parameter or optional `GITHUB_APP_INSTALLATION_ID`.
 - Includes the draft PR workflow/proposal preview for repos that grant `github.pr`.
 - Returns `networkCalls: "none"` and never returns private keys, webhook secrets, or token secrets.
 
@@ -180,21 +183,26 @@ to a real provider:
 6. Validate the token lease against the workflow token request, including installation id, canonical repo resource, required permissions, and remaining TTL.
 7. Execute the plan through the draft PR workflow execution contract. The execution result should keep only redacted token lease metadata, not the token secret.
 
-The worker verifies the approved payload hash before leasing a token. Generic
-`github.pr` approvals are not enough for real execution.
-`BEK_GITHUB_EXECUTION=fake` uses the fake provider/client for local end-to-end
-validation. `BEK_GITHUB_EXECUTION=real` validates GitHub App config at readiness
-time and performs GitHub network calls only inside an approved worker run.
+GitHub installation and installation-repository webhooks persist active
+installation rows and `github_repo` places. Real worker planning fails closed
+unless the run's canonical repo resource is bound to exactly one active
+persisted installation. The worker verifies the approved payload hash before
+leasing a token. Generic `github.pr` approvals are not enough for real
+execution. `BEK_GITHUB_EXECUTION=fake` uses the fake provider/client for local
+end-to-end validation. `BEK_GITHUB_EXECUTION=real` validates GitHub App config at
+readiness time and performs GitHub network calls only inside an approved worker
+run for a persisted repo binding.
 Announce real execution only as "approved deterministic draft PR workflow" until
 the runtime can generate reviewed repo diffs inside an isolated coding
 environment.
 
 ## Launch Blockers
 
-- GitHub App installation persistence and secret broker integration.
+- GitHub App installation reconciliation/sync beyond webhook-fed state and
+  hosted secret broker integration.
 - Hosted repo-scoped token brokering with revocation, rotation, and audit.
 - GitHub webhook-to-policy routing for repo-specific run creation.
 - AI-generated repo diffs and branch update workflows inside isolated runtimes.
-- Per-repo installation selection instead of a default installation id.
+- Expanded per-repo installation sync, repair UI, and mismatch diagnostics.
 - Expanded audit events and hosted operations for token minting, branch writes,
   PR writes, and webhook handling.

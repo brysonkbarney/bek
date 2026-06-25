@@ -193,6 +193,8 @@ export interface SetupStatus {
   githubExecutionReady?: boolean;
   githubExecutionNetworkCalls?: string;
   githubExecutionErrors?: string[];
+  githubRepoBindingsReady?: boolean;
+  missingGithubRepoBindings?: string[];
   pendingApprovals: number;
   readyForLocalDemo: boolean;
   readyForWorkspace: boolean;
