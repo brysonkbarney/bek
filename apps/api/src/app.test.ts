@@ -64,7 +64,12 @@ afterEach(() => {
   }
 });
 
-type ApprovalSummary = { id: string; payloadHash: string; status: string };
+type ApprovalSummary = {
+  id: string;
+  payloadHash: string;
+  status: string;
+  action: string;
+};
 
 class BlockingSlackWebApiClient implements SlackWebApiClient {
   readonly postMessageCalls: SlackPostMessageInput[] = [];
@@ -3450,7 +3455,8 @@ describe("Bek API", () => {
     process.env.BEK_SLACK_BACKGROUND_DRAIN = "false";
     mapSlackTestUser();
     const slackClient = new FakeSlackWebApiClient();
-    const app = createApp(new BekStore(), {
+    const store = new BekStore();
+    const app = createApp(store, {
       runAdvancement: "worker_local",
       slackClient,
     });
@@ -3503,6 +3509,20 @@ describe("Bek API", () => {
       action: "local.approval",
       approvalId: expect.any(String),
       payloadHash: expect.any(String),
+    });
+    const approvalId = parseSlackApprovalActionValue(
+      actions!.elements[0]!.value,
+    ).approvalId;
+    expect(
+      store
+        .read()
+        .outboundDeliveries.find(
+          (delivery) =>
+            delivery.runId === json.runId &&
+            delivery.target.messageKind === "approval_needed",
+        ),
+    ).toMatchObject({
+      approvalId,
     });
   });
 
@@ -3595,7 +3615,7 @@ describe("Bek API", () => {
 
   it("rejects Slack approval interactions without an approver mapping", async () => {
     const app = createApp();
-    const { approval } = await createPrApproval(
+    const { run, approval } = await createPrApproval(
       app,
       "@bek open an unmapped Slack PR",
     );
@@ -3604,6 +3624,8 @@ describe("Bek API", () => {
       value: JSON.stringify({
         approvalId: approval.id,
         payloadHash: approval.payloadHash,
+        runId: run.id,
+        action: approval.action,
       }),
     };
 
@@ -3647,6 +3669,95 @@ describe("Bek API", () => {
     expect(unmappedUser.status).toBe(400);
   });
 
+  it("rejects Slack approval actions whose run or channel context does not match", async () => {
+    mapSlackTestUsers({ "T123:U_APPROVER": "principal_admin" });
+    const app = createApp();
+    const { run, approval } = await createPrApproval(
+      app,
+      "@bek open a context-bound Slack PR",
+    );
+
+    const wrongRunBody = slackForm({
+      payload: JSON.stringify({
+        type: "block_actions",
+        user: { id: "U_APPROVER" },
+        channel: { id: "C_CHECKOUT" },
+        team: { id: "T123" },
+        actions: [
+          {
+            action_id: "bek.approval.approve",
+            action_ts: "1710000000.000101",
+            value: JSON.stringify({
+              approvalId: approval.id,
+              payloadHash: approval.payloadHash,
+              runId: "run_forged",
+              action: approval.action,
+            }),
+          },
+        ],
+      }),
+    });
+    const wrongRun = await app.request("/api/slack/interactivity", {
+      method: "POST",
+      body: wrongRunBody,
+      headers: signedSlackHeaders(
+        wrongRunBody,
+        Math.floor(Date.now() / 1000).toString(),
+        "application/x-www-form-urlencoded",
+      ),
+    });
+    expect(wrongRun.status).toBe(400);
+    expect(wrongRun.headers.get("x-slack-no-retry")).toBe("1");
+    await expect(wrongRun.json()).resolves.toMatchObject({
+      ok: false,
+      error: "Slack approval run does not match the pending approval.",
+    });
+
+    const wrongChannelBody = slackForm({
+      payload: JSON.stringify({
+        type: "block_actions",
+        user: { id: "U_APPROVER" },
+        channel: { id: "C_GENERAL" },
+        team: { id: "T123" },
+        actions: [
+          {
+            action_id: "bek.approval.approve",
+            action_ts: "1710000000.000102",
+            value: JSON.stringify({
+              approvalId: approval.id,
+              payloadHash: approval.payloadHash,
+              runId: run.id,
+              action: approval.action,
+            }),
+          },
+        ],
+      }),
+    });
+    const wrongChannel = await app.request("/api/slack/interactivity", {
+      method: "POST",
+      body: wrongChannelBody,
+      headers: signedSlackHeaders(
+        wrongChannelBody,
+        Math.floor(Date.now() / 1000).toString(),
+        "application/x-www-form-urlencoded",
+      ),
+    });
+    expect(wrongChannel.status).toBe(400);
+    expect(wrongChannel.headers.get("x-slack-no-retry")).toBe("1");
+    await expect(wrongChannel.json()).resolves.toMatchObject({
+      ok: false,
+      error: "Slack approval channel does not match the run scope.",
+    });
+
+    const detail = (await (
+      await app.request(`/api/runs/${run.id}`)
+    ).json()) as { approvals: ApprovalSummary[] };
+    expect(detail.approvals[0]).toMatchObject({
+      id: approval.id,
+      status: "pending",
+    });
+  });
+
   it("applies mapped Slack approval button decisions", async () => {
     process.env.BEK_SLACK_BACKGROUND_DRAIN = "false";
     mapSlackTestUsers({ "T123:U_APPROVER": "principal_admin" });
@@ -3669,6 +3780,8 @@ describe("Bek API", () => {
           value: JSON.stringify({
             approvalId: approval.id,
             payloadHash: approval.payloadHash,
+            runId: run.id,
+            action: approval.action,
           }),
         },
       ],

@@ -80,6 +80,7 @@ export interface SlackOutboundDeliveryResult {
 export interface SlackPreparedOutboundMessage {
   kind: "queued" | "approval_needed" | "approval_decision" | "final_answer";
   runId: string;
+  approvalId?: string | undefined;
   target: SlackOutboundTarget;
   message: SlackMessagePayload;
 }
@@ -149,6 +150,7 @@ export class SlackOutboundDelivery {
       return {
         kind: "approval_needed",
         runId: run.id,
+        approvalId: pendingApproval.id,
         target: resolvedTarget,
         message: renderSlackApprovalNeededMessage({
           runId: run.id,

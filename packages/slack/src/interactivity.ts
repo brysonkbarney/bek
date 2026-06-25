@@ -13,6 +13,8 @@ export interface SlackApprovalInteraction {
   approvalId: string;
   payloadHash: string;
   decision: SlackApprovalDecision;
+  runId?: string;
+  action?: string;
   slackUserId?: string;
   channelId?: string;
   teamId?: string;
@@ -74,6 +76,12 @@ export function parseSlackInteraction(rawBody: string): SlackInteraction {
     payloadHash: approvalPayload.payloadHash,
     decision,
   };
+  if (approvalPayload.runId) {
+    interaction.runId = approvalPayload.runId;
+  }
+  if (approvalPayload.action) {
+    interaction.action = approvalPayload.action;
+  }
 
   const slackUserId = nestedString(payload, "user", "id");
   const channelId = nestedString(payload, "channel", "id");

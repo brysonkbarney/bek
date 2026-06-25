@@ -7,6 +7,7 @@ import {
   redactUnknown,
 } from "@bek/core";
 import type {
+  ApprovalRequest,
   CapabilityGrant,
   BekSnapshot,
   ConnectorInstall,
@@ -44,6 +45,7 @@ import {
   parseSlackCommand,
   parseSlackInteraction,
   redactSlackInstallRecord,
+  type SlackApprovalInteraction,
   type SlackInstallRecord,
   type SlackWebApiClient,
   verifySlackOAuthState,
@@ -272,14 +274,15 @@ export function createApp(
     message: SlackPreparedOutboundMessage,
     input: { approvalId?: string | undefined; now?: string | undefined } = {},
   ) {
+    const approvalId = input.approvalId ?? message.approvalId;
     return store.enqueueOutboundDelivery({
-      key: slackOutboundDeliveryKey(message, input.approvalId),
+      key: slackOutboundDeliveryKey(message, approvalId),
       kind:
         message.kind === "approval_decision"
           ? "slack.approval_decision"
           : "slack.run_outcome",
       runId: message.runId,
-      approvalId: input.approvalId,
+      approvalId,
       target: slackOutboundTargetRecord(message),
       payload: message.message as unknown as Record<string, unknown>,
       now: input.now,
@@ -385,6 +388,109 @@ export function createApp(
         slackBackgroundWork = undefined;
       }
     })();
+  }
+
+  function validateSlackApprovalInteractionContext(
+    interaction: SlackApprovalInteraction,
+  ):
+    | { ok: true; approval: ApprovalRequest; run: Run }
+    | { ok: false; error: string; text: string } {
+    const invalid = (
+      error: string,
+      text = "Bek could not verify this Slack approval button.",
+    ) => ({
+      ok: false as const,
+      error,
+      text,
+    });
+    const snapshot = store.read();
+    const approval = snapshot.approvals.find(
+      (candidate) => candidate.id === interaction.approvalId,
+    );
+    if (!approval) {
+      return invalid(
+        "Approval not found.",
+        "Bek could not find the approval request for this button.",
+      );
+    }
+    const run = snapshot.runs.find(
+      (candidate) => candidate.id === approval.runId,
+    );
+    if (!run) {
+      return invalid(
+        "Approval run not found.",
+        "Bek could not find the run for this approval request.",
+      );
+    }
+    if (!interaction.runId || !interaction.action) {
+      return invalid(
+        "Slack approval payload is missing runId or action.",
+        "Bek could not verify which run and action this approval belongs to.",
+      );
+    }
+    if (interaction.runId !== approval.runId) {
+      return invalid(
+        "Slack approval run does not match the pending approval.",
+        "Bek rejected this approval because it does not belong to this run.",
+      );
+    }
+    if (interaction.action !== approval.action) {
+      return invalid(
+        "Slack approval action does not match the pending approval.",
+        "Bek rejected this approval because it does not match the requested action.",
+      );
+    }
+    if (!interaction.teamId) {
+      return invalid(
+        "Slack approval payload is missing team.id.",
+        "Bek could not verify which Slack workspace this approval came from.",
+      );
+    }
+    if (!interaction.channelId) {
+      return invalid(
+        "Slack approval payload is missing channel.id.",
+        "Bek could not verify which Slack channel this approval came from.",
+      );
+    }
+
+    const place = resolveSlackPlace(
+      snapshot,
+      interaction.channelId,
+      interaction.teamId,
+    );
+    if (!place || place.id !== run.placeScopeId) {
+      return invalid(
+        "Slack approval channel does not match the run scope.",
+        "Bek rejected this approval because it came from a different Slack channel.",
+      );
+    }
+
+    const outboundApproval = snapshot.outboundDeliveries.find(
+      (delivery) =>
+        delivery.provider === "slack" &&
+        delivery.kind === "slack.run_outcome" &&
+        delivery.runId === run.id &&
+        delivery.approvalId === approval.id &&
+        stringValue(delivery.target.messageKind) === "approval_needed",
+    );
+    if (outboundApproval) {
+      const targetChannelId = stringValue(outboundApproval.target.channelId);
+      const targetTeamId = stringValue(outboundApproval.target.teamId);
+      if (targetChannelId && targetChannelId !== interaction.channelId) {
+        return invalid(
+          "Slack approval channel does not match the posted approval target.",
+          "Bek rejected this approval because it came from a different Slack channel.",
+        );
+      }
+      if (targetTeamId && targetTeamId !== interaction.teamId) {
+        return invalid(
+          "Slack approval workspace does not match the posted approval target.",
+          "Bek rejected this approval because it came from a different Slack workspace.",
+        );
+      }
+    }
+
+    return { ok: true, approval, run };
   }
 
   function enqueueSlackOutcomesForWorkerDrain(
@@ -1411,6 +1517,22 @@ export function createApp(
             ok: false,
             error: `Slack user ${interaction.slackUserId} is not mapped to a Bek principal. Set BEK_SLACK_USER_PRINCIPAL_MAP or approve in the admin API.`,
             text: "Bek parsed this approval button, but this Slack user is not mapped to an approver yet.",
+          }),
+          retry,
+        ),
+        400,
+      );
+    }
+
+    const context = validateSlackApprovalInteractionContext(interaction);
+    if (!context.ok) {
+      markSlackNoRetry(c);
+      return c.json(
+        withSlackRetryMetadata(
+          buildSlackEphemeralResponse({
+            ok: false,
+            error: context.error,
+            text: context.text,
           }),
           retry,
         ),
