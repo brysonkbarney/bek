@@ -31,6 +31,7 @@ const managedEnvKeys = [
   "BEK_MODEL_GATEWAY",
   "BEK_MODEL_PROVIDER_REGISTRY_JSON",
   "BEK_MODEL_PROVIDER_REGISTRY_PATH",
+  "BEK_PUBLIC_URL",
   "BEK_RATE_LIMIT_MAX_REQUESTS",
   "BEK_RATE_LIMIT_WINDOW_MS",
   "BEK_RUN_ADVANCEMENT",
@@ -39,6 +40,7 @@ const managedEnvKeys = [
   "BEK_SLACK_BACKGROUND_DRAIN",
   "BEK_SLACK_OAUTH_EXCHANGE",
   "BEK_SLACK_USER_PRINCIPAL_MAP",
+  "BEK_WEB_API_URL",
   "GITHUB_API_BASE_URL",
   "GITHUB_APP_CLIENT_ID",
   "GITHUB_APP_CLIENT_SECRET",
@@ -3711,6 +3713,80 @@ describe("Bek API", () => {
         callbackMode: "redirect",
       },
     });
+  });
+
+  it("returns a protected Slack app manifest for fast workspace setup", async () => {
+    process.env.BEK_ADMIN_API_TOKEN = "test-admin-token";
+    process.env.BEK_PUBLIC_URL = "https://bek-public.example.com///";
+    process.env.SLACK_REDIRECT_URI =
+      "https://slack-oauth.example.com/api/slack/oauth/callback";
+    process.env.SLACK_BOT_SCOPES =
+      "app_mentions:read,reactions:read,commands,chat:write,channels:read,groups:read";
+
+    const denied = await createApp().request("/api/slack/manifest");
+    expect(denied.status).toBe(401);
+
+    const allowed = await createApp().request("/api/slack/manifest", {
+      headers: { authorization: "Bearer test-admin-token" },
+    });
+    const text = await allowed.text();
+    const json = JSON.parse(text) as {
+      ok: true;
+      baseUrl: string;
+      scopes: string[];
+      botEvents: string[];
+      urls: {
+        events: string;
+        interactivity: string;
+        command: string;
+        redirect: string;
+      };
+      manifest: {
+        features: {
+          bot_user: { display_name: string };
+          slash_commands: Array<{ command: string; url: string }>;
+        };
+        oauth_config: { redirect_urls: string[]; scopes: { bot: string[] } };
+        settings: {
+          event_subscriptions: {
+            request_url: string;
+            bot_events: string[];
+          };
+          interactivity: { request_url: string };
+        };
+      };
+    };
+
+    expect(allowed.status).toBe(200);
+    expect(allowed.headers.get("cache-control")).toBe("no-store");
+    expect(text).not.toContain("xoxb-");
+    expect(json).toMatchObject({
+      ok: true,
+      baseUrl: "https://bek-public.example.com",
+      scopes: expect.arrayContaining(["commands", "channels:read"]),
+      botEvents: expect.arrayContaining([
+        "app_mention",
+        "reaction_added",
+        "member_joined_channel",
+      ]),
+      urls: {
+        events: "https://bek-public.example.com/api/slack/events",
+        interactivity: "https://bek-public.example.com/api/slack/interactivity",
+        command: "https://bek-public.example.com/api/slack/commands",
+        redirect: "https://slack-oauth.example.com/api/slack/oauth/callback",
+      },
+    });
+    expect(json.manifest.features.bot_user.display_name).toBe("bek");
+    expect(json.manifest.features.slash_commands[0]).toMatchObject({
+      command: "/bek",
+      url: "https://bek-public.example.com/api/slack/commands",
+    });
+    expect(json.manifest.oauth_config.redirect_urls).toEqual([
+      "https://slack-oauth.example.com/api/slack/oauth/callback",
+    ]);
+    expect(json.manifest.settings.event_subscriptions.request_url).toBe(
+      "https://bek-public.example.com/api/slack/events",
+    );
   });
 
   it("drops unsafe Slack install return targets before signing OAuth state", async () => {

@@ -39,6 +39,7 @@ import {
   buildSlackEphemeralResponse,
   buildSlackInteractionDurableKey,
   buildSlackEventDurableKey,
+  buildSlackAppManifest,
   createSlackOAuthState,
   exchangeSlackOAuthCode,
   normalizeOAuthReturnTo,
@@ -1712,6 +1713,46 @@ export function createApp(
       tokenStorageConfigured: Boolean(
         process.env.BEK_CREDENTIAL_MASTER_KEY?.trim(),
       ),
+    });
+  });
+
+  app.get("/api/slack/manifest", (c) => {
+    let baseUrl: string;
+    try {
+      baseUrl = slackManifestBaseUrl(c);
+    } catch (error) {
+      return c.json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Slack manifest URL configuration is invalid.",
+        },
+        400,
+      );
+    }
+
+    const manifest = buildSlackAppManifest({
+      baseUrl,
+      botScopes: slackBotScopes(),
+      redirectUrl:
+        process.env.SLACK_REDIRECT_URI ||
+        new URL("/api/slack/oauth/callback", `${baseUrl}/`).toString(),
+    });
+    c.header("cache-control", "no-store");
+    return c.json({
+      ok: true,
+      baseUrl,
+      manifest,
+      scopes: manifest.oauth_config.scopes.bot,
+      botEvents: manifest.settings.event_subscriptions.bot_events,
+      urls: {
+        events: manifest.settings.event_subscriptions.request_url,
+        interactivity: manifest.settings.interactivity.request_url,
+        command: manifest.features.slash_commands[0]?.url ?? null,
+        redirect: manifest.oauth_config.redirect_urls[0] ?? null,
+      },
     });
   });
 
@@ -3921,6 +3962,30 @@ function slackBotScopes(): string[] {
     .split(",")
     .map((scope) => scope.trim())
     .filter(Boolean);
+}
+
+function slackManifestBaseUrl(c: Context): string {
+  const explicit =
+    c.req.query("base_url") ??
+    c.req.query("baseUrl") ??
+    process.env.BEK_PUBLIC_URL ??
+    process.env.BEK_WEB_API_URL;
+  if (explicit?.trim()) {
+    return normalizeManifestUrl(explicit);
+  }
+  if (process.env.SLACK_REDIRECT_URI?.trim()) {
+    const redirect = new URL(process.env.SLACK_REDIRECT_URI);
+    return normalizeManifestUrl(redirect.origin);
+  }
+  return normalizeManifestUrl(new URL(c.req.url).origin);
+}
+
+function normalizeManifestUrl(value: string): string {
+  const url = new URL(value.trim());
+  url.pathname = url.pathname.replace(/\/+$/, "");
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\/+$/, "");
 }
 
 function slackInstallAuthorization(input: {

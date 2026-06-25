@@ -9,3 +9,4 @@ export * from "./messages";
 export * from "./client";
 export * from "./event-keys";
 export * from "./retries";
+export * from "./manifest";

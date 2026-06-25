@@ -202,6 +202,20 @@ export interface SlackInstallStart {
   tokenStorageConfigured: boolean;
 }
 
+export interface SlackAppManifestResponse {
+  ok: true;
+  baseUrl: string;
+  manifest: Record<string, unknown>;
+  scopes: string[];
+  botEvents: string[];
+  urls: {
+    events: string;
+    interactivity: string;
+    command: string | null;
+    redirect: string | null;
+  };
+}
+
 export interface DiscoveredSlackChannel {
   id: string;
   name: string;
@@ -530,6 +544,10 @@ export async function fetchSlackInstallStart(
   returnTo = "/connectors",
 ): Promise<SlackInstallStart> {
   return jsonRequest<SlackInstallStart>(slackInstallStartPath(returnTo));
+}
+
+export async function fetchSlackManifest(): Promise<SlackAppManifestResponse> {
+  return jsonRequest<SlackAppManifestResponse>("/api/slack/manifest");
 }
 
 export function slackChannelDiscoveryPath(

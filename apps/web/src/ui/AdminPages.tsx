@@ -5,6 +5,7 @@ import {
   Check,
   CircleSlash,
   Clock,
+  Copy,
   Database,
   ExternalLink,
   GitPullRequest,
@@ -27,6 +28,7 @@ import {
   discoverSlackChannels,
   fetchBootstrap,
   fetchRunDetail,
+  fetchSlackManifest,
   fetchSlackInstallStart,
   fetchSetupStatus,
   hasBuildTimeAdminToken,
@@ -1703,8 +1705,13 @@ export function ConnectorsPage() {
     queryFn: fetchSetupStatus,
   });
   const [pendingSlackInstallUrl, setPendingSlackInstallUrl] = useState("");
+  const [copiedSlackManifest, setCopiedSlackManifest] = useState(false);
   const [slackPrincipalId, setSlackPrincipalId] = useState("");
   const [slackUserId, setSlackUserId] = useState("");
+  const slackManifestMutation = useMutation({
+    mutationFn: fetchSlackManifest,
+    onSuccess: () => setCopiedSlackManifest(false),
+  });
   const slackInstallMutation = useMutation({
     mutationFn: () => fetchSlackInstallStart("/connectors"),
     onSuccess: (install) => {
@@ -1747,6 +1754,9 @@ export function ConnectorsPage() {
     slackPrincipalId || humanPrincipals[0]?.id || "";
   const trimmedSlackUserId = slackUserId.trim();
   const slackTeamId = setupStatus.slackWorkspaceId;
+  const slackManifestText = slackManifestMutation.data
+    ? JSON.stringify(slackManifestMutation.data.manifest, null, 2)
+    : "";
   const canLinkSlackIdentity =
     Boolean(selectedSlackPrincipalId) &&
     Boolean(slackTeamId) &&
@@ -1829,6 +1839,104 @@ export function ConnectorsPage() {
               <small>Encrypted local vault status</small>
             </div>
           </div>
+          <section
+            className="connector-subsection"
+            aria-labelledby="slack-manifest-heading"
+          >
+            <div className="split-row">
+              <div>
+                <h3 id="slack-manifest-heading">Slack App Manifest</h3>
+                <p className="muted">
+                  Paste this into Slack App Manifest to configure @bek events,
+                  commands, OAuth redirect, and approval buttons.
+                </p>
+              </div>
+              <div className="row-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={slackManifestMutation.isPending}
+                  aria-busy={slackManifestMutation.isPending}
+                  onClick={() => slackManifestMutation.mutate()}
+                >
+                  <RefreshCw size={16} aria-hidden="true" />
+                  {slackManifestMutation.isPending
+                    ? "Generating..."
+                    : "Generate manifest"}
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={!slackManifestText}
+                  onClick={async () => {
+                    const clipboard = navigator.clipboard;
+                    if (!clipboard) return;
+                    await clipboard.writeText(slackManifestText);
+                    setCopiedSlackManifest(true);
+                  }}
+                >
+                  <Copy size={16} aria-hidden="true" />
+                  {copiedSlackManifest ? "Copied" : "Copy"}
+                </button>
+              </div>
+            </div>
+            {slackManifestMutation.isError ? (
+              <WarningCallout>
+                {errorMessage(
+                  slackManifestMutation.error,
+                  "Bek could not generate the Slack manifest.",
+                )}
+              </WarningCallout>
+            ) : null}
+            {slackManifestMutation.data ? (
+              <>
+                <div className="summary-grid connector-detail-grid">
+                  <div className="summary-field wide-field">
+                    <span>Events URL</span>
+                    <strong>{slackManifestMutation.data.urls.events}</strong>
+                  </div>
+                  <div className="summary-field wide-field">
+                    <span>Interactivity URL</span>
+                    <strong>
+                      {slackManifestMutation.data.urls.interactivity}
+                    </strong>
+                  </div>
+                  <div className="summary-field wide-field">
+                    <span>Slash command URL</span>
+                    <strong>
+                      {slackManifestMutation.data.urls.command ?? "missing"}
+                    </strong>
+                  </div>
+                  <div className="summary-field wide-field">
+                    <span>OAuth redirect URL</span>
+                    <strong>
+                      {slackManifestMutation.data.urls.redirect ?? "missing"}
+                    </strong>
+                  </div>
+                </div>
+                <div className="chips">
+                  {slackManifestMutation.data.botEvents.map((eventName) => (
+                    <span className="chip" key={`event-${eventName}`}>
+                      {eventName}
+                    </span>
+                  ))}
+                  {slackManifestMutation.data.scopes.map((scope) => (
+                    <span className="chip" key={`scope-${scope}`}>
+                      {scope}
+                    </span>
+                  ))}
+                </div>
+                <pre className="manifest-preview">
+                  <code>{slackManifestText}</code>
+                </pre>
+              </>
+            ) : (
+              <EmptyState
+                title="No manifest generated"
+                body="Generate the manifest after setting the public API URL for this deployment."
+              />
+            )}
+          </section>
           <section
             className="connector-subsection"
             aria-labelledby="slack-user-mapping-heading"

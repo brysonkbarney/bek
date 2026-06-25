@@ -15,6 +15,7 @@ interactive approval buttons, and slash commands:
 
 ```txt
 GET  /api/slack/install
+GET  /api/slack/manifest
 GET  /api/slack/oauth/callback
 POST /api/slack/interactivity
 POST /api/slack/commands
@@ -28,6 +29,7 @@ It can:
 - normalize `app_mention`, `reaction_added`, and Bek bot channel-join events,
 - create a local Bek run when the event or slash-command channel matches seeded channel IDs,
 - auto-import a Slack channel and channel-specific `slack.read` grant when Bek's installed bot user joins it,
+- generate a Slack app manifest for the active public API URL,
 - redirect installers to Slack OAuth with signed state,
 - validate OAuth callback state and exchange OAuth codes when
   `BEK_SLACK_OAUTH_EXCHANGE=true`, or when that variable is unset and
@@ -56,16 +58,36 @@ revocation workflows, Slack directory sync, or self-service identity claiming.
 
 ## Create A Slack App
 
-1. Create a Slack app for the workspace.
-2. Add a bot user named Bek with the display handle `@bek`.
-3. Enable Event Subscriptions.
-4. Set the Request URL to your public API tunnel:
+1. Set the public API URL before generating Slack settings:
+
+   ```bash
+   export BEK_PUBLIC_URL=https://YOUR-TUNNEL.example.com
+   export BEK_WEB_API_URL=https://YOUR-TUNNEL.example.com
+   ```
+
+2. Open `/connectors`, generate the Slack app manifest, and paste it into the
+   Slack app's **App Manifest** screen. Slack's manifest format is documented
+   in the [Slack app manifest reference](https://docs.slack.dev/reference/app-manifest/).
+   The generated manifest configures the `@bek` bot user, OAuth redirect URL,
+   Events API URL, `/bek` slash command URL, interactivity URL, bot events, and
+   bot scopes.
+
+   Raw endpoint fallback:
+
+   ```txt
+   GET /api/slack/manifest
+   ```
+
+3. If you configure the Slack app manually instead, create a Slack app for the
+   workspace and add a bot user named Bek with the display handle `@bek`.
+4. Enable Event Subscriptions.
+5. Set the Request URL to your public API tunnel:
 
    ```txt
    https://YOUR-TUNNEL.example.com/api/slack/events
    ```
 
-5. Subscribe to bot events:
+6. Subscribe to bot events:
 
    ```txt
    app_mention
@@ -73,17 +95,18 @@ revocation workflows, Slack directory sync, or self-service identity claiming.
    member_joined_channel
    ```
 
-6. Install the app into the workspace.
-7. Copy the app signing secret into the API environment:
+7. Install the app into the workspace.
+8. Copy the app signing secret into the API environment:
 
    ```bash
    export SLACK_SIGNING_SECRET=...
    pnpm dev:api
    ```
 
-8. Add OAuth settings for the install flow:
+9. Add OAuth settings for the install flow:
 
    ```bash
+   export BEK_PUBLIC_URL=https://YOUR-TUNNEL.example.com
    export BEK_WEB_API_URL=https://YOUR-TUNNEL.example.com
    export BEK_ADMIN_ORIGINS=http://localhost:5173
    export SLACK_CLIENT_ID=...
@@ -129,39 +152,39 @@ revocation workflows, Slack directory sync, or self-service identity claiming.
    `slackInstalled=true`, `slackInstallStatus=active`, the workspace name or
    ID, the bot user ID, and `slackTokenStored=true`.
 
-9. Discover or invite Bek into Slack channels.
+10. Discover or invite Bek into Slack channels.
 
-   The admin-authenticated discovery endpoint uses the stored OAuth bot token
-   for the active Slack install. If no stored token is available, it falls back
-   to `SLACK_BOT_TOKEN`. In the admin console, open `/channels`, run
-   **Discover**, and import the pilot channel. Operators can also call the raw
-   API:
+The admin-authenticated discovery endpoint uses the stored OAuth bot token
+for the active Slack install. If no stored token is available, it falls back
+to `SLACK_BOT_TOKEN`. In the admin console, open `/channels`, run
+**Discover**, and import the pilot channel. Operators can also call the raw
+API:
 
-   ```txt
-   GET /api/slack/channels/discover
-   ```
+```txt
+GET /api/slack/channels/discover
+```
 
-   Optional query parameters:
+Optional query parameters:
 
-   ```txt
-   limit=1..200
-   cursor=SLACK_NEXT_CURSOR
-   types=public_channel,private_channel
-   excludeArchived=true|false
-   ```
+```txt
+limit=1..200
+cursor=SLACK_NEXT_CURSOR
+types=public_channel,private_channel
+excludeArchived=true|false
+```
 
-   The response returns public channel readiness metadata only: channel ID,
-   name, privacy/archive flags, whether the bot is a member, whether Bek
-   already has a configured place for that channel, and the next cursor. It
-   does not return Slack bot tokens or raw provider error strings.
+The response returns public channel readiness metadata only: channel ID,
+name, privacy/archive flags, whether the bot is a member, whether Bek
+already has a configured place for that channel, and the next cursor. It
+does not return Slack bot tokens or raw provider error strings.
 
-   As a faster setup path, invite Bek's installed bot user into the pilot
-   channel. When Slack sends `member_joined_channel` for Bek's bot user, the
-   Events API imports the channel with the Slack team ID and creates the same
-   channel-scoped `slack.read` grant that manual imports create. Human join
-   events are ignored.
+As a faster setup path, invite Bek's installed bot user into the pilot
+channel. When Slack sends `member_joined_channel` for Bek's bot user, the
+Events API imports the channel with the Slack team ID and creates the same
+channel-scoped `slack.read` grant that manual imports create. Human join
+events are ignored.
 
-10. Review the imported channel grant.
+11. Review the imported channel grant.
 
     Imported Slack channels use the workspace's real channel IDs, so seeded
     demo IDs such as `C_CHECKOUT` do not grant access to them. When you add or
@@ -170,7 +193,7 @@ revocation workflows, Slack directory sync, or self-service identity claiming.
     and move or extend the grant set before testing `@bek` if the channel should
     use a broader team bundle.
 
-11. Enable outbound posting.
+12. Enable outbound posting.
 
     The preferred local/self-hosted path is the stored OAuth bot token from step 8. As a manual fallback, set the Bot User OAuth Token directly:
 
@@ -201,7 +224,7 @@ revocation workflows, Slack directory sync, or self-service identity claiming.
     `?include=details` only when an operator intentionally needs rendered Slack
     target/payload debugging.
 
-12. Configure slash commands and interactivity:
+13. Configure slash commands and interactivity:
 
 ```txt
 Slash command request URL: https://YOUR-TUNNEL.example.com/api/slack/commands

@@ -1093,6 +1093,21 @@ select {
   font-size: 15px;
 }
 
+.manifest-preview {
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid #d7e2dc;
+  border-radius: 8px;
+  background: #101816;
+  color: #e5f3eb;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .connector-actions {
   justify-content: flex-start;
   min-height: 0;

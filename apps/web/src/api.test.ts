@@ -8,6 +8,7 @@ import {
   discoverSlackChannels,
   fetchBootstrap,
   fetchModelUsage,
+  fetchSlackManifest,
   fetchSlackOutbox,
   hasStoredAdminToken,
   linkPrincipalExternalIdentity,
@@ -159,6 +160,40 @@ describe("web API helpers", () => {
     expect(slackInstallStartPath("/connectors?slack=1")).toBe(
       "/api/slack/install-url?return_to=%2Fconnectors%3Fslack%3D1",
     );
+  });
+
+  it("fetches the Slack app manifest with admin auth", async () => {
+    const storage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveAdminApiToken("runtime-token");
+    const manifest = {
+      ok: true as const,
+      baseUrl: "https://bek.example.com",
+      manifest: {
+        display_information: { name: "Bek" },
+      },
+      scopes: ["app_mentions:read", "commands"],
+      botEvents: ["app_mention", "member_joined_channel"],
+      urls: {
+        events: "https://bek.example.com/api/slack/events",
+        interactivity: "https://bek.example.com/api/slack/interactivity",
+        command: "https://bek.example.com/api/slack/commands",
+        redirect: "https://bek.example.com/api/slack/oauth/callback",
+      },
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(String(input)).toBe("http://localhost:4317/api/slack/manifest");
+      expect(init?.headers).toEqual({ authorization: "Bearer runtime-token" });
+      return new Response(JSON.stringify(manifest), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchSlackManifest()).resolves.toEqual(manifest);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("builds run cancellation paths with encoded run ids", () => {
