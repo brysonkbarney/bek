@@ -19,12 +19,13 @@
     "db:seed": "pnpm --filter @bek/db seed",
     "build": "turbo build",
     "test": "turbo test",
+    "test:e2e": "turbo test:e2e",
     "typecheck": "turbo typecheck",
     "lint": "turbo lint",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "smoke": "bash scripts/smoke.sh",
-    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm smoke"
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm test:e2e && pnpm smoke"
   },
   "packageManager": "pnpm@11.1.3",
   "devDependencies": {
