@@ -171,7 +171,8 @@ export function setupChecklistFromStatus(status: SetupStatus): Array<{
       complete: Boolean(
         status.slackInstalled &&
         status.slackInstallStatus === "active" &&
-        status.slackTokenStored,
+        status.slackTokenStored &&
+        !hasMissingSlackScopes(status),
       ),
       route: "/connectors",
     },
@@ -246,7 +247,8 @@ export function setupOperationsFromStatus(
   const slackReady = Boolean(
     status.slackInstalled &&
     status.slackInstallStatus === "active" &&
-    status.slackTokenStored,
+    status.slackTokenStored &&
+    !hasMissingSlackScopes(status),
   );
   const channelReady = status.slackChannels > 0;
   const accessReady = status.accessBundles > 0;
@@ -303,6 +305,7 @@ export function setupOperationsFromStatus(
         workspace ? `Workspace: ${workspace}` : "Workspace: not installed",
         `Install: ${status.slackInstallStatus ?? "missing"}`,
         `Token: ${status.slackTokenStored ? "stored" : "missing"}`,
+        missingSlackScopesFact(status),
       ],
       primaryAction: {
         label: slackReady ? "Review Slack" : "Connect Slack",
@@ -366,23 +369,27 @@ export function setupOperationsFromStatus(
     },
   ];
 
-  if (githubReady) {
-    operations.push({
-      id: "github-preview",
-      phase: "Preview",
-      title: "GitHub policy preview",
-      detail: "Repo work is visible through existing access-bundle grants.",
-      status: "visible",
-      complete: true,
-      facts: [
-        `${status.githubGrantCount} GitHub grant${
-          status.githubGrantCount === 1 ? "" : "s"
-        }`,
-        "Governed through access policy",
-      ],
-      primaryAction: { label: "Review grants", route: "/access-bundles" },
-    });
-  }
+  operations.push({
+    id: "github-policy",
+    phase: "6",
+    title: "Govern repo access",
+    detail: githubReady
+      ? "Repo work is visible through access-bundle grants."
+      : "Add at least one GitHub repo or organization grant before workspace use.",
+    status: githubReady ? "ready" : "needs action",
+    complete: githubReady,
+    facts: [
+      `${status.githubGrantCount} GitHub grant${
+        status.githubGrantCount === 1 ? "" : "s"
+      }`,
+      "Governed through access policy",
+    ],
+    primaryAction: {
+      label: githubReady ? "Review grants" : "Add repo grant",
+      route: "/access-bundles",
+    },
+    secondaryAction: { label: "Open GitHub setup", route: "/connectors" },
+  });
 
   return operations;
 }
@@ -554,7 +561,29 @@ function slackInstallSetupDetail(status: SetupStatus): string {
   if (!status.slackTokenStored) {
     return `${workspace} is active, but no Slack bot token is stored.`;
   }
+  if (hasMissingSlackScopes(status)) {
+    return `${workspace} token is missing required Slack scopes: ${formatSlackScopes(
+      status.missingSlackScopes,
+    )}.`;
+  }
   return `${workspace} is active with a stored bot token.`;
+}
+
+function hasMissingSlackScopes(status: SetupStatus): boolean {
+  return Boolean(status.missingSlackScopes?.length);
+}
+
+function missingSlackScopesFact(status: SetupStatus): string {
+  if (!status.slackInstalled || !status.slackTokenStored) {
+    return "Scopes: waiting for install";
+  }
+  return hasMissingSlackScopes(status)
+    ? `Missing scopes: ${formatSlackScopes(status.missingSlackScopes)}`
+    : "Scopes: ready";
+}
+
+function formatSlackScopes(scopes: string[] | undefined): string {
+  return scopes?.length ? scopes.join(", ") : "none";
 }
 
 export const setupSteps = [

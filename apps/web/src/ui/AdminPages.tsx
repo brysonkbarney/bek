@@ -130,9 +130,7 @@ export function SetupPage() {
     adminAuthDetail,
     adminAuthenticated: true,
   });
-  const requiredOperations = operations.filter(
-    (operation) => operation.id !== "github-preview",
-  );
+  const requiredOperations = operations;
   const progress = {
     complete: requiredOperations.filter((operation) => operation.complete)
       .length,
@@ -170,9 +168,6 @@ export function SetupPage() {
     primaryAction: { label: "Open overview", route: "/" },
     secondaryAction: { label: "Open runs", route: "/runs" },
   };
-  const githubPreview = operations.find(
-    (operation) => operation.id === "github-preview",
-  );
 
   return (
     <div className="page">
@@ -257,38 +252,11 @@ export function SetupPage() {
       </section>
       <Panel title="Operations checklist">
         <div className="setup-operation-list">
-          {operations
-            .filter((operation) => operation.id !== "github-preview")
-            .map((operation) => (
-              <SetupOperationCard operation={operation} key={operation.id} />
-            ))}
+          {operations.map((operation) => (
+            <SetupOperationCard operation={operation} key={operation.id} />
+          ))}
         </div>
       </Panel>
-      {githubPreview ? (
-        <Panel
-          title="GitHub preview"
-          action={<StatusBadge value={githubPreview.status} />}
-        >
-          <div className="setup-preview">
-            <GitPullRequest size={22} aria-hidden="true" />
-            <div>
-              <strong>{githubPreview.title}</strong>
-              <p className="muted">{githubPreview.detail}</p>
-              <div className="chips">
-                {githubPreview.facts.map((fact) => (
-                  <span className="chip" key={fact}>
-                    {fact}
-                  </span>
-                ))}
-              </div>
-            </div>
-            <Link to={githubPreview.primaryAction.route} className="secondary">
-              {githubPreview.primaryAction.label}
-              <ExternalLink size={14} aria-hidden="true" />
-            </Link>
-          </div>
-        </Panel>
-      ) : null}
     </div>
   );
 }

@@ -177,6 +177,9 @@ export interface SetupStatus {
   slackWorkspaceId?: string | null;
   slackBotUserId?: string | null;
   slackTokenStored?: boolean;
+  slackRequiredScopes?: string[];
+  slackGrantedScopes?: string[];
+  missingSlackScopes?: string[];
   accessBundles: number;
   modelPolicies: number;
   runtimeProfiles: number;

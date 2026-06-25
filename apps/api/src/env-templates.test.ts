@@ -24,6 +24,14 @@ function readEnvTemplate(name: string): Map<string, string> {
 }
 
 describe("environment templates", () => {
+  const requiredSlackScopes = [
+    "app_mentions:read",
+    "commands",
+    "chat:write",
+    "channels:read",
+    "groups:read",
+  ];
+
   it.each([".env.example", ".env.docker.example"])(
     "%s keeps Slack OAuth scopes aligned with channel discovery",
     (templateName) => {
@@ -36,13 +44,33 @@ describe("environment templates", () => {
           .filter(Boolean),
       );
 
-      expect(scopes.has("app_mentions:read")).toBe(true);
-      expect(scopes.has("commands")).toBe(true);
-      expect(scopes.has("chat:write")).toBe(true);
-      expect(scopes.has("channels:read")).toBe(true);
-      expect(scopes.has("groups:read")).toBe(true);
+      for (const requiredScope of requiredSlackScopes) {
+        expect(scopes.has(requiredScope)).toBe(true);
+      }
     },
   );
+
+  it("keeps Docker Compose Slack scope fallback aligned with channel discovery", () => {
+    const compose = readFileSync(
+      resolve(repoRoot, "docker-compose.yml"),
+      "utf8",
+    );
+    const match = compose.match(
+      /SLACK_BOT_SCOPES:\s+\$\{SLACK_BOT_SCOPES:-(.*?)\}/,
+    );
+    const fallbackScopes = match?.[1] ?? "";
+    expect(fallbackScopes).not.toBe("");
+    const scopes = new Set(
+      fallbackScopes
+        .split(",")
+        .map((scope) => scope.trim())
+        .filter(Boolean),
+    );
+
+    for (const requiredScope of requiredSlackScopes) {
+      expect(scopes.has(requiredScope)).toBe(true);
+    }
+  });
 
   it("keeps executable sandboxes disabled in first-run templates", () => {
     expect(readEnvTemplate(".env.example").get("BEK_SANDBOX_PROVIDER")).toBe(

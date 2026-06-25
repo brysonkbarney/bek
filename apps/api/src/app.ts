@@ -750,6 +750,10 @@ export function createApp(
             slackInstall.externalId,
           )
         : undefined;
+    const slackScopeReadiness = slackRequiredScopeReadiness(
+      slackInstall,
+      slackCredential,
+    );
     const githubGrantCount = snapshot.accessBundles
       .flatMap((bundle) => bundle.grants)
       .filter((grant) => grant.resource.startsWith("github:")).length;
@@ -763,6 +767,7 @@ export function createApp(
       readyForLocalDemo &&
       slackInstall?.status === "active" &&
       Boolean(slackCredential) &&
+      slackScopeReadiness.missing.length === 0 &&
       snapshot.runtimeProfiles.length > 0 &&
       githubGrantCount > 0;
     return c.json({
@@ -778,6 +783,9 @@ export function createApp(
           ? slackInstall.metadata.botUserId
           : null,
       slackTokenStored: Boolean(slackCredential),
+      slackRequiredScopes: slackScopeReadiness.required,
+      slackGrantedScopes: slackScopeReadiness.granted,
+      missingSlackScopes: slackScopeReadiness.missing,
       accessBundles: snapshot.accessBundles.length,
       modelPolicies: snapshot.modelPolicies.length,
       runtimeProfiles: snapshot.runtimeProfiles.length,
@@ -2992,6 +3000,32 @@ function latestSlackCredential(
       (credential.connectorInstallId === connectorInstallId ||
         (teamId ? credential.externalAccountId === teamId : false)),
   );
+}
+
+function slackRequiredScopeReadiness(
+  install: ConnectorInstall | undefined,
+  credential: CredentialRecord | undefined,
+): { required: string[]; granted: string[]; missing: string[] } {
+  const granted = new Set<string>();
+  for (const scope of parseSlackScopeSummary(credential?.scopeSummary)) {
+    granted.add(scope);
+  }
+  for (const scope of arrayMetadata(install?.metadata, "scopes")) {
+    granted.add(scope);
+  }
+  const grantedScopes = Array.from(granted).sort();
+  return {
+    required: [...defaultSlackBotScopes],
+    granted: grantedScopes,
+    missing: defaultSlackBotScopes.filter((scope) => !granted.has(scope)),
+  };
+}
+
+function parseSlackScopeSummary(scopeSummary: string | undefined): string[] {
+  return (scopeSummary ?? "")
+    .split(/[,\s]+/)
+    .map((scope) => scope.trim())
+    .filter(Boolean);
 }
 
 function publicCredentialMetadata(

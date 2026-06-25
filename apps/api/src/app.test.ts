@@ -844,6 +844,107 @@ describe("Bek API", () => {
     });
   });
 
+  it("requires installed Slack token scopes before workspace readiness", async () => {
+    const store = new BekStore();
+    const install = store.upsertConnectorInstall({
+      id: "connector_slack_T123",
+      kind: "slack",
+      provider: "slack",
+      externalId: "T123",
+      displayName: "Redo",
+      status: "active",
+      metadata: {
+        teamId: "T123",
+        teamName: "Redo",
+        botUserId: "U_BEK",
+        scopes: ["app_mentions:read", "commands", "chat:write"],
+      },
+    });
+    store.upsertCredential({
+      id: "credential_slack_bot_T123",
+      connectorInstallId: install.id,
+      name: "Redo Slack bot token",
+      provider: "slack",
+      externalAccountId: "T123",
+      secretRef: "bek-local-vault:slack:org_demo:T123:bot",
+      status: "active",
+      scopeSummary: "app_mentions:read,commands,chat:write",
+    });
+
+    const res = await createApp(store).request("/api/setup/status");
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      slackInstalled: true,
+      slackTokenStored: true,
+      slackRequiredScopes: expect.arrayContaining([
+        "app_mentions:read",
+        "commands",
+        "chat:write",
+        "channels:read",
+        "groups:read",
+      ]),
+      slackGrantedScopes: expect.arrayContaining([
+        "app_mentions:read",
+        "commands",
+        "chat:write",
+      ]),
+      missingSlackScopes: expect.arrayContaining([
+        "reactions:read",
+        "channels:read",
+        "groups:read",
+      ]),
+      readyForWorkspace: false,
+    });
+  });
+
+  it("marks the seed workspace ready when Slack install scopes are complete", async () => {
+    const store = new BekStore();
+    const scopes = [
+      "app_mentions:read",
+      "reactions:read",
+      "commands",
+      "chat:write",
+      "channels:read",
+      "groups:read",
+    ];
+    const install = store.upsertConnectorInstall({
+      id: "connector_slack_T123",
+      kind: "slack",
+      provider: "slack",
+      externalId: "T123",
+      displayName: "Redo",
+      status: "active",
+      metadata: {
+        teamId: "T123",
+        teamName: "Redo",
+        botUserId: "U_BEK",
+        scopes,
+      },
+    });
+    store.upsertCredential({
+      id: "credential_slack_bot_T123",
+      connectorInstallId: install.id,
+      name: "Redo Slack bot token",
+      provider: "slack",
+      externalAccountId: "T123",
+      secretRef: "bek-local-vault:slack:org_demo:T123:bot",
+      status: "active",
+      scopeSummary: scopes.join(","),
+    });
+
+    const res = await createApp(store).request("/api/setup/status");
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      slackInstalled: true,
+      slackTokenStored: true,
+      missingSlackScopes: [],
+      readyForLocalDemo: true,
+      readyForWorkspace: true,
+    });
+  });
+
   it("reports GitHub setup gaps without leaking configured secret values", async () => {
     clearGitHubEnv();
     process.env.GITHUB_APP_ID = "not-a-number";

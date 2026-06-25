@@ -73,9 +73,10 @@ describe("admin product helpers", () => {
       detail: "Using a browser-entered admin token.",
       primaryAction: { route: "/settings" },
     });
-    expect(operations.find((step) => step.id === "github-preview")).toEqual(
+    expect(operations.find((step) => step.id === "github-policy")).toEqual(
       expect.objectContaining({
-        status: "visible",
+        complete: true,
+        status: "ready",
         facts: expect.arrayContaining(["1 GitHub grant"]),
       }),
     );
@@ -112,8 +113,12 @@ describe("admin product helpers", () => {
       status: "needs action",
       primaryAction: { label: "Connect Slack", route: "/connectors" },
     });
-    expect(operations.find((step) => step.id === "github-preview")).toBe(
-      undefined,
+    expect(operations.find((step) => step.id === "github-policy")).toEqual(
+      expect.objectContaining({
+        complete: false,
+        status: "needs action",
+        primaryAction: { label: "Add repo grant", route: "/access-bundles" },
+      }),
     );
   });
 
@@ -161,6 +166,35 @@ describe("admin product helpers", () => {
       detail:
         "Install Bek and store a Slack bot token before real workspace use.",
     });
+  });
+
+  it("keeps Slack setup incomplete when the stored token is missing required scopes", () => {
+    const setupStatus = {
+      ...readySetup,
+      missingSlackScopes: ["channels:read", "groups:read"],
+      readyForWorkspace: false,
+    };
+    const checklist = setupChecklistFromStatus(setupStatus);
+    const operations = setupOperationsFromStatus(setupStatus, {
+      adminAuthDetail: "Using a browser-entered admin token.",
+      adminAuthenticated: true,
+    });
+
+    expect(checklist.find((step) => step.id === "slack-install")).toMatchObject(
+      {
+        complete: false,
+        detail: expect.stringContaining("channels:read, groups:read"),
+      },
+    );
+    expect(
+      operations.find((operation) => operation.id === "slack-install"),
+    ).toMatchObject({
+      complete: false,
+      facts: expect.arrayContaining([
+        "Missing scopes: channels:read, groups:read",
+      ]),
+    });
+    expect(setupReadyForWorkspace(setupStatus)).toBe(false);
   });
 
   it("keeps unconfigured connector cards actionable", () => {

@@ -37,7 +37,7 @@ x-bek-app-env: &bek-app-env
   SLACK_REDIRECT_URI: ${SLACK_REDIRECT_URI:-http://localhost:4317/api/slack/oauth/callback}
   BEK_SLACK_OAUTH_EXCHANGE: ${BEK_SLACK_OAUTH_EXCHANGE:-}
   BEK_SLACK_BACKGROUND_DRAIN: ${BEK_SLACK_BACKGROUND_DRAIN:-true}
-  SLACK_BOT_SCOPES: ${SLACK_BOT_SCOPES:-app_mentions:read,reactions:read,commands,chat:write}
+  SLACK_BOT_SCOPES: ${SLACK_BOT_SCOPES:-app_mentions:read,reactions:read,commands,chat:write,channels:read,groups:read}
   BEK_SLACK_USER_PRINCIPAL_MAP: "${BEK_SLACK_USER_PRINCIPAL_MAP:-{}}"
   BEK_MODEL_GATEWAY: ${BEK_MODEL_GATEWAY:-local}
   BEK_MODEL_ROUTING_MODE: ${BEK_MODEL_ROUTING_MODE:-auto}
