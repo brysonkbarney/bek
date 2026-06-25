@@ -106,7 +106,7 @@ the current OSS spine.
       ingress dedupe and outbound delivery intents are persisted in the Bek
       snapshot.
 - [ ] Blocked for hosted beta: replace local env-key token custody with managed
-      KMS/secret-manager storage, rotation, revocation, and access audit.
+      KMS/secret-manager storage, automated rotation, and access audit.
 - [ ] Blocked: persist full Slack channel sync and user/principal mappings.
 
 ## GitHub And Repo Work

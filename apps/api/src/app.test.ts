@@ -245,6 +245,30 @@ function installActiveSlackApp(
   });
 }
 
+function storeActiveSlackCredential(
+  store: BekStore,
+  input: {
+    install: ReturnType<typeof installActiveSlackApp>;
+    teamId?: string | undefined;
+  },
+) {
+  const teamId = input.teamId ?? input.install.externalId ?? "T123";
+  return store.upsertCredential({
+    id: `credential_slack_bot_${teamId}`,
+    connectorInstallId: input.install.id,
+    name: "Redo Slack bot token",
+    provider: "slack",
+    externalAccountId: teamId,
+    secretRef: `bek-local-vault:slack:org_demo:${teamId}:bot`,
+    status: "active",
+    scopeSummary:
+      "app_mentions:read,reactions:read,commands,chat:write,channels:read,groups:read",
+    metadata: {
+      source: "test",
+    },
+  });
+}
+
 function clearGitHubEnv() {
   delete process.env.BEK_GITHUB_EXECUTION;
   delete process.env.GITHUB_API_BASE_URL;
@@ -4426,6 +4450,264 @@ describe("Bek API", () => {
     expect(
       store.read().places.some((place) => place.externalId === "C_HUMAN_JOIN"),
     ).toBe(false);
+  });
+
+  it("revokes Slack installs and stored bot credentials on app_uninstalled", async () => {
+    const store = new BekStore();
+    const install = installActiveSlackApp(store, { botUserId: "U_BEK" });
+    storeActiveSlackCredential(store, { install });
+    const payload = {
+      team_id: "T123",
+      event_id: "EvAppUninstalled",
+      event_time: 1710000000,
+      event: {
+        type: "app_uninstalled",
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+
+    const res = await createApp(store).request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: true,
+      revoked: true,
+      installId: install.id,
+      status: "revoked",
+      credentialsRevoked: 1,
+      reason: "app_uninstalled",
+    });
+    expect(store.read().connectorInstalls[0]).toMatchObject({
+      id: install.id,
+      status: "revoked",
+      metadata: expect.objectContaining({
+        revokedReason: "app_uninstalled",
+        revokedAt: expect.any(String),
+      }),
+    });
+    expect(store.read().credentials[0]).toMatchObject({
+      status: "revoked",
+      metadata: expect.objectContaining({
+        revokedReason: "app_uninstalled",
+        revokedAt: expect.any(String),
+      }),
+    });
+    await expect(
+      (await createApp(store).request("/api/setup/status")).json(),
+    ).resolves.toMatchObject({
+      slackInstalled: true,
+      slackInstallStatus: "revoked",
+      slackWorkspaceId: "T123",
+      slackBotUserId: "U_BEK",
+      slackTokenStored: false,
+    });
+  });
+
+  it("revokes stored Slack bot credentials on tokens_revoked", async () => {
+    const store = new BekStore();
+    const install = installActiveSlackApp(store, { botUserId: "U_BEK" });
+    storeActiveSlackCredential(store, { install });
+    const payload = {
+      team_id: "T123",
+      event_id: "EvTokensRevoked",
+      event: {
+        type: "tokens_revoked",
+        tokens: {
+          bot: ["U_BEK"],
+        },
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+
+    const res = await createApp(store).request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: true,
+      revoked: true,
+      installId: install.id,
+      status: "active",
+      credentialsRevoked: 1,
+      reason: "tokens_revoked",
+    });
+    expect(store.read().connectorInstalls[0]).toMatchObject({
+      id: install.id,
+      status: "active",
+    });
+    expect(store.read().credentials[0]).toMatchObject({
+      status: "revoked",
+      metadata: expect.objectContaining({
+        revokedReason: "tokens_revoked",
+      }),
+    });
+    await expect(
+      (await createApp(store).request("/api/setup/status")).json(),
+    ).resolves.toMatchObject({
+      slackInstallStatus: "active",
+      slackTokenStored: false,
+    });
+  });
+
+  it("ignores tokens_revoked for another bot user", async () => {
+    const store = new BekStore();
+    const install = installActiveSlackApp(store, { botUserId: "U_BEK" });
+    storeActiveSlackCredential(store, { install });
+    const payload = {
+      team_id: "T123",
+      event_id: "EvOtherTokensRevoked",
+      event: {
+        type: "tokens_revoked",
+        tokens: {
+          bot: ["U_OTHER"],
+        },
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+
+    const res = await createApp(store).request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: true,
+      ignored: true,
+      revoked: false,
+      installId: install.id,
+      reason: "No Bek bot token was revoked.",
+    });
+    expect(store.read().credentials[0]).toMatchObject({
+      status: "active",
+    });
+  });
+
+  it("marks Slack channels unavailable when Bek leaves and blocks future runs", async () => {
+    mapSlackTestUser();
+    const store = new BekStore();
+    installActiveSlackApp(store, { botUserId: "U_BEK" });
+    const checkout = store
+      .read()
+      .places.find((place) => place.id === "place_checkout")!;
+    store.updatePlace(checkout.id, {
+      metadata: { ...(checkout.metadata ?? {}), botIsMember: true },
+    });
+    const payload = {
+      team_id: "T123",
+      event_id: "EvBekLeftCheckout",
+      event: {
+        type: "member_left_channel",
+        user: "U_BEK",
+        channel: "C_CHECKOUT",
+        channel_type: "C",
+        event_ts: "1710000000.000014",
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+    const app = createApp(store);
+
+    const res = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: true,
+      configured: false,
+      placeId: "place_checkout",
+      channelId: "C_CHECKOUT",
+      botIsMember: false,
+    });
+    expect(
+      store.read().places.find((place) => place.id === "place_checkout"),
+    ).toMatchObject({
+      metadata: expect.objectContaining({
+        teamId: "T123",
+        botIsMember: false,
+        botLeftReason: "slack_channel_left",
+        botLeftUserId: "U_BEK",
+      }),
+    });
+
+    const runsBeforeMention = store.read().runs.length;
+    const mentionPayload = {
+      team_id: "T123",
+      event_id: "EvMentionAfterBekLeft",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek can you still work here?",
+      },
+    };
+    const mentionRawBody = JSON.stringify(mentionPayload);
+    const mention = await app.request("/api/slack/events", {
+      method: "POST",
+      body: mentionRawBody,
+      headers: signedSlackHeaders(mentionRawBody),
+    });
+
+    expect(mention.status).toBe(200);
+    await expect(mention.json()).resolves.toMatchObject({
+      ok: false,
+      ignored: true,
+      reason: "Bek is not configured for this Slack channel.",
+    });
+    expect(store.read().runs).toHaveLength(runsBeforeMention);
+  });
+
+  it("ignores Slack channel leave events for humans", async () => {
+    const store = new BekStore();
+    installActiveSlackApp(store, { botUserId: "U_BEK" });
+    const checkout = store
+      .read()
+      .places.find((place) => place.id === "place_checkout")!;
+    store.updatePlace(checkout.id, {
+      metadata: { ...(checkout.metadata ?? {}), botIsMember: true },
+    });
+    const payload = {
+      team_id: "T123",
+      event_id: "EvHumanLeftCheckout",
+      event: {
+        type: "member_left_channel",
+        user: "U_HUMAN",
+        channel: "C_CHECKOUT",
+        event_ts: "1710000000.000015",
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+
+    const res = await createApp(store).request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-slack-no-retry")).toBe("1");
+    await expect(res.json()).resolves.toMatchObject({
+      ok: false,
+      ignored: true,
+      reason: "Slack channel leave did not remove Bek's bot user.",
+    });
+    expect(
+      store.read().places.find((place) => place.id === "place_checkout"),
+    ).toMatchObject({
+      metadata: expect.objectContaining({
+        botIsMember: true,
+      }),
+    });
   });
 
   it("returns the original ignored Slack event response on retries", async () => {

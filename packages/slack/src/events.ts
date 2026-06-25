@@ -3,6 +3,9 @@ export interface NormalizedSlackInteraction {
     | "mention"
     | "reaction"
     | "channel_joined"
+    | "channel_left"
+    | "app_uninstalled"
+    | "tokens_revoked"
     | "url_verification"
     | "unknown";
   channelId?: string | undefined;
@@ -15,6 +18,8 @@ export interface NormalizedSlackInteraction {
   threadTs?: string | undefined;
   challenge?: string | undefined;
   isSelfJoin?: boolean | undefined;
+  isSelfLeave?: boolean | undefined;
+  revokedBotUserIds?: string[] | undefined;
 }
 
 export function normalizeSlackEvent(
@@ -65,6 +70,46 @@ export function normalizeSlackEvent(
       isSelfJoin: false,
     };
   }
+  if (event.type === "channel_left") {
+    return {
+      type: "channel_left",
+      channelId:
+        typeof event.channel === "string"
+          ? event.channel
+          : nestedString(event, "channel", "id"),
+      teamId,
+      userId: typeof event.user === "string" ? event.user : undefined,
+      isSelfLeave: true,
+    };
+  }
+  if (event.type === "member_left_channel") {
+    return {
+      type: "channel_left",
+      channelId: typeof event.channel === "string" ? event.channel : undefined,
+      channelType:
+        typeof event.channel_type === "string" ? event.channel_type : undefined,
+      teamId,
+      userId: typeof event.user === "string" ? event.user : undefined,
+      isSelfLeave: false,
+    };
+  }
+  if (event.type === "app_uninstalled") {
+    return {
+      type: "app_uninstalled",
+      teamId,
+    };
+  }
+  if (event.type === "tokens_revoked") {
+    const tokens =
+      event.tokens && typeof event.tokens === "object"
+        ? (event.tokens as Record<string, unknown>)
+        : undefined;
+    return {
+      type: "tokens_revoked",
+      teamId,
+      revokedBotUserIds: stringArray(tokens?.bot),
+    };
+  }
   if (typeof event.bot_id === "string" || event.subtype === "bot_message") {
     return { type: "unknown" };
   }
@@ -105,6 +150,12 @@ function slackThreadTs(value: unknown): string | undefined {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => stringValue(entry) !== undefined)
+    : [];
 }
 
 function nestedString(

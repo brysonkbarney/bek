@@ -124,4 +124,71 @@ describe("Slack event normalization", () => {
       isSelfJoin: true,
     });
   });
+
+  it("normalizes bot channel leave events", () => {
+    expect(
+      normalizeSlackEvent({
+        team_id: "T123",
+        event: {
+          type: "member_left_channel",
+          user: "U_BEK",
+          channel: "C123",
+          channel_type: "C",
+          event_ts: "1700000000.000005",
+        },
+      }),
+    ).toMatchObject({
+      type: "channel_left",
+      channelId: "C123",
+      teamId: "T123",
+      userId: "U_BEK",
+      channelType: "C",
+      isSelfLeave: false,
+    });
+
+    expect(
+      normalizeSlackEvent({
+        team_id: "T123",
+        event: {
+          type: "channel_left",
+          channel: { id: "G123" },
+        },
+      }),
+    ).toMatchObject({
+      type: "channel_left",
+      channelId: "G123",
+      teamId: "T123",
+      isSelfLeave: true,
+    });
+  });
+
+  it("normalizes Slack workspace lifecycle events", () => {
+    expect(
+      normalizeSlackEvent({
+        team_id: "T123",
+        event: {
+          type: "app_uninstalled",
+        },
+      }),
+    ).toMatchObject({
+      type: "app_uninstalled",
+      teamId: "T123",
+    });
+
+    expect(
+      normalizeSlackEvent({
+        team_id: "T123",
+        event: {
+          type: "tokens_revoked",
+          tokens: {
+            bot: ["U_BEK", "U_OTHER"],
+          },
+        },
+      }),
+    ).toMatchObject({
+      type: "tokens_revoked",
+      teamId: "T123",
+      revokedBotUserIds: ["U_BEK", "U_OTHER"],
+    });
+  });
 });

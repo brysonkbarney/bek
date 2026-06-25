@@ -26,9 +26,15 @@ It can:
 
 - verify Slack signatures with `SLACK_SIGNING_SECRET`,
 - answer Slack URL verification challenges,
-- normalize `app_mention`, `reaction_added`, and Bek bot channel-join events,
+- normalize `app_mention`, `reaction_added`, Bek bot channel-join and
+  channel-leave events, plus Slack workspace lifecycle events,
 - create a local Bek run when the event or slash-command channel matches seeded channel IDs,
 - auto-import a Slack channel and channel-specific `slack.read` grant when Bek's installed bot user joins it,
+- mark a configured channel unavailable when Slack reports that Bek's bot user
+  left it, so later mentions in that channel do not create runs until Bek
+  rejoins,
+- revoke the Slack install and stored bot credentials on `app_uninstalled`, and
+  revoke stored bot credentials on matching `tokens_revoked` callbacks,
 - generate a Slack app manifest for the active public API URL,
 - redirect installers to Slack OAuth with signed state,
 - validate OAuth callback state and exchange OAuth codes when
@@ -53,8 +59,8 @@ the Slack app's Bot User OAuth Token. The env templates set
 `BEK_SLACK_OAUTH_EXCHANGE=false`, so local and Compose installs validate state
 without storing a token until you explicitly opt in.
 
-It does not yet include hosted-grade KMS/secret-manager custody, rotation,
-revocation workflows, Slack directory sync, or self-service identity claiming.
+It does not yet include hosted-grade KMS/secret-manager custody, automated
+token rotation, Slack directory sync, or self-service identity claiming.
 
 ## Create A Slack App
 
@@ -90,9 +96,12 @@ revocation workflows, Slack directory sync, or self-service identity claiming.
 6. Subscribe to bot events:
 
    ```txt
+   app_uninstalled
    app_mention
+   tokens_revoked
    reaction_added
    member_joined_channel
+   member_left_channel
    ```
 
 7. Install the app into the workspace.
@@ -182,7 +191,9 @@ As a faster setup path, invite Bek's installed bot user into the pilot
 channel. When Slack sends `member_joined_channel` for Bek's bot user, the
 Events API imports the channel with the Slack team ID and creates the same
 channel-scoped `slack.read` grant that manual imports create. Human join
-events are ignored.
+events are ignored. If Slack later sends `member_left_channel` for Bek's bot
+user, Bek keeps the channel record for audit/admin visibility but marks it
+unavailable; re-inviting Bek flips the channel back to available.
 
 11. Review the imported channel grant.
 

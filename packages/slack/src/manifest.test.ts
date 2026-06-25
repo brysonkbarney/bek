@@ -47,9 +47,12 @@ describe("Slack app manifest", () => {
         event_subscriptions: {
           request_url: "https://bek.example.com/api/slack/events",
           bot_events: [
+            "app_uninstalled",
             "app_mention",
+            "tokens_revoked",
             "reaction_added",
             "member_joined_channel",
+            "member_left_channel",
           ],
         },
         interactivity: {

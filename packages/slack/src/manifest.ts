@@ -58,9 +58,12 @@ export interface SlackAppManifestInput {
 }
 
 export const defaultSlackBotEvents = [
+  "app_uninstalled",
   "app_mention",
+  "tokens_revoked",
   "reaction_added",
   "member_joined_channel",
+  "member_left_channel",
 ] as const;
 
 export function buildSlackAppManifest(

@@ -55,6 +55,30 @@ describe("Slack durable event keys", () => {
     ).toBe(
       "slack:event:T123:channel_joined:C123:1700000000.000003:unknown-actor",
     );
+
+    expect(
+      buildSlackEventDurableKey({
+        team_id: "T123",
+        event_time: 1710000000,
+        event: {
+          type: "app_uninstalled",
+        },
+      }),
+    ).toBe(
+      "slack:event:T123:app_uninstalled:workspace:1710000000:unknown-actor",
+    );
+
+    expect(
+      buildSlackEventDurableKey({
+        team_id: "T123",
+        event: {
+          type: "member_left_channel",
+          user: "U_BEK",
+          channel: "C123",
+          event_ts: "1700000000.000004",
+        },
+      }),
+    ).toBe("slack:event:T123:member_left_channel:C123:1700000000.000004:U_BEK");
   });
 
   it("builds command and interaction keys", () => {

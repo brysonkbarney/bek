@@ -28,8 +28,9 @@ export function buildSlackEventDurableKey(
   const eventTs =
     stringValue(event.event_ts) ??
     stringValue(event.ts) ??
-    nestedString(event, "item", "ts");
-  if (!eventType || !channelId || !eventTs) {
+    nestedString(event, "item", "ts") ??
+    timestampValue(record.event_time);
+  if (!eventType || !eventTs) {
     return undefined;
   }
 
@@ -38,7 +39,7 @@ export function buildSlackEventDurableKey(
     "event",
     teamId ?? "unknown-team",
     eventType,
-    channelId,
+    channelId ?? "workspace",
     eventTs,
     stringValue(event.user) ?? stringValue(event.bot_id) ?? "unknown-actor",
   );
@@ -95,6 +96,13 @@ function objectValue(value: unknown): Record<string, unknown> | undefined {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function timestampValue(value: unknown): string | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return stringValue(value);
 }
 
 function nestedString(

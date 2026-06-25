@@ -392,15 +392,24 @@ export function createApp(
       };
     }
 
-    const existing = resolveSlackPlace(snapshot, event.channelId, event.teamId);
+    const now = new Date().toISOString();
+    const existing = resolveSlackPlaceIgnoringBotMembership(
+      snapshot,
+      event.channelId,
+      event.teamId,
+    );
     if (existing) {
-      ensureSlackReadAccessForChannel(existing);
+      const updated = store.updatePlace(existing.id, {
+        metadata: slackChannelJoinedMetadata(existing.metadata, event, now),
+      });
+      ensureSlackReadAccessForChannel(updated);
       return {
         ok: true,
         imported: false,
         configured: true,
-        placeId: existing.id,
-        channelId: existing.externalId,
+        placeId: updated.id,
+        channelId: updated.externalId,
+        botIsMember: true,
       };
     }
 
@@ -421,12 +430,15 @@ export function createApp(
 
     const metadata: Record<string, unknown> = {
       source: "slack_join_event",
+      botIsMember: true,
+      botJoinedAt: now,
     };
     if (event.teamId) {
       metadata.teamId = event.teamId;
     }
     if (event.userId) {
       metadata.joinedUserId = event.userId;
+      metadata.botJoinedUserId = event.userId;
     }
     if (event.channelType) {
       metadata.channelType = event.channelType;
@@ -447,7 +459,204 @@ export function createApp(
       configured: true,
       placeId: channel.id,
       channelId: channel.externalId,
+      botIsMember: true,
     };
+  }
+
+  function handleSlackChannelLeftEvent(
+    event: NormalizedSlackInteraction,
+  ): Record<string, unknown> {
+    if (!event.channelId) {
+      return {
+        ok: false,
+        ignored: true,
+        reason: "Slack channel leave payload is missing channel.",
+      };
+    }
+
+    const snapshot = store.read();
+    const install = activeSlackInstallForTeam(snapshot, event.teamId);
+    if (!install) {
+      return {
+        ok: false,
+        ignored: true,
+        reason: "Bek does not have an active Slack install for this workspace.",
+      };
+    }
+
+    const botUserId = stringMetadata(install.metadata, "botUserId");
+    if (!event.isSelfLeave && (!botUserId || event.userId !== botUserId)) {
+      return {
+        ok: false,
+        ignored: true,
+        reason: "Slack channel leave did not remove Bek's bot user.",
+      };
+    }
+
+    const place = resolveSlackPlaceIgnoringBotMembership(
+      snapshot,
+      event.channelId,
+      event.teamId,
+    );
+    if (!place) {
+      return {
+        ok: false,
+        ignored: true,
+        reason: "Bek is not configured for this Slack channel.",
+      };
+    }
+
+    const now = new Date().toISOString();
+    const updated = store.updatePlace(place.id, {
+      metadata: slackChannelLeftMetadata(place.metadata, event, now),
+    });
+    return {
+      ok: true,
+      configured: false,
+      placeId: updated.id,
+      channelId: updated.externalId,
+      botIsMember: false,
+    };
+  }
+
+  function handleSlackWorkspaceLifecycleEvent(
+    event: NormalizedSlackInteraction,
+  ): Record<string, unknown> {
+    if (!event.teamId) {
+      return {
+        ok: false,
+        ignored: true,
+        reason: "Slack lifecycle payload is missing team.",
+      };
+    }
+
+    const snapshot = store.read();
+    const install = slackConnectorInstallForTeam(snapshot, event.teamId);
+    if (!install) {
+      return {
+        ok: false,
+        ignored: true,
+        reason: "Bek does not have a Slack install for this workspace.",
+      };
+    }
+
+    const now = new Date().toISOString();
+    if (event.type === "app_uninstalled") {
+      const revokedInstall = store.upsertConnectorInstall({
+        id: install.id,
+        kind: install.kind,
+        provider: install.provider,
+        externalId: install.externalId,
+        displayName: install.displayName,
+        status: "revoked",
+        installedByPrincipalId: install.installedByPrincipalId,
+        config: install.config,
+        metadata: {
+          ...(install.metadata ?? {}),
+          revokedAt: now,
+          revokedReason: "app_uninstalled",
+        },
+        now,
+      });
+      const credentialsRevoked = revokeActiveSlackCredentials({
+        snapshot,
+        install,
+        teamId: event.teamId,
+        reason: "app_uninstalled",
+        now,
+      });
+      return {
+        ok: true,
+        revoked: true,
+        installId: revokedInstall.id,
+        status: revokedInstall.status,
+        credentialsRevoked,
+        reason: "app_uninstalled",
+      };
+    }
+
+    if (event.type === "tokens_revoked") {
+      const botUserId = stringMetadata(install.metadata, "botUserId");
+      if (
+        botUserId &&
+        event.revokedBotUserIds &&
+        event.revokedBotUserIds.length > 0 &&
+        !event.revokedBotUserIds.includes(botUserId)
+      ) {
+        return {
+          ok: true,
+          ignored: true,
+          revoked: false,
+          installId: install.id,
+          reason: "No Bek bot token was revoked.",
+        };
+      }
+
+      const credentialsRevoked = revokeActiveSlackCredentials({
+        snapshot,
+        install,
+        teamId: event.teamId,
+        reason: "tokens_revoked",
+        now,
+      });
+      return {
+        ok: true,
+        revoked: credentialsRevoked > 0,
+        installId: install.id,
+        status: install.status,
+        credentialsRevoked,
+        reason: "tokens_revoked",
+      };
+    }
+
+    return {
+      ok: false,
+      ignored: true,
+      reason: "Unsupported Slack lifecycle event.",
+    };
+  }
+
+  function revokeActiveSlackCredentials(input: {
+    snapshot: BekSnapshot;
+    install: ConnectorInstall;
+    teamId: string;
+    reason: string;
+    now: string;
+  }): number {
+    const credentials = input.snapshot.credentials.filter(
+      (credential) =>
+        credential.provider === "slack" &&
+        credential.status === "active" &&
+        (credential.connectorInstallId === input.install.id ||
+          credential.externalAccountId === input.teamId ||
+          (input.install.externalId
+            ? credential.externalAccountId === input.install.externalId
+            : false)),
+    );
+
+    for (const credential of credentials) {
+      store.upsertCredential({
+        id: credential.id,
+        connectorInstallId: credential.connectorInstallId,
+        name: credential.name,
+        provider: credential.provider,
+        externalAccountId: credential.externalAccountId,
+        secretRef: credential.secretRef,
+        status: "revoked",
+        scopeSummary: credential.scopeSummary,
+        metadata: {
+          ...(credential.metadata ?? {}),
+          revokedAt: input.now,
+          revokedReason: input.reason,
+        },
+        expiresAt: credential.expiresAt,
+        rotationDueAt: credential.rotationDueAt,
+        lastUsedAt: credential.lastUsedAt,
+        now: input.now,
+      });
+    }
+
+    return credentials.length;
   }
 
   function decideApprovalAndQueue(
@@ -2239,6 +2448,44 @@ export function createApp(
       }
       return c.json(withSlackRetryMetadata(response, retry));
     }
+    if (event.type === "channel_left") {
+      const response = handleSlackChannelLeftEvent(event);
+      if (eventKey) {
+        store.recordIngressDelivery({
+          key: eventKey,
+          kind: "slack.event",
+          status:
+            response.ok === true && response.ignored !== true
+              ? "processed"
+              : "ignored",
+          response: { ...response },
+        });
+        await flushChangesWithDeliveryRollback(eventKey);
+      }
+      if (!response.ok) {
+        markSlackNoRetry(c);
+      }
+      return c.json(withSlackRetryMetadata(response, retry));
+    }
+    if (event.type === "app_uninstalled" || event.type === "tokens_revoked") {
+      const response = handleSlackWorkspaceLifecycleEvent(event);
+      if (eventKey) {
+        store.recordIngressDelivery({
+          key: eventKey,
+          kind: "slack.event",
+          status:
+            response.ok === true && response.ignored !== true
+              ? "processed"
+              : "ignored",
+          response: { ...response },
+        });
+        await flushChangesWithDeliveryRollback(eventKey);
+      }
+      if (!response.ok) {
+        markSlackNoRetry(c);
+      }
+      return c.json(withSlackRetryMetadata(response, retry));
+    }
     if (event.type === "mention" || event.type === "reaction") {
       const snapshot = store.read();
       if (!event.channelId) {
@@ -2595,12 +2842,33 @@ function resolveSlackPlace(
   channelId: string,
   teamId?: string | undefined,
 ): PlaceScope | undefined {
+  return resolveSlackPlaceWithMembership(snapshot, channelId, teamId, {
+    requireBotMembership: true,
+  });
+}
+
+function resolveSlackPlaceIgnoringBotMembership(
+  snapshot: BekSnapshot,
+  channelId: string,
+  teamId?: string | undefined,
+): PlaceScope | undefined {
+  return resolveSlackPlaceWithMembership(snapshot, channelId, teamId, {
+    requireBotMembership: false,
+  });
+}
+
+function resolveSlackPlaceWithMembership(
+  snapshot: BekSnapshot,
+  channelId: string,
+  teamId: string | undefined,
+  input: { requireBotMembership: boolean },
+): PlaceScope | undefined {
   return snapshot.places.find(
     (candidate) =>
       candidate.kind === "slack_channel" &&
       candidate.provider === "slack" &&
       candidate.externalId === channelId &&
-      slackPlaceAcceptsTeam(snapshot, candidate, teamId),
+      slackPlaceAcceptsTeam(snapshot, candidate, teamId, input),
   );
 }
 
@@ -2608,7 +2876,15 @@ function slackPlaceAcceptsTeam(
   snapshot: BekSnapshot,
   place: PlaceScope,
   teamId?: string | undefined,
+  input: { requireBotMembership?: boolean } = {},
 ): boolean {
+  if (
+    input.requireBotMembership !== false &&
+    booleanMetadata(place.metadata, "botIsMember") === false
+  ) {
+    return false;
+  }
+
   const placeTeamId =
     stringMetadata(place.metadata, "teamId") ??
     stringMetadata(place.metadata, "slackTeamId");
@@ -2636,6 +2912,45 @@ function slackPlaceAcceptsTeam(
       (install) => install.status === "active" && install.externalId === teamId,
     ),
   );
+}
+
+function slackChannelJoinedMetadata(
+  metadata: Record<string, unknown> | undefined,
+  event: NormalizedSlackInteraction,
+  now: string,
+): Record<string, unknown> {
+  const {
+    botLeftAt: _botLeftAt,
+    botLeftReason: _botLeftReason,
+    botLeftUserId: _botLeftUserId,
+    ...rest
+  } = metadata ?? {};
+  return {
+    ...rest,
+    ...(event.teamId ? { teamId: event.teamId } : {}),
+    ...(event.channelType ? { channelType: event.channelType } : {}),
+    ...(event.userId
+      ? { joinedUserId: event.userId, botJoinedUserId: event.userId }
+      : {}),
+    botIsMember: true,
+    botJoinedAt: now,
+  };
+}
+
+function slackChannelLeftMetadata(
+  metadata: Record<string, unknown> | undefined,
+  event: NormalizedSlackInteraction,
+  now: string,
+): Record<string, unknown> {
+  return {
+    ...(metadata ?? {}),
+    ...(event.teamId ? { teamId: event.teamId } : {}),
+    ...(event.channelType ? { channelType: event.channelType } : {}),
+    ...(event.userId ? { botLeftUserId: event.userId } : {}),
+    botIsMember: false,
+    botLeftAt: now,
+    botLeftReason: "slack_channel_left",
+  };
 }
 
 function publicSnapshot(snapshot: BekSnapshot): PublicBekSnapshot {
@@ -3331,6 +3646,19 @@ function activeSlackInstallForTeam(
   );
 }
 
+function slackConnectorInstallForTeam(
+  snapshot: BekSnapshot,
+  teamId: string,
+): ConnectorInstall | undefined {
+  return snapshot.connectorInstalls.find(
+    (install) =>
+      install.kind === "slack" &&
+      install.provider === "slack" &&
+      (install.externalId === teamId ||
+        stringMetadata(install.metadata, "teamId") === teamId),
+  );
+}
+
 function slackChannelDisplayName(event: NormalizedSlackInteraction): string {
   const name = event.channelName?.trim();
   if (name) {
@@ -3419,6 +3747,14 @@ function arrayMetadata(
   return Array.isArray(value)
     ? value.filter((entry): entry is string => typeof entry === "string")
     : [];
+}
+
+function booleanMetadata(
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): boolean | undefined {
+  const value = metadata?.[key];
+  return typeof value === "boolean" ? value : undefined;
 }
 
 const defaultSlackBotScopes = [
