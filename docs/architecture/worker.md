@@ -167,6 +167,10 @@ GET  /api/outbound/slack
 POST /api/outbound/slack/drain
 ```
 
+The `GET` endpoint returns summary rows by default so dashboards do not expose
+rendered Slack payloads. Operators can request `?include=details` during
+debugging to include redacted target/payload records.
+
 `BEK_SLACK_BACKGROUND_DRAIN=false` disables the best-effort local background
 drain. In that mode, callbacks still persist the outbox entry, and operators can
 drain it explicitly. The current outbox protects Slack callback budgets and

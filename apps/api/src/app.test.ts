@@ -3389,16 +3389,34 @@ describe("Bek API", () => {
       runId: expect.any(String),
     });
     expect(slackClient.postMessageCalls).toHaveLength(0);
-    await expect(expectJson(app, "/api/outbound/slack")).resolves.toMatchObject(
-      {
-        deliveries: [
-          expect.objectContaining({
-            status: "queued",
-            kind: "slack.run_outcome",
-          }),
-        ],
-      },
+    const outbox = await expectJson<{
+      deliveries: Array<Record<string, unknown>>;
+    }>(app, "/api/outbound/slack");
+    expect(outbox).toMatchObject({
+      deliveries: [
+        expect.objectContaining({
+          status: "queued",
+          kind: "slack.run_outcome",
+          attempts: 0,
+          maxAttempts: expect.any(Number),
+        }),
+      ],
+    });
+    expect(outbox.deliveries[0]).not.toHaveProperty("payload");
+    expect(outbox.deliveries[0]).not.toHaveProperty("target");
+    expect(JSON.stringify(outbox)).not.toContain(
+      "@bek do not wait on Slack posting",
     );
+    await expect(
+      expectJson(app, "/api/outbound/slack?include=details"),
+    ).resolves.toMatchObject({
+      deliveries: [
+        {
+          payload: expect.any(Object),
+          target: expect.any(Object),
+        },
+      ],
+    });
   });
 
   it("posts worker completion output for Slack-created runs", async () => {

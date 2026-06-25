@@ -65,8 +65,9 @@ the current OSS spine.
       the Slack user to a Bek principal, and posts the decision/final answer.
 - [ ] Confirm Slack callbacks return after durable ingress/run/outbound state is
       persisted, before Slack Web API posting. Use `GET /api/outbound/slack` to
-      inspect queued deliveries and `POST /api/outbound/slack/drain` to retry
-      them manually.
+      inspect queued delivery summaries and `POST /api/outbound/slack/drain` to
+      retry them manually. Use `GET /api/outbound/slack?include=details` only
+      for explicit operator debugging.
 - [ ] In `BEK_RUN_ADVANCEMENT=worker_local` mode, use `POST /api/worker/drain`
       to process queued run work; the endpoint also queues Slack follow-up
       messages for completed/paused runs and drains the Slack outbox.

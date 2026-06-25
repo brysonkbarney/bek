@@ -137,6 +137,9 @@ revocation workflows, or persistent Slack user/principal mapping.
    sanitized delivery diagnostics on the run timeline. `POST /api/worker/drain`
    also drains local worker work, queues any resulting Slack follow-up messages,
    and drains the Slack outbox for local/self-hosted operation.
+   `GET /api/outbound/slack` returns delivery summaries by default; add
+   `?include=details` only when an operator intentionally needs rendered Slack
+   target/payload debugging.
 
 10. Configure slash commands and interactivity:
 

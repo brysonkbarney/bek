@@ -149,6 +149,10 @@ curl -s -X POST http://localhost:4317/api/outbound/slack/drain \
   -d '{"limit":25}'
 ```
 
+The outbox `GET` route returns delivery summaries by default. Use
+`/api/outbound/slack?include=details` only for deliberate debugging of redacted
+Slack target and payload records.
+
 Redrive a dead letter after inspecting `GET /api/worker/queue`:
 
 ```bash

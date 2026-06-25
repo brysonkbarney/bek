@@ -88,6 +88,13 @@ type PublicBekSnapshot = Omit<
   BekSnapshot,
   "ingressDeliveries" | "outboundDeliveries"
 >;
+type PublicOutboundDelivery = Omit<
+  OutboundDelivery,
+  "orgId" | "key" | "target" | "payload"
+> & {
+  target?: Record<string, unknown> | undefined;
+  payload?: Record<string, unknown> | undefined;
+};
 type ReadinessStepResult =
   | {
       ok: true;
@@ -1049,13 +1056,17 @@ export function createApp(
       queue: workerController.read(),
     }),
   );
-  app.get("/api/outbound/slack", (c) =>
-    c.json({
+  app.get("/api/outbound/slack", (c) => {
+    const includeDetails = c.req.query("include") === "details";
+    return c.json({
       deliveries: store
         .read()
-        .outboundDeliveries.filter((delivery) => delivery.provider === "slack"),
-    }),
-  );
+        .outboundDeliveries.filter((delivery) => delivery.provider === "slack")
+        .map((delivery) =>
+          publicOutboundDelivery(delivery, { includeDetails }),
+        ),
+    });
+  });
   app.post("/api/outbound/slack/drain", async (c) => {
     const body = drainOutboundSchema.parse(
       await c.req.json().catch(() => ({})),
@@ -2229,6 +2240,44 @@ function publicRunEvent(event: RunEvent): RunEvent {
     publicEvent.data = redactUnknown(event.data) as Record<string, unknown>;
   }
   return publicEvent;
+}
+
+function publicOutboundDelivery(
+  delivery: OutboundDelivery,
+  input: { includeDetails?: boolean | undefined } = {},
+): PublicOutboundDelivery {
+  const publicDelivery: PublicOutboundDelivery = {
+    id: delivery.id,
+    provider: delivery.provider,
+    kind: delivery.kind,
+    status: delivery.status,
+    attempts: delivery.attempts,
+    maxAttempts: delivery.maxAttempts,
+    createdAt: delivery.createdAt,
+    updatedAt: delivery.updatedAt,
+  };
+  assignDefined(publicDelivery, "runId", delivery.runId);
+  assignDefined(publicDelivery, "approvalId", delivery.approvalId);
+  assignDefined(
+    publicDelivery,
+    "lastError",
+    delivery.lastError ? redactSecrets(delivery.lastError) : undefined,
+  );
+  assignDefined(publicDelivery, "nextAttemptAt", delivery.nextAttemptAt);
+  assignDefined(publicDelivery, "deliveredAt", delivery.deliveredAt);
+
+  if (input.includeDetails) {
+    const target = publicMetadataRecord(delivery.target);
+    if (target) {
+      publicDelivery.target = target;
+    }
+    publicDelivery.payload = redactUnknown(delivery.payload) as Record<
+      string,
+      unknown
+    >;
+  }
+
+  return publicDelivery;
 }
 
 function publicConnectorInstall(install: ConnectorInstall): ConnectorInstall {
