@@ -441,6 +441,20 @@ test("loads the admin overview and navigates representative routes", async ({
     }),
   ).toBeVisible();
   await expect(page.getByText("Checkout Engineering")).toBeVisible();
+  await page.getByRole("link", { name: "Details" }).click();
+  await expect(page.locator("h1")).toHaveText("Checkout Engineering");
+  await expect(page.getByLabel("Bundle name")).toHaveValue(
+    "Checkout Engineering",
+  );
+  await expect(
+    page.locator(".grant-editor").getByLabel("Resource"),
+  ).toHaveValue("github:redohq/checkout");
+  await expect(page.getByRole("button", { name: "Save Bundle" })).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: "Delete github.pr grant for github:redohq/checkout",
+    }),
+  ).toBeVisible();
 
   await nav.getByRole("link", { name: "Runs", exact: true }).click();
   await expect(

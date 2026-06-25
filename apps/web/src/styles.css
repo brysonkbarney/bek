@@ -458,6 +458,28 @@ h2 {
   background: #edf8f0;
 }
 
+.attached-chip {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+}
+
+.chip-action {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid #cfe0d6;
+  border-radius: 999px;
+  background: white;
+  color: #17613f;
+}
+
+.chip-action:hover:not(:disabled) {
+  border-color: #8ec6a4;
+  background: #edf8f0;
+}
+
 .bundle-list {
   display: grid;
   gap: 10px;
@@ -1002,6 +1024,41 @@ select {
 .grant span,
 .grant strong {
   overflow-wrap: anywhere;
+}
+
+.grant-editor {
+  gap: 9px;
+}
+
+.grant-editor label {
+  display: grid;
+  gap: 5px;
+  color: #64756f;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.grant-editor input,
+.grant-editor select {
+  width: 100%;
+}
+
+.grant-editor .checkbox-field {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  align-items: center;
+}
+
+.checkbox-field input {
+  width: auto;
+}
+
+.grant-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
 }
 
 .icon-button {

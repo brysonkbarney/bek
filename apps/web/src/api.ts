@@ -792,6 +792,20 @@ export async function createAccessBundle(input: {
   });
 }
 
+export async function updateAccessBundle(input: {
+  bundleId: string;
+  name?: string;
+  description?: string;
+  budgetPolicyId?: string;
+}): Promise<AccessBundle> {
+  const { bundleId, ...body } = input;
+  return jsonRequest<AccessBundle>(`/api/access-bundles/${bundleId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+    headers: { "content-type": "application/json" },
+  });
+}
+
 export async function attachBundleToPlace(input: {
   bundleId: string;
   placeId: string;
@@ -803,6 +817,16 @@ export async function attachBundleToPlace(input: {
       body: JSON.stringify({ placeId: input.placeId }),
       headers: { "content-type": "application/json" },
     },
+  );
+}
+
+export async function detachBundleFromPlace(input: {
+  bundleId: string;
+  placeId: string;
+}): Promise<AccessBundle> {
+  return jsonRequest<AccessBundle>(
+    `/api/access-bundles/${input.bundleId}/places/${input.placeId}`,
+    { method: "DELETE" },
   );
 }
 
@@ -822,6 +846,36 @@ export async function createGrant(input: {
       body: JSON.stringify(body),
       headers: { "content-type": "application/json" },
     },
+  );
+}
+
+export async function updateGrant(input: {
+  bundleId: string;
+  grantId: string;
+  capability?: string;
+  resource?: string;
+  decision?: "allow" | "ask" | "deny";
+  risk?: string;
+  requiresApproval?: boolean;
+}): Promise<CapabilityGrant> {
+  const { bundleId, grantId, ...body } = input;
+  return jsonRequest<CapabilityGrant>(
+    `/api/access-bundles/${bundleId}/grants/${grantId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    },
+  );
+}
+
+export async function deleteGrant(input: {
+  bundleId: string;
+  grantId: string;
+}): Promise<CapabilityGrant> {
+  return jsonRequest<CapabilityGrant>(
+    `/api/access-bundles/${input.bundleId}/grants/${input.grantId}`,
+    { method: "DELETE" },
   );
 }
 

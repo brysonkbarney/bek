@@ -14,9 +14,12 @@ import {
   Plus,
   RefreshCw,
   Route,
+  Save,
   Server,
   ShieldCheck,
   Slack,
+  Trash2,
+  Unlink,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
@@ -24,7 +27,9 @@ import {
   createAccessBundle,
   createChannel,
   createGrant,
+  deleteGrant,
   decideApproval,
+  detachBundleFromPlace,
   discoverSlackChannels,
   fetchBootstrap,
   fetchGitHubSetup,
@@ -35,11 +40,14 @@ import {
   hasBuildTimeAdminToken,
   hasStoredAdminToken,
   linkPrincipalExternalIdentity,
+  updateAccessBundle,
+  updateGrant,
   updateModelPolicy,
   updateChannel,
   type AccessBundle,
   type ApprovalRequest,
   type Bootstrap,
+  type CapabilityGrant,
   type DiscoveredSlackChannel,
   type GitHubSetupPreview,
   type ModelPolicy,
@@ -850,11 +858,19 @@ function AccessBundleEditor({
   bundle: AccessBundle;
 }) {
   const queryClient = useQueryClient();
+  const [bundleName, setBundleName] = useState(bundle.name);
+  const [bundleDescription, setBundleDescription] = useState(
+    bundle.description,
+  );
   const [capability, setCapability] = useState("github.read");
   const [resource, setResource] = useState("github:redohq/checkout");
   const [decision, setDecision] = useState<"allow" | "ask" | "deny">("allow");
   const [risk, setRisk] = useState("read_internal");
   const [placeId, setPlaceId] = useState("");
+  const updateBundleMutation = useMutation({
+    mutationFn: updateAccessBundle,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["bootstrap"] }),
+  });
   const createGrantMutation = useMutation({
     mutationFn: createGrant,
     onSuccess: () => {
@@ -869,6 +885,14 @@ function AccessBundleEditor({
       return queryClient.invalidateQueries({ queryKey: ["bootstrap"] });
     },
   });
+  const detachMutation = useMutation({
+    mutationFn: detachBundleFromPlace,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["bootstrap"] }),
+  });
+  useEffect(() => {
+    setBundleName(bundle.name);
+    setBundleDescription(bundle.description);
+  }, [bundle.name, bundle.description]);
   const grouped = grantsByDecision(bundle.grants);
   const attachedPlaces = data.places.filter((place) =>
     bundle.attachedPlaceIds.includes(place.id),
@@ -877,6 +901,16 @@ function AccessBundleEditor({
     (place) => !bundle.attachedPlaceIds.includes(place.id),
   );
   const trimmedResource = resource.trim();
+  const trimmedBundleName = bundleName.trim();
+  const trimmedBundleDescription = bundleDescription.trim();
+  const bundleChanged =
+    trimmedBundleName !== bundle.name ||
+    trimmedBundleDescription !== bundle.description;
+  const canSaveBundle =
+    bundleChanged &&
+    trimmedBundleName.length > 0 &&
+    trimmedBundleDescription.length > 0 &&
+    !updateBundleMutation.isPending;
   const canAttach = placeId.length > 0 && !attachMutation.isPending;
   const canAddGrant =
     trimmedResource.length > 0 && !createGrantMutation.isPending;
@@ -884,6 +918,17 @@ function AccessBundleEditor({
   return (
     <Panel title={bundle.name}>
       <p className="muted">{bundle.description}</p>
+      {updateBundleMutation.isError ? (
+        <WarningCallout>
+          {errorMessage(
+            updateBundleMutation.error,
+            "Bek could not save this access bundle.",
+          )}
+        </WarningCallout>
+      ) : null}
+      {updateBundleMutation.isSuccess ? (
+        <SuccessCallout>Access bundle saved.</SuccessCallout>
+      ) : null}
       {attachMutation.isError ? (
         <WarningCallout>
           {errorMessage(
@@ -894,6 +939,17 @@ function AccessBundleEditor({
       ) : null}
       {attachMutation.isSuccess ? (
         <SuccessCallout>Place attached to this bundle.</SuccessCallout>
+      ) : null}
+      {detachMutation.isError ? (
+        <WarningCallout>
+          {errorMessage(
+            detachMutation.error,
+            "Bek could not detach that place.",
+          )}
+        </WarningCallout>
+      ) : null}
+      {detachMutation.isSuccess ? (
+        <SuccessCallout>Place detached from this bundle.</SuccessCallout>
       ) : null}
       {createGrantMutation.isError ? (
         <WarningCallout>
@@ -906,20 +962,80 @@ function AccessBundleEditor({
       {createGrantMutation.isSuccess ? (
         <SuccessCallout>Grant added to this bundle.</SuccessCallout>
       ) : null}
+      <form
+        className="settings-grid compact-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!canSaveBundle) return;
+          updateBundleMutation.mutate({
+            bundleId: bundle.id,
+            name: trimmedBundleName,
+            description: trimmedBundleDescription,
+          });
+        }}
+      >
+        <label>
+          Bundle name
+          <input
+            value={bundleName}
+            required
+            onChange={(event) => setBundleName(event.target.value)}
+          />
+        </label>
+        <label>
+          Description
+          <input
+            value={bundleDescription}
+            required
+            onChange={(event) => setBundleDescription(event.target.value)}
+          />
+        </label>
+        <div className="form-actions">
+          <button
+            className="primary"
+            disabled={!canSaveBundle}
+            aria-busy={updateBundleMutation.isPending}
+          >
+            <Save size={16} aria-hidden="true" />
+            {updateBundleMutation.isPending ? "Saving..." : "Save Bundle"}
+          </button>
+        </div>
+      </form>
       <div className="chips">
         {attachedPlaces.length === 0 ? (
           <span className="chip warning-chip">No place attached</span>
         ) : (
-          attachedPlaces.map((place) => (
-            <Link
-              to="/channels/$channelId"
-              params={{ channelId: place.id }}
-              className="chip chip-link"
-              key={place.id}
-            >
-              {place.name}
-            </Link>
-          ))
+          attachedPlaces.map((place) => {
+            const detachPending =
+              detachMutation.isPending &&
+              detachMutation.variables?.placeId === place.id;
+            return (
+              <span className="chip attached-chip" key={place.id}>
+                <Link
+                  to="/channels/$channelId"
+                  params={{ channelId: place.id }}
+                  className="chip-link"
+                >
+                  {place.name}
+                </Link>
+                <button
+                  type="button"
+                  className="chip-action"
+                  disabled={detachMutation.isPending}
+                  aria-label={`Detach ${place.name}`}
+                  aria-busy={detachPending}
+                  onClick={() =>
+                    detachMutation.mutate({
+                      bundleId: bundle.id,
+                      placeId: place.id,
+                    })
+                  }
+                >
+                  <Unlink size={13} aria-hidden="true" />
+                </button>
+              </span>
+            );
+          })
         )}
       </div>
       <div className="settings-grid compact-form">
@@ -1036,16 +1152,177 @@ function AccessBundleEditor({
               <span className="muted">No grants</span>
             ) : null}
             {grouped[decision].map((grant) => (
-              <div className="grant" key={grant.id}>
-                <strong>{grant.capability}</strong>
-                <span>{grant.resource}</span>
-                <RiskBadge value={grant.risk} />
-              </div>
+              <GrantEditorRow
+                bundleId={bundle.id}
+                grant={grant}
+                key={grant.id}
+              />
             ))}
           </div>
         ))}
       </div>
     </Panel>
+  );
+}
+
+function GrantEditorRow({
+  bundleId,
+  grant,
+}: {
+  bundleId: string;
+  grant: CapabilityGrant;
+}) {
+  const queryClient = useQueryClient();
+  const [capability, setCapability] = useState(grant.capability);
+  const [resource, setResource] = useState(grant.resource);
+  const [decision, setDecision] = useState<CapabilityGrant["decision"]>(
+    grant.decision,
+  );
+  const [risk, setRisk] = useState(grant.risk);
+  const [requiresApproval, setRequiresApproval] = useState(
+    grant.requiresApproval,
+  );
+  const updateMutation = useMutation({
+    mutationFn: updateGrant,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["bootstrap"] }),
+  });
+  const deleteMutation = useMutation({
+    mutationFn: deleteGrant,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["bootstrap"] }),
+  });
+
+  useEffect(() => {
+    setCapability(grant.capability);
+    setResource(grant.resource);
+    setDecision(grant.decision);
+    setRisk(grant.risk);
+    setRequiresApproval(grant.requiresApproval);
+  }, [grant]);
+
+  const trimmedResource = resource.trim();
+  const changed =
+    capability !== grant.capability ||
+    trimmedResource !== grant.resource ||
+    decision !== grant.decision ||
+    risk !== grant.risk ||
+    requiresApproval !== grant.requiresApproval;
+  const canSave =
+    changed && trimmedResource.length > 0 && !updateMutation.isPending;
+  const controlsDisabled = updateMutation.isPending || deleteMutation.isPending;
+
+  return (
+    <form
+      className="grant grant-editor"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!canSave) return;
+        updateMutation.mutate({
+          bundleId,
+          grantId: grant.id,
+          capability,
+          resource: trimmedResource,
+          decision,
+          risk,
+          requiresApproval,
+        });
+      }}
+    >
+      {updateMutation.isError ? (
+        <WarningCallout>
+          {errorMessage(updateMutation.error, "Bek could not save this grant.")}
+        </WarningCallout>
+      ) : null}
+      {deleteMutation.isError ? (
+        <WarningCallout>
+          {errorMessage(
+            deleteMutation.error,
+            "Bek could not delete this grant.",
+          )}
+        </WarningCallout>
+      ) : null}
+      <label>
+        Capability
+        <select
+          value={capability}
+          disabled={controlsDisabled}
+          onChange={(event) => setCapability(event.target.value)}
+        >
+          <option value="slack.read">slack.read</option>
+          <option value="github.read">github.read</option>
+          <option value="github.branch">github.branch</option>
+          <option value="github.pr">github.pr</option>
+          <option value="mcp.tool">mcp.tool</option>
+          <option value="sandbox.exec">sandbox.exec</option>
+          <option value="model.call">model.call</option>
+        </select>
+      </label>
+      <label>
+        Resource
+        <input
+          value={resource}
+          disabled={controlsDisabled}
+          required
+          onChange={(event) => setResource(event.target.value)}
+        />
+      </label>
+      <label>
+        Decision
+        <select
+          value={decision}
+          disabled={controlsDisabled}
+          onChange={(event) =>
+            setDecision(event.target.value as CapabilityGrant["decision"])
+          }
+        >
+          <option value="allow">allow</option>
+          <option value="ask">ask</option>
+          <option value="deny">deny</option>
+        </select>
+      </label>
+      <label>
+        Risk
+        <select
+          value={risk}
+          disabled={controlsDisabled}
+          onChange={(event) => setRisk(event.target.value)}
+        >
+          <option value="read_internal">read_internal</option>
+          <option value="write_draft">write_draft</option>
+          <option value="write_external">write_external</option>
+          <option value="privileged">privileged</option>
+        </select>
+      </label>
+      <label className="checkbox-field">
+        <input
+          type="checkbox"
+          checked={requiresApproval}
+          disabled={controlsDisabled}
+          onChange={(event) => setRequiresApproval(event.target.checked)}
+        />
+        Requires approval
+      </label>
+      <RiskBadge value={risk} />
+      <div className="grant-actions">
+        <button
+          className="secondary"
+          disabled={!canSave}
+          aria-busy={updateMutation.isPending}
+        >
+          <Save size={15} aria-hidden="true" />
+          {updateMutation.isPending ? "Saving..." : "Save"}
+        </button>
+        <button
+          type="button"
+          className="icon-button danger"
+          disabled={deleteMutation.isPending}
+          aria-label={`Delete ${grant.capability} grant for ${grant.resource}`}
+          aria-busy={deleteMutation.isPending}
+          onClick={() => deleteMutation.mutate({ bundleId, grantId: grant.id })}
+        >
+          <Trash2 size={15} aria-hidden="true" />
+        </button>
+      </div>
+    </form>
   );
 }
 

@@ -4,6 +4,8 @@ import {
   cancelRunPath,
   clearAdminApiToken,
   decideApproval,
+  deleteGrant,
+  detachBundleFromPlace,
   drainSlackOutbox,
   discoverSlackChannels,
   fetchBootstrap,
@@ -21,6 +23,8 @@ import {
   slackChannelDiscoveryPath,
   slackInstallStartPath,
   slackOutboxPath,
+  updateAccessBundle,
+  updateGrant,
 } from "./api";
 
 describe("web API helpers", () => {
@@ -338,6 +342,116 @@ describe("web API helpers", () => {
       preview,
     );
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("mutates access bundle places and grants with admin auth", async () => {
+    const storage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveAdminApiToken("runtime-token");
+    const bundle = {
+      id: "bundle_checkout",
+      name: "Checkout",
+      description: "Checkout access",
+      attachedPlaceIds: ["place_checkout"],
+      budgetPolicyId: "budget_checkout",
+      grants: [],
+    };
+    const grant = {
+      id: "grant_checkout_pr",
+      capability: "github.pr",
+      resource: "github:redohq/checkout",
+      decision: "ask" as const,
+      risk: "write_external",
+      requiresApproval: true,
+    };
+    const calls: Array<{
+      path: string;
+      method: string;
+      body: unknown;
+      authorization: string | undefined;
+    }> = [];
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      const url = new URL(String(input));
+      calls.push({
+        path: `${url.pathname}${url.search}`,
+        method: init?.method ?? "GET",
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+        authorization:
+          init?.headers instanceof Headers
+            ? (init.headers.get("authorization") ?? undefined)
+            : (init?.headers as Record<string, string> | undefined)
+                ?.authorization,
+      });
+      const body = url.pathname.includes("/grants/") ? grant : bundle;
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      updateAccessBundle({
+        bundleId: "bundle_checkout",
+        name: "Checkout",
+        description: "Checkout access",
+      }),
+    ).resolves.toEqual(bundle);
+    await expect(
+      detachBundleFromPlace({
+        bundleId: "bundle_checkout",
+        placeId: "place_general",
+      }),
+    ).resolves.toEqual(bundle);
+    await expect(
+      updateGrant({
+        bundleId: "bundle_checkout",
+        grantId: "grant_checkout_pr",
+        decision: "deny",
+        requiresApproval: false,
+      }),
+    ).resolves.toEqual(grant);
+    await expect(
+      deleteGrant({
+        bundleId: "bundle_checkout",
+        grantId: "grant_checkout_pr",
+      }),
+    ).resolves.toEqual(grant);
+
+    expect(calls).toEqual([
+      {
+        path: "/api/access-bundles/bundle_checkout",
+        method: "PATCH",
+        body: {
+          name: "Checkout",
+          description: "Checkout access",
+        },
+        authorization: "Bearer runtime-token",
+      },
+      {
+        path: "/api/access-bundles/bundle_checkout/places/place_general",
+        method: "DELETE",
+        body: null,
+        authorization: "Bearer runtime-token",
+      },
+      {
+        path: "/api/access-bundles/bundle_checkout/grants/grant_checkout_pr",
+        method: "PATCH",
+        body: {
+          decision: "deny",
+          requiresApproval: false,
+        },
+        authorization: "Bearer runtime-token",
+      },
+      {
+        path: "/api/access-bundles/bundle_checkout/grants/grant_checkout_pr",
+        method: "DELETE",
+        body: null,
+        authorization: "Bearer runtime-token",
+      },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it("fetches model usage totals with admin auth", async () => {
