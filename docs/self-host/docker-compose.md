@@ -36,10 +36,11 @@ openssl rand -hex 32 # use for GITHUB_APP_WEBHOOK_SECRET
 Set `BEK_ADMIN_API_TOKEN` to the generated value for a trusted self-hosted admin
 console. The web console prompts for that token at runtime and stores it in the
 browser session unless an operator explicitly chooses to remember it. Production
-web builds reject embedded admin tokens. Set `BEK_CREDENTIAL_MASTER_KEY` before
-Slack OAuth exchange if you want Bek to store the returned bot token in the
-local encrypted vault; keep that key stable across container restarts, database
-restores, and host migrations.
+readiness fails if the Docker placeholder is still configured or if the token is
+too short. Production web builds reject embedded admin tokens. Set
+`BEK_CREDENTIAL_MASTER_KEY` before Slack OAuth exchange if you want Bek to store
+the returned bot token in the local encrypted vault; keep that key stable across
+container restarts, database restores, and host migrations.
 
 The Docker template uses Compose service hostnames:
 

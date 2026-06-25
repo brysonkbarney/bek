@@ -202,7 +202,7 @@ export function createApp(
       return;
     }
 
-    const token = process.env.BEK_ADMIN_API_TOKEN;
+    const token = process.env.BEK_ADMIN_API_TOKEN?.trim();
     if (!token) {
       if (!allowsUnauthenticatedLocalAdminApi()) {
         return c.json(
@@ -217,6 +217,10 @@ export function createApp(
       }
       await next();
       return;
+    }
+    const unsafeTokenReason = unsafeAdminApiTokenReason(token);
+    if (unsafeTokenReason) {
+      return c.json({ error: unsafeTokenReason }, 500);
     }
     if (!isExpectedBearerToken(c.req.header("authorization"), token)) {
       return c.json({ error: "Unauthorized" }, 401);
@@ -677,6 +681,7 @@ export function createApp(
     await recordReadinessStep(checks, "modelUsage", () =>
       workerController.flushModelUsageChanges(),
     );
+    await recordReadinessStep(checks, "adminAuth", checkAdminAuthReadiness);
     if (options.readinessCheck) {
       await recordReadinessStep(checks, "persistence", options.readinessCheck);
     } else {
@@ -3332,6 +3337,50 @@ function isExpectedBearerToken(
     return false;
   }
   return timingSafeEqual(suppliedBuffer, expectedBuffer);
+}
+
+const unsafeProductionAdminTokens = new Set([
+  "change-me-local-only",
+  "change-me",
+  "changeme",
+  "admin",
+  "password",
+  "test-admin-token",
+]);
+
+function checkAdminAuthReadiness(): Record<string, unknown> {
+  const token = process.env.BEK_ADMIN_API_TOKEN?.trim();
+  if (!token) {
+    if (allowsUnauthenticatedLocalAdminApi()) {
+      return { mode: "local_bypass" };
+    }
+    throw new Error("BEK_ADMIN_API_TOKEN is required for admin API routes.");
+  }
+  const unsafeReason = unsafeAdminApiTokenReason(token);
+  if (unsafeReason) {
+    throw new Error(unsafeReason);
+  }
+  return {
+    mode: "bearer_token",
+    production: process.env.NODE_ENV === "production",
+  };
+}
+
+function unsafeAdminApiTokenReason(token: string): string | undefined {
+  if (process.env.NODE_ENV !== "production") {
+    return undefined;
+  }
+  const normalized = token.trim().toLowerCase();
+  if (
+    unsafeProductionAdminTokens.has(normalized) ||
+    normalized.includes("change-me")
+  ) {
+    return "BEK_ADMIN_API_TOKEN must be replaced with a generated secret before production use.";
+  }
+  if (token.trim().length < 32) {
+    return "BEK_ADMIN_API_TOKEN must be at least 32 characters in production.";
+  }
+  return undefined;
 }
 
 function isPublicApiCallback(path: string): boolean {

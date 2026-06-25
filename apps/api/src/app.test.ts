@@ -46,6 +46,7 @@ const managedEnvKeys = [
   "SLACK_REDIRECT_URI",
   "SLACK_SIGNING_SECRET",
   "SLACK_STATE_SECRET",
+  "NODE_ENV",
 ] as const;
 
 const originalEnv: Partial<Record<(typeof managedEnvKeys)[number], string>> =
@@ -268,6 +269,41 @@ describe("Bek API", () => {
         process.env.BEK_ADMIN_API_TOKEN = previousToken;
       }
     }
+  });
+
+  it("rejects placeholder admin tokens in production admin routes", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.BEK_ADMIN_API_TOKEN = "change-me-local-only";
+    process.env.BEK_REQUIRE_ADMIN_AUTH = "true";
+    process.env.BEK_ALLOW_UNAUTHENTICATED_LOCAL = "false";
+
+    const res = await createApp().request("/api/bootstrap", {
+      headers: { authorization: "Bearer change-me-local-only" },
+    });
+
+    expect(res.status).toBe(500);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringContaining("generated secret"),
+    });
+  });
+
+  it("fails readiness for unsafe production admin tokens", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.BEK_ADMIN_API_TOKEN = "change-me-local-only";
+    process.env.BEK_REQUIRE_ADMIN_AUTH = "true";
+
+    const res = await createApp().request("/ready");
+
+    expect(res.status).toBe(503);
+    const json = (await res.json()) as {
+      ok: boolean;
+      checks: { adminAuth: { ok: boolean; error: string } };
+    };
+    expect(json.ok).toBe(false);
+    expect(json.checks.adminAuth).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("generated secret"),
+    });
   });
 
   it("keeps Slack callbacks public when admin auth is configured", async () => {
