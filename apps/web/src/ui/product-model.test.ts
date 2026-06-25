@@ -54,7 +54,7 @@ describe("admin product helpers", () => {
   it("turns setup status into actionable checklist progress", () => {
     const checklist = setupChecklistFromStatus(readySetup);
     const operations = setupOperationsFromStatus(readySetup, {
-      adminAuthDetail: "Using a browser-stored admin token.",
+      adminAuthDetail: "Using a browser-entered admin token.",
       adminAuthenticated: true,
     });
 
@@ -70,7 +70,7 @@ describe("admin product helpers", () => {
     });
     expect(operations.find((step) => step.id === "admin-auth")).toMatchObject({
       complete: true,
-      detail: "Using a browser-stored admin token.",
+      detail: "Using a browser-entered admin token.",
       primaryAction: { route: "/settings" },
     });
     expect(operations.find((step) => step.id === "github-preview")).toEqual(

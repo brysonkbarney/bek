@@ -122,9 +122,9 @@ export function SetupPage() {
     return <div className="state error">Bek API is not reachable.</div>;
 
   const adminAuthDetail = hasBuildTimeAdminToken()
-    ? "Using a build-time admin token."
+    ? "Using a local dev admin token."
     : hasStoredAdminToken()
-      ? "Using a browser-stored admin token."
+      ? "Using a browser-entered admin token."
       : "Admin API accepted this session.";
   const operations = setupOperationsFromStatus(setupStatus, {
     adminAuthDetail,

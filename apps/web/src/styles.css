@@ -265,6 +265,18 @@ h2 {
   background: white;
 }
 
+.auth-form .checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+}
+
+.auth-form .checkbox-row input {
+  min-height: auto;
+  width: auto;
+}
+
 .metrics,
 .grid,
 .settings-grid,

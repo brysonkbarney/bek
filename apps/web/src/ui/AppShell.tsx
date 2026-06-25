@@ -15,6 +15,7 @@ import { navigationItems } from "./product-model";
 export function AppShell() {
   const queryClient = useQueryClient();
   const [tokenInput, setTokenInput] = useState("");
+  const [rememberToken, setRememberToken] = useState(false);
   const [tokenVersion, setTokenVersion] = useState(0);
   const bootstrapQuery = useQuery({
     queryKey: ["bootstrap"],
@@ -82,9 +83,11 @@ export function AppShell() {
         {authRequired ? (
           <AdminUnlock
             tokenInput={tokenInput}
+            rememberToken={rememberToken}
             onTokenInput={setTokenInput}
+            onRememberToken={setRememberToken}
             onUnlock={() => {
-              saveAdminApiToken(tokenInput);
+              saveAdminApiToken(tokenInput, { persist: rememberToken });
               setTokenInput("");
               refreshAuthState();
             }}
@@ -105,11 +108,15 @@ export function AppShell() {
 
 function AdminUnlock({
   tokenInput,
+  rememberToken,
   onTokenInput,
+  onRememberToken,
   onUnlock,
 }: {
   tokenInput: string;
+  rememberToken: boolean;
   onTokenInput: (value: string) => void;
+  onRememberToken: (value: boolean) => void;
   onUnlock: () => void;
 }) {
   const canUnlock = tokenInput.trim().length > 0;
@@ -135,6 +142,14 @@ function AdminUnlock({
               onChange={(event) => onTokenInput(event.target.value)}
               autoComplete="current-password"
             />
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={rememberToken}
+              onChange={(event) => onRememberToken(event.target.checked)}
+            />
+            Remember on this browser
           </label>
           <button className="primary" disabled={!canUnlock}>
             Unlock Admin API

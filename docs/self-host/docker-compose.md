@@ -34,11 +34,12 @@ openssl rand -hex 32 # use for GITHUB_APP_WEBHOOK_SECRET
 ```
 
 Set `BEK_ADMIN_API_TOKEN` to the generated value for a trusted self-hosted admin
-console. The web console prompts for that token at runtime. Only set
-`VITE_BEK_ADMIN_API_TOKEN` for a trusted local bundle because Vite embeds it at
-build time. Set `BEK_CREDENTIAL_MASTER_KEY` before Slack OAuth exchange if you
-want Bek to store the returned bot token in the local encrypted vault; keep that
-key stable across container restarts, database restores, and host migrations.
+console. The web console prompts for that token at runtime and stores it in the
+browser session unless an operator explicitly chooses to remember it. Production
+web builds reject embedded admin tokens. Set `BEK_CREDENTIAL_MASTER_KEY` before
+Slack OAuth exchange if you want Bek to store the returned bot token in the
+local encrypted vault; keep that key stable across container restarts, database
+restores, and host migrations.
 
 The Docker template uses Compose service hostnames:
 
@@ -117,8 +118,8 @@ docker compose --env-file .env.docker --profile app run --rm --build migrate
 docker compose --env-file .env.docker --profile app up -d --build
 ```
 
-When you change `VITE_BEK_API_URL` or choose to set `VITE_BEK_ADMIN_API_TOKEN`,
-rebuild the web image because Vite embeds those values at build time.
+When you change `VITE_BEK_API_URL`, rebuild the web image because Vite embeds
+the API URL at build time. Do not embed admin tokens in the web image.
 
 `BEK_SANDBOX_PROVIDER` defaults to `none` in the Docker template. Set it to
 `docker-local` only for trusted single-tenant installs where the API or worker

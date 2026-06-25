@@ -66,9 +66,7 @@ CMD ["node", "dist/runner.js"]
 
 FROM source AS web_build
 ARG VITE_BEK_API_URL=http://localhost:4317
-ARG VITE_BEK_ADMIN_API_TOKEN=
 ENV VITE_BEK_API_URL=$VITE_BEK_API_URL
-ENV VITE_BEK_ADMIN_API_TOKEN=$VITE_BEK_ADMIN_API_TOKEN
 RUN pnpm --filter @bek/web... build
 RUN pnpm --filter @bek/web deploy --legacy --prod /out/web
 

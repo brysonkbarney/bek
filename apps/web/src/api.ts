@@ -1,5 +1,4 @@
 const API_URL = import.meta.env.VITE_BEK_API_URL ?? "http://localhost:4317";
-const ADMIN_TOKEN = import.meta.env.VITE_BEK_ADMIN_API_TOKEN;
 const ADMIN_TOKEN_STORAGE_KEY = "bek.adminApiToken";
 
 export class BekApiError extends Error {
@@ -19,29 +18,43 @@ export function isBekApiError(error: unknown): error is BekApiError {
 }
 
 export function hasBuildTimeAdminToken(): boolean {
-  return Boolean(ADMIN_TOKEN);
+  return Boolean(readBuildTimeAdminToken());
 }
 
 export function hasStoredAdminToken(): boolean {
-  return Boolean(readStoredAdminToken());
+  return Boolean(readBrowserAdminToken());
 }
 
 export function readAdminApiToken(): string | undefined {
-  const stored = readStoredAdminToken();
-  return stored || ADMIN_TOKEN || undefined;
+  return readBrowserAdminToken() || readBuildTimeAdminToken();
 }
 
-export function saveAdminApiToken(token: string): void {
+export function saveAdminApiToken(
+  token: string,
+  options: { persist?: boolean | undefined } = {},
+): void {
   const trimmed = token.trim();
   if (!trimmed) {
     clearAdminApiToken();
     return;
   }
-  browserStorage()?.setItem(ADMIN_TOKEN_STORAGE_KEY, trimmed);
+  if (options.persist) {
+    browserLocalStorage()?.setItem(ADMIN_TOKEN_STORAGE_KEY, trimmed);
+    browserSessionStorage()?.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+    return;
+  }
+  const session = browserSessionStorage();
+  if (session) {
+    session.setItem(ADMIN_TOKEN_STORAGE_KEY, trimmed);
+    browserLocalStorage()?.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+    return;
+  }
+  browserLocalStorage()?.setItem(ADMIN_TOKEN_STORAGE_KEY, trimmed);
 }
 
 export function clearAdminApiToken(): void {
-  browserStorage()?.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+  browserSessionStorage()?.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+  browserLocalStorage()?.removeItem(ADMIN_TOKEN_STORAGE_KEY);
 }
 
 export function adminAuthHeaders(extra?: HeadersInit): HeadersInit {
@@ -52,12 +65,35 @@ export function adminAuthHeaders(extra?: HeadersInit): HeadersInit {
   };
 }
 
-function readStoredAdminToken(): string | undefined {
-  const token = browserStorage()?.getItem(ADMIN_TOKEN_STORAGE_KEY)?.trim();
+function readBrowserAdminToken(): string | undefined {
+  return (
+    readStorageToken(browserSessionStorage()) ??
+    readStorageToken(browserLocalStorage())
+  );
+}
+
+function readBuildTimeAdminToken(): string | undefined {
+  if (!import.meta.env.DEV) {
+    return undefined;
+  }
+  const token = import.meta.env.VITE_BEK_ADMIN_API_TOKEN?.trim();
   return token || undefined;
 }
 
-function browserStorage(): Storage | undefined {
+function readStorageToken(storage: Storage | undefined): string | undefined {
+  const token = storage?.getItem(ADMIN_TOKEN_STORAGE_KEY)?.trim();
+  return token || undefined;
+}
+
+function browserSessionStorage(): Storage | undefined {
+  try {
+    return typeof window === "undefined" ? undefined : window.sessionStorage;
+  } catch {
+    return undefined;
+  }
+}
+
+function browserLocalStorage(): Storage | undefined {
   try {
     return typeof window === "undefined" ? undefined : window.localStorage;
   } catch {

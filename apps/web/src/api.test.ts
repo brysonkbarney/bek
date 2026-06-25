@@ -23,8 +23,9 @@ describe("web API helpers", () => {
   });
 
   it("stores admin tokens at runtime for protected admin consoles", () => {
-    const storage = createMemoryStorage();
-    vi.stubGlobal("window", { localStorage: storage });
+    const localStorage = createMemoryStorage();
+    const sessionStorage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage, sessionStorage });
 
     expect(readAdminApiToken()).toBeUndefined();
     expect(hasStoredAdminToken()).toBe(false);
@@ -33,6 +34,8 @@ describe("web API helpers", () => {
 
     expect(hasStoredAdminToken()).toBe(true);
     expect(readAdminApiToken()).toBe("runtime-token");
+    expect(sessionStorage.getItem("bek.adminApiToken")).toBe("runtime-token");
+    expect(localStorage.getItem("bek.adminApiToken")).toBeNull();
     expect(adminAuthHeaders({ "content-type": "application/json" })).toEqual({
       authorization: "Bearer runtime-token",
       "content-type": "application/json",
@@ -43,14 +46,53 @@ describe("web API helpers", () => {
     expect(hasStoredAdminToken()).toBe(false);
   });
 
+  it("persists admin tokens only when explicitly requested", () => {
+    const localStorage = createMemoryStorage();
+    const sessionStorage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage, sessionStorage });
+
+    saveAdminApiToken(" persistent-token ", { persist: true });
+
+    expect(readAdminApiToken()).toBe("persistent-token");
+    expect(localStorage.getItem("bek.adminApiToken")).toBe("persistent-token");
+    expect(sessionStorage.getItem("bek.adminApiToken")).toBeNull();
+  });
+
+  it("prefers session admin tokens over legacy persistent tokens", () => {
+    const localStorage = createMemoryStorage();
+    const sessionStorage = createMemoryStorage();
+    localStorage.setItem("bek.adminApiToken", "legacy-token");
+    sessionStorage.setItem("bek.adminApiToken", "session-token");
+    vi.stubGlobal("window", { localStorage, sessionStorage });
+
+    expect(readAdminApiToken()).toBe("session-token");
+  });
+
+  it("clears session and persistent admin tokens together", () => {
+    const localStorage = createMemoryStorage();
+    const sessionStorage = createMemoryStorage();
+    localStorage.setItem("bek.adminApiToken", "legacy-token");
+    sessionStorage.setItem("bek.adminApiToken", "session-token");
+    vi.stubGlobal("window", { localStorage, sessionStorage });
+
+    clearAdminApiToken();
+
+    expect(readAdminApiToken()).toBeUndefined();
+    expect(localStorage.getItem("bek.adminApiToken")).toBeNull();
+    expect(sessionStorage.getItem("bek.adminApiToken")).toBeNull();
+  });
+
   it("clears the runtime admin token when saved input is empty", () => {
-    const storage = createMemoryStorage();
-    vi.stubGlobal("window", { localStorage: storage });
+    const localStorage = createMemoryStorage();
+    const sessionStorage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage, sessionStorage });
 
     saveAdminApiToken("runtime-token");
     saveAdminApiToken("   ");
 
     expect(readAdminApiToken()).toBeUndefined();
+    expect(localStorage.getItem("bek.adminApiToken")).toBeNull();
+    expect(sessionStorage.getItem("bek.adminApiToken")).toBeNull();
   });
 
   it("builds Slack install start paths with encoded return targets", () => {

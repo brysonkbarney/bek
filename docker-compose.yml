@@ -4,7 +4,6 @@ x-bek-build: &bek-build
   context: .
   args:
     VITE_BEK_API_URL: ${VITE_BEK_API_URL:-http://localhost:4317}
-    VITE_BEK_ADMIN_API_TOKEN: ${VITE_BEK_ADMIN_API_TOKEN:-}
 
 x-bek-app-env: &bek-app-env
   NODE_ENV: ${NODE_ENV:-production}

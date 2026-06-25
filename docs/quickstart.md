@@ -244,8 +244,9 @@ authorization: Bearer YOUR_TOKEN
 
 The admin console prompts for this token at runtime when the API returns 401.
 For a trusted local-only console, you may also set
-`VITE_BEK_ADMIN_API_TOKEN="$BEK_ADMIN_API_TOKEN"` before `pnpm dev`; Vite embeds
-that value into the browser bundle, so do not use it for public static hosting.
+`VITE_BEK_ADMIN_API_TOKEN="$BEK_ADMIN_API_TOKEN"` before `pnpm dev`; Bek only
+allows that fallback on the Vite dev server. Production web builds reject
+embedded admin tokens.
 
 Slack callback routes remain public so Slack can reach them, but they still
 verify Slack signatures outside unsigned local demo mode.
