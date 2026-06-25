@@ -165,7 +165,8 @@ Do not use unsigned mode in shared environments.
 For local Slack testing, map Slack user IDs to seeded Bek principal IDs:
 
 ```bash
-export BEK_SLACK_USER_PRINCIPAL_MAP='{"U123":"principal_bryson","U_APPROVER":"principal_admin"}'
+export BEK_SLACK_USER_PRINCIPAL_MAP='{"T123:U123":"principal_bryson","T123:U_APPROVER":"principal_admin"}'
+# Legacy global local-demo keys still work: {"U123":"principal_bryson"}.
 ```
 
 Without a mapping, Bek parses Slack mentions, slash commands, reactions, and

@@ -145,9 +145,11 @@ function mapSlackTestUser(
   slackUserId = "U123",
   principalId = "principal_bryson",
 ) {
-  process.env.BEK_SLACK_USER_PRINCIPAL_MAP = JSON.stringify({
-    [slackUserId]: principalId,
-  });
+  mapSlackTestUsers({ [slackUserId]: principalId });
+}
+
+function mapSlackTestUsers(map: Record<string, unknown>) {
+  process.env.BEK_SLACK_USER_PRINCIPAL_MAP = JSON.stringify(map);
 }
 
 function clearGitHubEnv() {
@@ -2526,6 +2528,135 @@ describe("Bek API", () => {
     expect(store.read().runs).toHaveLength(initialRunCount);
   });
 
+  it("maps Slack event users with team-scoped principal keys", async () => {
+    mapSlackTestUsers({ "T123:U123": "principal_bryson" });
+    const store = new BekStore();
+    const app = createApp(store);
+    const rawBody = JSON.stringify({
+      team_id: "T123",
+      event_id: "EvScopedUserMap",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek hello from a scoped workspace",
+      },
+    });
+
+    const res = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+    const json = (await res.json()) as { runId: string };
+
+    expect(res.status).toBe(200);
+    expect(json.runId).toBeTruthy();
+    expect(
+      store.read().runs.find((candidate) => candidate.id === json.runId),
+    ).toMatchObject({
+      requesterPrincipalId: "principal_bryson",
+    });
+  });
+
+  it("prefers team-scoped Slack user mappings over legacy global keys", async () => {
+    mapSlackTestUsers({
+      U123: "principal_admin",
+      "T123:U123": "principal_bryson",
+    });
+    const store = new BekStore();
+    const app = createApp(store);
+    const rawBody = JSON.stringify({
+      team_id: "T123",
+      event_id: "EvScopedUserMapPrecedence",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek use the workspace-specific actor",
+      },
+    });
+
+    const res = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+    const json = (await res.json()) as { runId: string };
+
+    expect(res.status).toBe(200);
+    expect(
+      store.read().runs.find((candidate) => candidate.id === json.runId),
+    ).toMatchObject({
+      requesterPrincipalId: "principal_bryson",
+    });
+  });
+
+  it("fails closed when a team-scoped Slack mapping is present but blank", async () => {
+    mapSlackTestUsers({
+      U123: "principal_admin",
+      "T123:U123": "",
+    });
+    const store = new BekStore();
+    const app = createApp(store);
+    const initialRunCount = store.read().runs.length;
+    const rawBody = JSON.stringify({
+      team_id: "T123",
+      event_id: "EvBlankScopedUserMap",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek do not fall back from a blank scoped identity",
+      },
+    });
+
+    const res = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: false,
+      ignored: true,
+      reason: "Slack user U123 is not mapped to a Bek principal.",
+    });
+    expect(store.read().runs).toHaveLength(initialRunCount);
+  });
+
+  it("does not use another team's scoped Slack user mapping", async () => {
+    mapSlackTestUsers({ "T_OTHER:U123": "principal_bryson" });
+    const store = new BekStore();
+    const app = createApp(store);
+    const initialRunCount = store.read().runs.length;
+    const rawBody = JSON.stringify({
+      team_id: "T123",
+      event_id: "EvWrongScopedUserMap",
+      event: {
+        type: "app_mention",
+        channel: "C_CHECKOUT",
+        user: "U123",
+        text: "@bek do not borrow identity from another workspace",
+      },
+    });
+
+    const res = await app.request("/api/slack/events", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(rawBody),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      ok: false,
+      ignored: true,
+      reason: "Slack user U123 is not mapped to a Bek principal.",
+    });
+    expect(store.read().runs).toHaveLength(initialRunCount);
+  });
+
   it("rejects Slack callbacks whose team does not match the channel scope", async () => {
     const store = new BekStore();
     const app = createApp(store);
@@ -3518,9 +3649,7 @@ describe("Bek API", () => {
 
   it("applies mapped Slack approval button decisions", async () => {
     process.env.BEK_SLACK_BACKGROUND_DRAIN = "false";
-    process.env.BEK_SLACK_USER_PRINCIPAL_MAP = JSON.stringify({
-      U_APPROVER: "principal_admin",
-    });
+    mapSlackTestUsers({ "T123:U_APPROVER": "principal_admin" });
     const slackClient = new FakeSlackWebApiClient();
     const app = createApp(new BekStore(), { slackClient });
     const { run, approval } = await createPrApproval(
@@ -3719,6 +3848,38 @@ describe("Bek API", () => {
       reason: "Slack user U_UNMAPPED is not mapped to a Bek principal.",
     });
     expect(store.read().runs).toHaveLength(initialRunCount);
+  });
+
+  it("maps Slack slash command users with team-scoped principal keys", async () => {
+    mapSlackTestUsers({ "T123:U123": "principal_bryson" });
+    const store = new BekStore();
+    const app = createApp(store);
+    const rawBody = slackForm({
+      command: "/bek",
+      channel_id: "C_CHECKOUT",
+      user_id: "U123",
+      text: "summarize the scoped rollout",
+      team_id: "T123",
+    });
+
+    const res = await app.request("/api/slack/commands", {
+      method: "POST",
+      body: rawBody,
+      headers: signedSlackHeaders(
+        rawBody,
+        Math.floor(Date.now() / 1000).toString(),
+        "application/x-www-form-urlencoded",
+      ),
+    });
+    const json = (await res.json()) as { runId: string };
+
+    expect(res.status).toBe(200);
+    expect(
+      store.read().runs.find((candidate) => candidate.id === json.runId),
+    ).toMatchObject({
+      requesterPrincipalId: "principal_bryson",
+      trigger: "slash_command",
+    });
   });
 
   it("dedupes Slack slash commands across API app instances", async () => {

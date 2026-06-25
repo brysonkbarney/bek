@@ -1399,7 +1399,10 @@ export function createApp(
       );
     }
 
-    const principalId = slackPrincipalIdForUser(interaction.slackUserId);
+    const principalId = slackPrincipalIdForUser(
+      interaction.slackUserId,
+      interaction.teamId,
+    );
     if (!principalId) {
       markSlackNoRetry(c);
       return c.json(
@@ -1536,7 +1539,10 @@ export function createApp(
       return c.json(response);
     }
 
-    const requesterPrincipalId = slackPrincipalIdForUser(command.userId);
+    const requesterPrincipalId = slackPrincipalIdForUser(
+      command.userId,
+      command.teamId,
+    );
     if (!requesterPrincipalId) {
       const response = buildSlackCommandIgnoredResponse({
         reason: slackUserMappingReason(command.userId),
@@ -1673,7 +1679,10 @@ export function createApp(
         }
         return c.json(response);
       }
-      const requesterPrincipalId = slackPrincipalIdForUser(event.userId);
+      const requesterPrincipalId = slackPrincipalIdForUser(
+        event.userId,
+        event.teamId,
+      );
       if (!requesterPrincipalId) {
         const response = {
           ok: false,
@@ -3083,7 +3092,10 @@ function shouldExchangeSlackOAuth(): boolean {
   return process.env.NODE_ENV === "production";
 }
 
-function slackPrincipalIdForUser(slackUserId?: string | undefined) {
+function slackPrincipalIdForUser(
+  slackUserId?: string | undefined,
+  teamId?: string | undefined,
+) {
   if (!slackUserId) {
     return undefined;
   }
@@ -3100,14 +3112,23 @@ function slackPrincipalIdForUser(slackUserId?: string | undefined) {
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(
-      "BEK_SLACK_USER_PRINCIPAL_MAP must be a JSON object mapping Slack user IDs to Bek principal IDs.",
+      "BEK_SLACK_USER_PRINCIPAL_MAP must be a JSON object mapping Slack user IDs or team-scoped Slack user IDs to Bek principal IDs.",
     );
   }
 
-  const principalId = (parsed as Record<string, unknown>)[slackUserId];
-  return typeof principalId === "string" && principalId.length > 0
-    ? principalId
-    : undefined;
+  const principalMap = parsed as Record<string, unknown>;
+  if (teamId) {
+    const scopedKey = `${teamId}:${slackUserId}`;
+    if (Object.prototype.hasOwnProperty.call(principalMap, scopedKey)) {
+      return principalIdFromSlackMapValue(principalMap[scopedKey]);
+    }
+  }
+
+  return principalIdFromSlackMapValue(principalMap[slackUserId]);
+}
+
+function principalIdFromSlackMapValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function slackUserMappingReason(slackUserId?: string | undefined): string {
