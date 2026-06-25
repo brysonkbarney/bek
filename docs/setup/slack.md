@@ -74,6 +74,12 @@ token rotation, Slack directory sync, or self-service identity claiming.
    export BEK_WEB_API_URL=https://YOUR-TUNNEL.example.com
    ```
 
+   `BEK_PUBLIC_URL` is the public API base used in generated Slack app
+   manifests. `BEK_WEB_API_URL` is the browser-facing API base consumed by the
+   admin console. In local tunnel setups they are often the same API origin; in
+   split deployments, keep `BEK_WEB_API_URL` pointed at the API and put the
+   admin web origin in `BEK_ADMIN_ORIGINS`.
+
 2. Open `/connectors`, generate the Slack app manifest, and paste it into the
    Slack app's **App Manifest** screen. Slack's manifest format is documented
    in the [Slack app manifest reference](https://docs.slack.dev/reference/app-manifest/).
@@ -210,7 +216,9 @@ unavailable; re-inviting Bek flips the channel back to available.
 
 12. Enable outbound posting.
 
-    The preferred local/self-hosted path is the stored OAuth bot token from step 8. As a manual fallback, set the Bot User OAuth Token directly:
+    The preferred local/self-hosted path is the stored OAuth bot token from the
+    OAuth setup above. As a manual fallback, set the Bot User OAuth Token
+    directly:
 
     ```bash
     export SLACK_BOT_TOKEN=xoxb-...
@@ -263,6 +271,11 @@ BEK_DEV_UNSIGNED_SLACK=true pnpm dev:api
 ```
 
 Do not use unsigned mode in shared environments.
+
+For self-hosted pilots, keep one Slack workspace install mapped to one Bek API
+stack unless you have added tenant resolution and isolation outside the current
+repo. Slack `team_id` becomes a security boundary as soon as more than one
+workspace can reach the same callback host.
 
 For real Slack testing, map Slack user IDs to Bek human principals from the
 admin console at `/connectors`. The Slack panel stores identities as

@@ -27,7 +27,11 @@ The model-router package now includes local productization foundations:
 - Failover routing that can try configured fallbacks when a provider call fails.
 - Failover attempt metadata that records whether each tried route was primary or fallback, its estimate, and its budget decision.
 
-The default local demo is still deterministic and does not spend provider money. Live text generation is available when an operator explicitly sets `BEK_MODEL_GATEWAY=vercel_ai_sdk` and provides either `AI_GATEWAY_API_KEY` or `VERCEL_OIDC_TOKEN`. `VERCEL_AI_GATEWAY_API_KEY` is not read by the AI SDK and should not be used for new installs.
+The default local demo is still deterministic and does not spend provider money.
+Live text generation is available when an operator explicitly sets
+`BEK_MODEL_GATEWAY=vercel_ai_sdk` and provides either `AI_GATEWAY_API_KEY` or
+`VERCEL_OIDC_TOKEN`. `VERCEL_AI_GATEWAY_API_KEY` is not read by the AI SDK and
+should not be used for new installs.
 
 Budget-enforced Gateway calls fail closed unless every default and fallback
 model in the policy has benchmark pricing in Bek's model provider registry. The
@@ -48,6 +52,19 @@ Vercel AI Gateway is the preferred first live model path for hosted or shared de
 - `BEK_MODEL_BENCHMARKS_JSON` or `BEK_MODEL_BENCHMARKS_PATH` for benchmark
   pricing overlays on top of Bek's built-in provider registry.
 - `BEK_AI_GATEWAY_TAGS` for optional low-cardinality reporting tags such as `env:staging` or `team:platform`.
+
+Minimal local/live configuration:
+
+```bash
+export BEK_MODEL_GATEWAY=vercel_ai_sdk
+export AI_GATEWAY_API_KEY=...
+```
+
+Before a real pilot, replace seeded model IDs with models available in your
+Gateway catalog, or keep the seed policy only if those exact IDs are available
+to your Gateway account. Every selected default and fallback model must also
+have benchmark pricing in Bek's registry; otherwise budget-enforced routes fail
+closed before spending provider money.
 
 The adapter emits `model.requested` and `model.completed` worker events with
 route attempts, provider, model, usage counts, estimated cost, local actual

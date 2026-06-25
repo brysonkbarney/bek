@@ -29,8 +29,9 @@ Bek should use all of these, but at different layers:
 | Provider strategy     | Adapter interfaces                                 | Runtime and sandbox providers must be replaceable. Bek policy, approvals, audit, and credential brokering stay above every provider.                                                                                                                                  |
 
 Do not build a bespoke cgroups/seccomp sandbox for v1. Docker is enough for
-local/self-hosted trust boundaries. Hosted multitenant execution should use a
-microVM provider.
+local development, CI, and trusted single-tenant self-hosting when the operator
+accepts that Docker CLI/socket access is host-control-plane access. Hosted
+multitenant execution should use a microVM provider.
 
 ## Source Notes
 

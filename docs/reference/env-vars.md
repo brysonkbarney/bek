@@ -103,10 +103,11 @@ The current source includes a Drizzle schema, model-router foundation, runtime/s
 ## Model Execution Env Notes
 
 Provider/model strings such as `openai/gpt-5.4` and
-`anthropic/claude-sonnet-4.8` are stored in Bek model policies. They match the
-Vercel AI Gateway and AI SDK string shape. The deterministic local runtime is
-still the default; live Gateway execution requires
-`BEK_MODEL_GATEWAY=vercel_ai_sdk`.
+`anthropic/claude-sonnet-4.8` are stored in Bek seed model policies. They use
+the Vercel AI Gateway and AI SDK `provider/model` string shape, but operators
+must verify the exact model IDs against their live Gateway catalog before using
+them for paid execution. The deterministic local runtime is still the default;
+live Gateway execution requires `BEK_MODEL_GATEWAY=vercel_ai_sdk`.
 
 Bek ships built-in benchmark pricing for the seed models
 `openai/gpt-5.4`, `openai/gpt-5.5`,

@@ -94,9 +94,9 @@ The user asked for 25 subagents. We will run them in batches because the local a
   `bek-untrusted-content-v1` envelope before live model calls. Repo/MCP/model
   output/sandbox chaining still needs richer provenance, quarantine, and
   red-team tests.
-- Hosted/multi-tenant, admin/RBAC, real runtimes, arbitrary MCP connectors,
-  live GitHub execution, and Slack durable inbox/outbox leasing remain explicit
-  blockers rather than marketing claims.
+- Hosted/multi-tenant, admin/RBAC, production runtimes, arbitrary MCP
+  connectors, AI-generated GitHub repo work, and Slack durable inbox/outbox
+  leasing remain explicit blockers rather than marketing claims.
 
 ## Current Build Wave
 

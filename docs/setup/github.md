@@ -32,7 +32,8 @@ The current foundation provides signed ingress and local workflow helpers:
 The setup route still does not call GitHub, clone repositories, or create runs
 from GitHub webhooks. Real worker execution is disabled by default and currently
 plans a deterministic Bek run manifest PR for approval, then opens it only after
-approval; richer AI-generated repo diffs, hosted credential custody, and GitHub
+approval. Treat that path as an integration proof, not as AI-generated coding
+automation. Richer repo diffs, hosted credential custody, and GitHub
 webhook-to-run routing remain launch work.
 
 ## GitHub App Settings
@@ -51,6 +52,10 @@ Recommended webhook events:
 - `installation_repositories`
 - `pull_request`
 - `check_run`
+
+For pilots, install the GitHub App on one or a small number of repos first.
+Avoid org-wide installation until repo routing, tenant isolation, token brokering
+audit, and rollback operations are ready for the environment.
 
 ## Environment Variables
 
@@ -180,6 +185,9 @@ The worker verifies the approved payload hash before leasing a token. Generic
 `BEK_GITHUB_EXECUTION=fake` uses the fake provider/client for local end-to-end
 validation. `BEK_GITHUB_EXECUTION=real` validates GitHub App config at readiness
 time and performs GitHub network calls only inside an approved worker run.
+Announce real execution only as "approved deterministic draft PR workflow" until
+the runtime can generate reviewed repo diffs inside an isolated coding
+environment.
 
 ## Launch Blockers
 

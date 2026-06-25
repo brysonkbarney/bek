@@ -10,6 +10,19 @@ provider, MCP, or sandbox credentials.
 - pnpm 11.1.3.
 - Docker, optional for local Postgres, Valkey, and MinIO services.
 
+## Pick A Path
+
+| Path                      | Use it when                                                                                        | External credentials                                                                             |
+| ------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Seeded local demo         | You want to see the admin console, policy model, runs, approvals, and smoke flow quickly.          | None.                                                                                            |
+| Local Postgres evaluation | You want restart-safe snapshot, worker queue, Slack dedupe, and model-usage state on your machine. | None unless you also enable Slack/GitHub/models.                                                 |
+| Self-hosted Slack pilot   | You want a real Slack workspace to mention `@bek`.                                                 | Slack signing secret, OAuth or bot token, admin token, Postgres, and explicit principal mapping. |
+| Live model pilot          | You want real model calls instead of deterministic local output.                                   | AI Gateway auth plus priced model registry entries.                                              |
+
+Start with the seeded local demo unless you are actively validating an
+integration. It is the shortest path and keeps provider spend, Slack posting,
+and repo writes off by default.
+
 ## Environment
 
 No `.env` file is required for the seeded local demo. The API has local defaults
@@ -266,10 +279,10 @@ export BEK_SLACK_OAUTH_EXCHANGE=true
 ```
 
 Use the same tunnel base URL in the Slack app's Events API, slash command, and
-interactivity request URLs. `BEK_PUBLIC_URL` is listed in `.env.example` as an
-operator reference value, but the current API uses explicit Slack callback
-settings such as `SLACK_REDIRECT_URI`. OAuth exchange stores the Slack bot
-token in the local encrypted vault and enables thread replies, approval
+interactivity request URLs. Set `BEK_PUBLIC_URL` before generating the Slack app
+manifest so Bek emits public callback URLs; set `SLACK_REDIRECT_URI` to the
+exact OAuth callback URL configured in Slack. OAuth exchange stores the Slack
+bot token in the local encrypted vault and enables thread replies, approval
 buttons, approval decisions, and final answers through `chat:write`. You can
 start OAuth from the Slack card on `/connectors`, then refresh `/setup` or
 `/connectors` to confirm the workspace is active and the token is stored. You
@@ -317,7 +330,10 @@ pnpm check
   opt-in. Gateway calls fail closed unless every policy model has benchmark
   pricing in Bek's model registry. GitHub approved worker execution is opt-in:
   `BEK_GITHUB_EXECUTION=fake` validates the flow locally, and `real` can plan a
-  hash-bound deterministic Bek run manifest PR in the worker, then open it after approval. AI-generated repo
-  diffs, hosted sandbox execution, full OpenCode repo orchestration, and MCP
-  tool proxying remain foundations or contracts.
-- Do not use this repo for production workspaces until the launch blockers in `docs/launch-readiness.md` are closed.
+  hash-bound deterministic Bek run manifest PR in the worker, then open it after
+  approval. AI-generated repo diffs, hosted sandbox execution, full OpenCode
+  repo orchestration, and MCP tool proxying remain foundations or contracts.
+- Do not use this repo for production workspaces until the launch blockers in
+  `docs/launch-readiness.md` are closed. For pilots before that, keep one
+  single-tenant Bek stack per workspace, document disabled integrations, and
+  use low budgets plus explicit human approvals.

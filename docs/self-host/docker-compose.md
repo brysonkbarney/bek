@@ -9,6 +9,34 @@ The root `docker-compose.yml` supports three paths:
 - `docker compose --env-file .env.docker --profile worker run --rm worker`
   builds and runs the deterministic local worker runner, then exits.
 
+## Recommended Pilot Topology
+
+Run one Bek stack per customer workspace until hosted multi-tenant support
+lands. A pilot stack should have its own:
+
+- Postgres database or schema and backup plan.
+- `BEK_ORG_ID`, admin token, and credential vault key.
+- Public API callback host and admin web origin.
+- Slack app or Slack workspace install.
+- GitHub App installation ID when repo writes are enabled.
+
+Do not point multiple unrelated Slack workspaces at one API process and rely on
+policy alone for tenant isolation. The current API process is single-tenant in
+practice, even when Postgres is enabled.
+
+## Readiness Sequence
+
+1. Start dependencies with `docker compose up -d`.
+2. Copy `.env.docker.example` to `.env.docker` and replace every placeholder
+   secret.
+3. Run the `migrate` service.
+4. Start the `app` profile and confirm `/health`, `/ready`, and the admin
+   console.
+5. Configure admin auth before any shared operator access.
+6. Add Slack only after public API/admin origins and OAuth redirect URLs match.
+7. Enable live models, GitHub execution, MCP, or sandboxing one surface at a
+   time, with low budgets and explicit approvals.
+
 ## Services
 
 | Service   | Profile  | Image/target               | Host port      | Purpose                                                   |
@@ -139,10 +167,7 @@ runs.
 The current API process serves one Bek org at a time. In Postgres mode that org
 is selected by `BEK_ORG_ID`; the default template uses `org_demo`. To isolate
 multiple teams before hosted multi-tenant support exists, run separate API/web
-stacks with distinct `BEK_ORG_ID`, database/schema or database credentials,
-admin tokens, public callback URLs, Slack apps or workspaces, and credential
-vault keys. Do not point multiple customer Slack workspaces at one API process
-and expect tenant isolation.
+stacks with the distinct resources listed in the pilot topology above.
 
 For upgrades or schema checks, run the migration service explicitly before
 starting the app profile:
@@ -290,9 +315,11 @@ underlying bucket alongside Postgres.
 - `packages/worker` includes the deterministic queue contract and local runner,
   but not yet a long-running separate worker daemon with transactional
   multi-drainer claims, redrive UI, or autoscaling.
-- Slack OAuth code exchange, local encrypted token storage, and Slack posting
-  are available, but hosted-grade KMS/broker operations, live model routing,
-  GitHub writes, MCP transports, and hardened sandbox execution are not
+- Slack OAuth code exchange, local encrypted token storage, Slack posting,
+  opt-in AI SDK Gateway calls, and opt-in deterministic GitHub draft PR
+  workflows are available for carefully scoped pilots. Hosted-grade KMS/broker
+  operations, AI-generated repo diffs, MCP transports, billed-cost
+  reconciliation, and hardened hosted sandbox execution are not
   production-ready.
 - The Docker Compose template does not wire a production sandbox. Executable
   Docker sandboxing is opt-in and intended for local or trusted single-tenant

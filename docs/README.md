@@ -48,6 +48,11 @@ a deterministic Bek run manifest PR in real mode behind a hash-bound approval.
 Live AI SDK Gateway text generation is available only when explicitly enabled
 with Gateway auth.
 
+Use the current repo for local demos, contributor development, and carefully
+scoped single-tenant self-hosted pilots. Do not position it as a self-serve
+hosted service, a multi-tenant control plane, or a production coding agent that
+can safely operate on arbitrary repos without the launch blockers being closed.
+
 ## Credential Requirements
 
 The local quickstart requires no external credentials. Use `.env.example` as a
@@ -76,6 +81,9 @@ alerting.
 ## Before A Real Workspace
 
 Read the [operator checklist](./operator-checklist.md) and
-[launch readiness](./launch-readiness.md). At minimum, a real pilot needs
-admin API auth, signed Slack callbacks, persistent storage, durable event
-dedupe, a credential broker, clear approver mapping, and explicit budget limits.
+[launch readiness](./launch-readiness.md). At minimum, a real pilot needs admin
+API auth, signed Slack callbacks, Postgres-backed persistence, durable event
+dedupe, explicit Slack user-to-principal mapping, low model budgets, and a
+written list of disabled surfaces. Hosted or shared operations additionally
+need managed credential custody, real admin identity/RBAC, tenant isolation,
+daemonized workers, durable outbox dispatch, and production sandboxing.

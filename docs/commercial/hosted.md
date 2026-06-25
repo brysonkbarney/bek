@@ -26,6 +26,18 @@ Hosted Bek should reduce setup burden without changing the product invariant:
 - Audit export.
 - Upgrade path for teams that start self-hosted.
 
+## How To Position It Today
+
+Hosted Bek should be described as a design-partner and waitlist offering. The
+honest near-term pitch is:
+
+> We can help a small number of teams pilot one governed `@bek` Slack teammate
+> with scoped channels, explicit approvals, low model budgets, and a guided
+> install path while the hosted control plane matures.
+
+Do not describe hosted Bek as self-serve, generally available, multi-tenant, or
+billing-ready until the beta entry criteria below are complete.
+
 ## Managed Does Not Mean Ungoverned
 
 Hosted Bek should manage operations, upgrades, backups, and credential storage,
@@ -76,7 +88,9 @@ before touching state:
   reject Slack targets whose team does not match the org's active install.
 
 Until those pieces exist, hosted Bek should be marketed as a waitlist/design
-partner offering rather than a self-serve multi-tenant product.
+partner offering rather than a self-serve multi-tenant product. Early hosted
+work should use narrow pilots, written anti-claims, and direct operator
+handholding.
 
 ## Hosted Beta Entry Criteria
 

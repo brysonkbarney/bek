@@ -1,7 +1,8 @@
 # Bek
 
 Bek is open-source Claude Tag-style infrastructure: one visible Slack teammate
-with any model, tool, repo, MCP server, runtime, or sandbox behind it.
+with admin-governed models, tools, repos, MCP servers, runtimes, and sandboxes
+behind it.
 
 The user experience is intentionally simple:
 
@@ -36,6 +37,15 @@ This repository is a working OSS product spine for Bek. It runs locally without 
   the local worker runner.
 
 ## Quick Start
+
+Choose the path that matches what you are trying to prove:
+
+| Goal                        | Path                                                                                                                                                      |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Explore the product locally | Run `pnpm install` and `pnpm dev`; no external credentials are required.                                                                                  |
+| Evaluate self-hosting shape | Add Docker/Postgres and run the app profile from [Docker Compose self-hosting](./docs/self-host/docker-compose.md).                                       |
+| Pilot in Slack              | Configure admin auth, Postgres, signed Slack callbacks, and either stored OAuth tokens or `SLACK_BOT_TOKEN`.                                              |
+| Sell or discuss hosted Bek  | Use [Hosted Bek](./docs/commercial/hosted.md) and [Sales-safe claims](./docs/commercial/claims.md); hosted is design-partner/waitlist, not self-serve GA. |
 
 ```bash
 pnpm install
@@ -134,8 +144,8 @@ deterministic runner smoke tests for the worker contract.
 ## External Credentials
 
 Bek's local demo works without Slack, GitHub, model-provider, MCP, or sandbox
-credentials. Real workspace operation requires credentials owned by the
-operator:
+credentials. A real self-hosted pilot needs explicit operator-owned
+credentials and a clear decision about which integrations are active:
 
 | Area            | Required before real use                                                                                                             |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
@@ -151,11 +161,12 @@ worker queue for restart-safe self-hosting, and self-hosted Slack posting can
 use stored OAuth tokens or `SLACK_BOT_TOKEN`. Set
 `BEK_SLACK_OAUTH_EXCHANGE=true` when you want Bek to exchange Slack OAuth codes
 and store bot tokens; otherwise provide `SLACK_BOT_TOKEN` as the manual
-fallback. Hosted production still needs daemonized worker fleets, managed
-credential brokering/KMS, side-effect outbox dispatchers, AI-generated repo
-diffs, and hosted sandbox adapters. Signed GitHub webhook ingress is wired for
-normalized delivery persistence; opt-in GitHub execution can validate locally in
-fake mode or plan and open a deterministic draft PR in real mode after approval. See
+fallback. Signed GitHub webhook ingress is wired for normalized delivery
+persistence; opt-in GitHub execution can validate locally in fake mode or open a
+deterministic, hash-bound draft PR in real mode after approval. That is not the
+same as hosted AI-generated repo work. Hosted production still needs daemonized
+worker fleets, managed credential brokering/KMS, side-effect outbox
+dispatchers, AI-generated repo diffs, and hosted sandbox adapters. See
 [Launch Readiness](./docs/launch-readiness.md) before using Bek in a real
 workspace.
 

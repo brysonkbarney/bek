@@ -49,4 +49,8 @@ completed run state, and prints the run ID.
 
 ## Talk Track
 
-Bek is not a bot directory. It is one open-source teammate. The team tags `@bek`; admins decide what that teammate can access per channel and what requires approval. Under the hood, Bek can route to any model, runtime, MCP tool, repo workflow, or sandbox.
+Bek is not a bot directory. It is one open-source teammate. The team tags
+`@bek`; admins decide what that teammate can access per channel and what
+requires approval. Under the hood, Bek is designed to route work through
+governed model, runtime, MCP, repo, and sandbox adapters as those integrations
+are enabled.

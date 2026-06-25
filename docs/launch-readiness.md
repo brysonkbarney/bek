@@ -52,6 +52,29 @@ Bek can be public as an OSS release candidate when the repo has:
   `.nvmrc` with `24`, and demo hosts should run `nvm use` or an equivalent
   Node 24 pin before `pnpm install`.
 
+## Self-Hosted Pilot Gate
+
+A hand-held self-hosted pilot can start before hosted GA when all of these are
+true:
+
+- One Bek stack maps to one customer workspace or one clearly scoped internal
+  team.
+- `BEK_REQUIRE_ADMIN_AUTH=true`, a strong `BEK_ADMIN_API_TOKEN`, and explicit
+  `BEK_ADMIN_ORIGINS` are configured.
+- `BEK_STORAGE=postgres`, migrations, backups, and restore checks are in place.
+- Slack callbacks are signed; unsigned mode is disabled; Slack OAuth token
+  storage or `SLACK_BOT_TOKEN` fallback is deliberately chosen and documented.
+- Requesters and approvers are mapped to Bek principals before approvals are
+  tested.
+- `BEK_RUN_ADVANCEMENT=worker_local` and the Postgres worker queue are used
+  with operator-run drain/redrive procedures, not as a multi-instance worker
+  fleet claim.
+- Live model calls, GitHub execution, MCP, and sandboxing are each enabled only
+  after the operator writes down the active credentials, disabled surfaces,
+  approval policy, and rollback plan.
+- Sales/demo copy uses the [sales-safe claims](./commercial/claims.md) language
+  and explicitly says the pilot is not hosted GA.
+
 ## Product
 
 - One visible `@bek` handle works in a real Slack workspace.
