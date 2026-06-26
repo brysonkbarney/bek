@@ -1,5 +1,8 @@
 const DEFAULT_API_URL = "http://localhost:4317";
 const ADMIN_TOKEN_STORAGE_KEY = "bek.adminApiToken";
+const SESSION_CSRF_STORAGE_KEY = "bek.sessionCsrfToken";
+
+let sessionCsrfToken: string | undefined;
 
 interface BekBrowserConfig {
   apiUrl?: string | undefined;
@@ -81,6 +84,138 @@ export function adminAuthHeaders(extra?: HeadersInit): HeadersInit {
     ...(token ? { authorization: `Bearer ${token}` } : {}),
     ...extra,
   };
+}
+
+export interface SessionInfo {
+  ok: boolean;
+  role: string;
+  principalId: string;
+  orgId: string;
+  csrfToken?: string;
+  method?: string;
+  expiresAt?: string;
+}
+
+export function readSessionCsrfToken(): string | undefined {
+  if (sessionCsrfToken) {
+    return sessionCsrfToken;
+  }
+  const stored = browserSessionStorage()
+    ?.getItem(SESSION_CSRF_STORAGE_KEY)
+    ?.trim();
+  if (stored) {
+    sessionCsrfToken = stored;
+    return stored;
+  }
+  return undefined;
+}
+
+export function hasSessionCsrfToken(): boolean {
+  return Boolean(readSessionCsrfToken());
+}
+
+function storeSessionCsrfToken(token: string | undefined): void {
+  const trimmed = token?.trim();
+  if (!trimmed) {
+    clearSessionCsrfToken();
+    return;
+  }
+  sessionCsrfToken = trimmed;
+  browserSessionStorage()?.setItem(SESSION_CSRF_STORAGE_KEY, trimmed);
+}
+
+function clearSessionCsrfToken(): void {
+  sessionCsrfToken = undefined;
+  browserSessionStorage()?.removeItem(SESSION_CSRF_STORAGE_KEY);
+}
+
+function isWriteMethod(method: string | undefined): boolean {
+  const normalized = (method ?? "GET").toUpperCase();
+  return (
+    normalized === "POST" ||
+    normalized === "PATCH" ||
+    normalized === "DELETE" ||
+    normalized === "PUT"
+  );
+}
+
+/**
+ * Builds request headers shared by every admin request. Includes the bearer
+ * token when present (existing behavior) and adds the `x-bek-csrf` header for
+ * write requests when a session csrf token is stored, so cookie-authenticated
+ * writes are accepted. Reads never need the csrf header.
+ */
+function adminRequestHeaders(
+  method: string | undefined,
+  extra?: HeadersInit,
+): HeadersInit {
+  const csrf = isWriteMethod(method) ? readSessionCsrfToken() : undefined;
+  return {
+    ...adminAuthHeaders(extra),
+    ...(csrf ? { "x-bek-csrf": csrf } : {}),
+  };
+}
+
+/**
+ * Exchanges a bearer admin token for an httpOnly session cookie. On success the
+ * returned csrf token is stored (in-memory + sessionStorage) so later write
+ * requests can send `x-bek-csrf`. Returns undefined when sessions are disabled
+ * on the server (HTTP 501); callers should keep using the bearer token.
+ */
+export async function signInWithSession(
+  token: string,
+): Promise<SessionInfo | undefined> {
+  const trimmed = token.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const res = await fetch(`${readBekApiUrl()}/api/auth/session`, {
+    method: "POST",
+    credentials: "include",
+    headers: { authorization: `Bearer ${trimmed}` },
+  });
+  if (res.status === 501) {
+    return undefined;
+  }
+  if (!res.ok) {
+    throw await apiError("/api/auth/session", res);
+  }
+  const info = (await res.json()) as SessionInfo;
+  storeSessionCsrfToken(info.csrfToken);
+  return info;
+}
+
+/**
+ * Returns the current session when the cookie is valid, else undefined.
+ */
+export async function fetchCurrentSession(): Promise<SessionInfo | undefined> {
+  const res = await fetch(`${readBekApiUrl()}/api/auth/session`, {
+    method: "GET",
+    credentials: "include",
+    headers: adminAuthHeaders(),
+  });
+  if (!res.ok) {
+    return undefined;
+  }
+  return (await res.json()) as SessionInfo;
+}
+
+/**
+ * Clears the session cookie on the server and the locally stored csrf token.
+ * Resilient: never throws so it can always be paired with clearing the token.
+ */
+export async function signOut(): Promise<void> {
+  try {
+    await fetch(`${readBekApiUrl()}/api/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+      headers: adminRequestHeaders("POST"),
+    });
+  } catch {
+    // Best effort: clearing the local token still signs the user out client-side.
+  } finally {
+    clearSessionCsrfToken();
+  }
 }
 
 function readBrowserAdminToken(): string | undefined {
@@ -540,6 +675,157 @@ export interface RunDetail {
   approvals: ApprovalRequest[];
 }
 
+export type HealthStatus = "ok" | "degraded" | "down" | "unknown";
+
+export interface HealthComponent {
+  name: string;
+  status: HealthStatus;
+  detail?: string;
+  checkedAt?: string;
+}
+
+export interface HealthDashboard {
+  status: HealthStatus;
+  generatedAt: string;
+  componentCount: number;
+  healthy: boolean;
+  statusCounts: Partial<Record<HealthStatus, number>>;
+  unhealthy: Array<{ name: string; status: HealthStatus; reason: string }>;
+  components: HealthComponent[];
+}
+
+export interface RunTracePhase {
+  type: string;
+  status: string;
+  message?: string;
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+}
+
+export interface RunTraceModelCall {
+  model?: string;
+  status?: string;
+  message?: string;
+  durationMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+export interface RunTraceToolCall {
+  name?: string;
+  status: string;
+  message?: string;
+  durationMs?: number;
+}
+
+export interface RunTraceApproval {
+  decision: string;
+  message?: string;
+  at?: string;
+}
+
+export interface RunTrace {
+  runId: string;
+  eventCount: number;
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+  finalStatus: string;
+  phases: RunTracePhase[];
+  modelCalls: RunTraceModelCall[];
+  toolCalls: RunTraceToolCall[];
+  approvals: RunTraceApproval[];
+}
+
+export interface MemoryCitation {
+  label: string;
+  [key: string]: unknown;
+}
+
+export interface MemorySource {
+  id: string;
+  kind: string;
+  sensitivity: string;
+  placeId?: string;
+  title?: string;
+  createdAt: string;
+}
+
+export interface MemoryChunk {
+  id: string;
+  sourceId: string;
+  sensitivity: string;
+  placeId?: string;
+  citation: MemoryCitation;
+  text: string;
+}
+
+export interface MemoryInventory {
+  sources: MemorySource[];
+  chunks: MemoryChunk[];
+}
+
+export interface MemoryExcluded {
+  chunk?: MemoryChunk;
+  contentHash?: string;
+  reason: string;
+}
+
+export interface MemoryRetrieval {
+  placeId: string;
+  identityId: string;
+  isolated: boolean;
+  allowed: MemoryChunk[];
+  excluded: MemoryExcluded[];
+}
+
+export type BudgetState = "ok" | "warning" | "exceeded";
+
+export interface BudgetStatus {
+  budgetPolicyId: string;
+  name: string;
+  perDayCents: number;
+  spentTodayCents: number;
+  remainingTodayCents: number;
+  utilization: number;
+  state: BudgetState;
+  runCountToday: number;
+}
+
+export interface BudgetStatusResponse {
+  budgets: BudgetStatus[];
+  alerts: BudgetStatus[];
+}
+
+export type IdentityScope =
+  | "workspace"
+  | "private_channel"
+  | "dm"
+  | "external"
+  | string;
+
+export interface CompartmentIdentity {
+  id: string;
+  orgId: string;
+  scope: IdentityScope;
+  name: string;
+  baseline?: boolean;
+  enabled: boolean;
+  placeId?: string;
+  accessBundleIds: string[];
+}
+
+export interface IdentityBinding {
+  [key: string]: unknown;
+}
+
+export interface IdentitiesResponse {
+  identities: CompartmentIdentity[];
+  bindings: IdentityBinding[];
+  derived: boolean;
+}
+
 export interface ModelUsage {
   runs: number;
   totalEstimatedCents: number;
@@ -685,7 +971,8 @@ export async function fetchBootstrap(): Promise<Bootstrap> {
 async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${readBekApiUrl()}${path}`, {
     ...init,
-    headers: adminAuthHeaders(init?.headers),
+    credentials: "include",
+    headers: adminRequestHeaders(init?.method, init?.headers),
   });
   if (!res.ok) {
     throw await apiError(path, res);
@@ -732,6 +1019,14 @@ export async function fetchModelUsage(): Promise<ModelUsage> {
   return jsonRequest<ModelUsage>("/api/model-usage");
 }
 
+export async function fetchBudgetStatus(): Promise<BudgetStatusResponse> {
+  return jsonRequest<BudgetStatusResponse>("/api/budgets/status");
+}
+
+export async function fetchIdentities(): Promise<IdentitiesResponse> {
+  return jsonRequest<IdentitiesResponse>("/api/identities");
+}
+
 export function auditEventsPath(filters: AuditEventFilters = {}): string {
   const params = auditEventFilterParams(filters);
   const query = params.toString();
@@ -759,6 +1054,7 @@ export async function fetchAuditEventExport(
 ): Promise<AuditEventExport> {
   const path = auditEventsExportPath(format, filters);
   const res = await fetch(`${readBekApiUrl()}${path}`, {
+    credentials: "include",
     headers: adminAuthHeaders(),
   });
   if (!res.ok) {
@@ -1073,7 +1369,10 @@ export async function createRun(input: {
 }) {
   const res = await fetch(`${readBekApiUrl()}/api/runs`, {
     method: "POST",
-    headers: adminAuthHeaders({ "content-type": "application/json" }),
+    credentials: "include",
+    headers: adminRequestHeaders("POST", {
+      "content-type": "application/json",
+    }),
     body: JSON.stringify(input),
   });
   if (!res.ok) {
@@ -1084,6 +1383,7 @@ export async function createRun(input: {
 
 export async function fetchRunDetail(runId: string): Promise<RunDetail> {
   const res = await fetch(`${readBekApiUrl()}/api/runs/${runId}`, {
+    credentials: "include",
     headers: adminAuthHeaders(),
   });
   if (!res.ok) {
@@ -1174,7 +1474,10 @@ export async function decideApproval(input: {
     `${readBekApiUrl()}/api/approvals/${input.approvalId}/${input.decision}`,
     {
       method: "POST",
-      headers: adminAuthHeaders({ "content-type": "application/json" }),
+      credentials: "include",
+      headers: adminRequestHeaders("POST", {
+        "content-type": "application/json",
+      }),
       body: JSON.stringify({
         payloadHash: input.payloadHash,
       }),
@@ -1184,4 +1487,31 @@ export async function decideApproval(input: {
     throw await apiError(`/api/approvals/${input.approvalId}`, res);
   }
   return res.json() as Promise<ApprovalRequest>;
+}
+
+export async function fetchHealthDashboard(): Promise<HealthDashboard> {
+  return jsonRequest<HealthDashboard>("/api/health/dashboard");
+}
+
+export function runTracePath(runId: string): string {
+  return `/api/runs/${encodeURIComponent(runId)}/trace`;
+}
+
+export async function fetchRunTrace(runId: string): Promise<RunTrace> {
+  return jsonRequest<RunTrace>(runTracePath(runId));
+}
+
+export async function fetchMemoryInventory(): Promise<MemoryInventory> {
+  return jsonRequest<MemoryInventory>("/api/memory/chunks");
+}
+
+export function memoryRetrievePath(placeId: string): string {
+  const params = new URLSearchParams({ placeId });
+  return `/api/memory/retrieve?${params.toString()}`;
+}
+
+export async function retrieveMemory(
+  placeId: string,
+): Promise<MemoryRetrieval> {
+  return jsonRequest<MemoryRetrieval>(memoryRetrievePath(placeId));
 }

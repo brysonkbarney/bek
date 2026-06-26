@@ -12,11 +12,19 @@ import {
   discoverSlackChannels,
   fetchAuditEventExport,
   fetchBootstrap,
+  fetchBudgetStatus,
   fetchAuditEvents,
   fetchGitHubSetup,
+  fetchHealthDashboard,
+  fetchIdentities,
+  fetchMemoryInventory,
   fetchModelUsage,
+  fetchRunTrace,
   fetchSlackManifest,
   fetchSlackOutbox,
+  memoryRetrievePath,
+  retrieveMemory,
+  runTracePath,
   hasStoredAdminToken,
   githubSetupPath,
   linkPrincipalExternalIdentity,
@@ -25,16 +33,25 @@ import {
   readAdminApiToken,
   readBekApiUrl,
   saveAdminApiToken,
+  signInWithSession,
+  signOut,
+  fetchCurrentSession,
+  hasSessionCsrfToken,
+  readSessionCsrfToken,
   slackChannelDiscoveryPath,
   slackInstallStartPath,
   slackOutboxPath,
   updateAccessBundle,
   updateGrant,
   updateMcpConnector,
+  createRun,
 } from "./api";
 
 describe("web API helpers", () => {
-  afterEach(() => {
+  afterEach(async () => {
+    // Drop any in-memory session csrf token captured during a test so the
+    // module-level cache does not leak across cases.
+    await signOut();
     vi.unstubAllGlobals();
   });
 
@@ -898,6 +915,378 @@ describe("web API helpers", () => {
 
     await expect(drainSlackOutbox({ limit: 25 })).resolves.toEqual(drain);
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("signs in with a session cookie and stores the csrf token", async () => {
+    const sessionStorage = createMemoryStorage();
+    vi.stubGlobal("window", { sessionStorage });
+    const session = {
+      ok: true,
+      role: "admin",
+      principalId: "principal_admin",
+      orgId: "org_demo",
+      csrfToken: "csrf-token-123",
+      expiresAt: "2026-06-26T18:00:00.000Z",
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(String(input)).toBe("http://localhost:4317/api/auth/session");
+      expect(init?.method).toBe("POST");
+      expect(init?.credentials).toBe("include");
+      expect(init?.headers).toEqual({ authorization: "Bearer admin-token" });
+      return new Response(JSON.stringify(session), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(signInWithSession(" admin-token ")).resolves.toEqual(session);
+    expect(readSessionCsrfToken()).toBe("csrf-token-123");
+    expect(hasSessionCsrfToken()).toBe(true);
+    expect(sessionStorage.getItem("bek.sessionCsrfToken")).toBe(
+      "csrf-token-123",
+    );
+  });
+
+  it("returns undefined when sessions are disabled on the server", async () => {
+    const sessionStorage = createMemoryStorage();
+    vi.stubGlobal("window", { sessionStorage });
+    const fetchMock = vi.fn(async () => {
+      return new Response(JSON.stringify({ error: "sessions disabled" }), {
+        status: 501,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(signInWithSession("admin-token")).resolves.toBeUndefined();
+    expect(hasSessionCsrfToken()).toBe(false);
+  });
+
+  it("sends the x-bek-csrf header on write requests once a session exists", async () => {
+    const sessionStorage = createMemoryStorage();
+    const localStorage = createMemoryStorage();
+    vi.stubGlobal("window", { sessionStorage, localStorage });
+    saveAdminApiToken("admin-token");
+
+    const session = {
+      ok: true,
+      role: "admin",
+      principalId: "principal_admin",
+      orgId: "org_demo",
+      csrfToken: "csrf-token-456",
+    };
+    const calls: Array<{
+      path: string;
+      method: string;
+      credentials: RequestCredentials | undefined;
+      csrf: string | undefined;
+    }> = [];
+    const run = {
+      id: "run_999",
+      placeScopeId: "place_checkout",
+      runtimeProfileId: "runtime_local",
+      modelPolicyId: "model_policy_demo",
+      prompt: "@bek do the thing",
+      status: "queued",
+      trigger: "admin_console",
+      estimatedCostCents: 0,
+      actualCostCents: 0,
+      createdAt: "2026-06-26T18:00:00.000Z",
+      updatedAt: "2026-06-26T18:00:00.000Z",
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      const url = new URL(String(input));
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      calls.push({
+        path: url.pathname,
+        method: init?.method ?? "GET",
+        credentials: init?.credentials,
+        csrf: headers["x-bek-csrf"],
+      });
+      const body = url.pathname.endsWith("/auth/session") ? session : run;
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await signInWithSession("admin-token");
+    await createRun({ prompt: "@bek do the thing", placeScopeId: "place_x" });
+
+    expect(calls).toEqual([
+      {
+        path: "/api/auth/session",
+        method: "POST",
+        credentials: "include",
+        csrf: undefined,
+      },
+      {
+        path: "/api/runs",
+        method: "POST",
+        credentials: "include",
+        csrf: "csrf-token-456",
+      },
+    ]);
+  });
+
+  it("fetches the current session and signs out resiliently", async () => {
+    const sessionStorage = createMemoryStorage();
+    vi.stubGlobal("window", { sessionStorage });
+    sessionStorage.setItem("bek.sessionCsrfToken", "csrf-token-789");
+
+    const current = {
+      ok: true,
+      role: "admin",
+      principalId: "principal_admin",
+      orgId: "org_demo",
+      method: "cookie",
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      const url = new URL(String(input));
+      expect(init?.credentials).toBe("include");
+      if (url.pathname.endsWith("/auth/logout")) {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        expect(headers["x-bek-csrf"]).toBe("csrf-token-789");
+        return new Response(null, { status: 204 });
+      }
+      return new Response(JSON.stringify(current), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchCurrentSession()).resolves.toEqual(current);
+    await expect(signOut()).resolves.toBeUndefined();
+    expect(hasSessionCsrfToken()).toBe(false);
+    expect(sessionStorage.getItem("bek.sessionCsrfToken")).toBeNull();
+  });
+
+  it("builds run trace and memory retrieve paths with encoded ids", () => {
+    expect(runTracePath("run_123")).toBe("/api/runs/run_123/trace");
+    expect(runTracePath("run/with space")).toBe(
+      "/api/runs/run%2Fwith%20space/trace",
+    );
+    expect(memoryRetrievePath("place_checkout")).toBe(
+      "/api/memory/retrieve?placeId=place_checkout",
+    );
+    expect(memoryRetrievePath("place/with space")).toBe(
+      "/api/memory/retrieve?placeId=place%2Fwith+space",
+    );
+  });
+
+  it("fetches the health dashboard with admin auth", async () => {
+    const storage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveAdminApiToken("runtime-token");
+    const dashboard = {
+      status: "degraded" as const,
+      generatedAt: "2026-06-24T18:00:00.000Z",
+      componentCount: 2,
+      healthy: false,
+      statusCounts: { ok: 1, degraded: 1 },
+      unhealthy: [
+        { name: "worker", status: "degraded" as const, reason: "Backlog." },
+      ],
+      components: [
+        { name: "api", status: "ok" as const, detail: "Healthy." },
+        { name: "worker", status: "degraded" as const },
+      ],
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(String(input)).toBe("http://localhost:4317/api/health/dashboard");
+      expect(init?.headers).toEqual({ authorization: "Bearer runtime-token" });
+      return new Response(JSON.stringify(dashboard), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchHealthDashboard()).resolves.toEqual(dashboard);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("fetches budget status with admin auth", async () => {
+    const storage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveAdminApiToken("runtime-token");
+    const budgetStatus = {
+      budgets: [
+        {
+          budgetPolicyId: "budget_demo",
+          name: "Demo budget",
+          perDayCents: 2500,
+          spentTodayCents: 2000,
+          remainingTodayCents: 500,
+          utilization: 0.8,
+          state: "warning" as const,
+          runCountToday: 4,
+        },
+      ],
+      alerts: [
+        {
+          budgetPolicyId: "budget_demo",
+          name: "Demo budget",
+          perDayCents: 2500,
+          spentTodayCents: 2000,
+          remainingTodayCents: 500,
+          utilization: 0.8,
+          state: "warning" as const,
+          runCountToday: 4,
+        },
+      ],
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(String(input)).toBe("http://localhost:4317/api/budgets/status");
+      expect(init?.headers).toEqual({ authorization: "Bearer runtime-token" });
+      return new Response(JSON.stringify(budgetStatus), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchBudgetStatus()).resolves.toEqual(budgetStatus);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("fetches compartment identities with admin auth", async () => {
+    const storage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveAdminApiToken("runtime-token");
+    const identities = {
+      identities: [
+        {
+          id: "identity_workspace",
+          orgId: "org_demo",
+          scope: "workspace",
+          name: "Workspace baseline",
+          baseline: true,
+          enabled: true,
+          accessBundleIds: ["bundle_checkout"],
+        },
+      ],
+      bindings: [],
+      derived: true,
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(String(input)).toBe("http://localhost:4317/api/identities");
+      expect(init?.headers).toEqual({ authorization: "Bearer runtime-token" });
+      return new Response(JSON.stringify(identities), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchIdentities()).resolves.toEqual(identities);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("fetches a run trace with admin auth", async () => {
+    const storage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveAdminApiToken("runtime-token");
+    const trace = {
+      runId: "run_123",
+      eventCount: 1,
+      finalStatus: "completed",
+      durationMs: 1200,
+      phases: [{ type: "plan", status: "completed", durationMs: 1200 }],
+      modelCalls: [],
+      toolCalls: [{ name: "github.search", status: "completed" }],
+      approvals: [{ decision: "approved" }],
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(String(input)).toBe(
+        "http://localhost:4317/api/runs/run_123/trace",
+      );
+      expect(init?.headers).toEqual({ authorization: "Bearer runtime-token" });
+      return new Response(JSON.stringify(trace), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchRunTrace("run_123")).resolves.toEqual(trace);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("fetches the memory inventory and previews retrieval with admin auth", async () => {
+    const storage = createMemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+    saveAdminApiToken("runtime-token");
+    const inventory = {
+      sources: [
+        {
+          id: "source_runbook",
+          kind: "document",
+          sensitivity: "internal",
+          placeId: "place_checkout",
+          title: "Checkout runbook",
+          createdAt: "2026-06-24T18:00:00.000Z",
+        },
+      ],
+      chunks: [
+        {
+          id: "chunk_retry",
+          sourceId: "source_runbook",
+          sensitivity: "internal",
+          placeId: "place_checkout",
+          citation: { label: "Checkout runbook §3" },
+          text: "Retries back off exponentially.",
+        },
+      ],
+    };
+    const retrieval = {
+      placeId: "place_checkout",
+      identityId: "principal_bryson",
+      isolated: true,
+      allowed: inventory.chunks,
+      excluded: [{ contentHash: "abc123", reason: "More sensitive place." }],
+    };
+    const fetchMock = vi.fn(async (...args: Parameters<typeof fetch>) => {
+      const [input, init] = args;
+      expect(init?.headers).toEqual({ authorization: "Bearer runtime-token" });
+      if (String(input).includes("/api/memory/retrieve")) {
+        expect(String(input)).toBe(
+          "http://localhost:4317/api/memory/retrieve?placeId=place_checkout",
+        );
+        return new Response(JSON.stringify(retrieval), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      expect(String(input)).toBe("http://localhost:4317/api/memory/chunks");
+      return new Response(JSON.stringify(inventory), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchMemoryInventory()).resolves.toEqual(inventory);
+    await expect(retrieveMemory("place_checkout")).resolves.toEqual(retrieval);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats an invalid session cookie as signed out", async () => {
+    vi.stubGlobal("window", { sessionStorage: createMemoryStorage() });
+    const fetchMock = vi.fn(async () => new Response(null, { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchCurrentSession()).resolves.toBeUndefined();
   });
 });
 

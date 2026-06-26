@@ -36,7 +36,9 @@ honest near-term pitch is:
 > install path while the hosted control plane matures.
 
 Do not describe hosted Bek as self-serve, generally available, multi-tenant, or
-billing-ready until the beta entry criteria below are complete.
+billing-ready until the beta entry criteria below are complete. See the
+[do-not-claim list](./do-not-claim.md) for the concrete phrasing to avoid and the
+[launch SKU boundaries](./sku-boundaries.md) for what each SKU delivers today.
 
 ## Managed Does Not Mean Ungoverned
 

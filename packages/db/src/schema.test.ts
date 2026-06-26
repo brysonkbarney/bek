@@ -3,8 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   accessBundlePlaces,
   accessBundles,
+  agentIdentityProfileBindings,
+  agentIdentityProfiles,
   agents,
   approvals,
+  memoryChunks,
+  memorySources,
   connectorInstalls,
   credentialMetadata,
   grants,
@@ -73,6 +77,30 @@ describe("Bek schema", () => {
       "worker_dead_letters",
       "worker_events",
     ]);
+  });
+
+  it("declares first-class agent identity tables distinct from the visible agent", () => {
+    expect(getTableConfig(agentIdentityProfiles).name).toBe("agent_identities");
+    expect(getTableConfig(agentIdentityProfileBindings).name).toBe(
+      "agent_identity_bindings",
+    );
+    // At most one workspace baseline identity per org.
+    expect(indexNames(agentIdentityProfiles)).toContain(
+      "agent_identities_org_baseline_unique",
+    );
+    // A place can bind a given identity at most once.
+    expect(indexNames(agentIdentityProfileBindings)).toContain(
+      "agent_identity_bindings_place_identity_unique",
+    );
+  });
+
+  it("declares the memory source registry + chunk store tables", () => {
+    expect(getTableConfig(memorySources).name).toBe("memory_sources");
+    expect(getTableConfig(memoryChunks).name).toBe("memory_chunks");
+    expect(indexNames(memorySources)).toContain(
+      "memory_sources_org_content_unique",
+    );
+    expect(indexNames(memoryChunks)).toContain("memory_chunks_org_place_idx");
   });
 
   it("indexes the runtime tables by org and workflow identifiers", () => {

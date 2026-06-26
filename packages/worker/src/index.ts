@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import {
   adapterMatchesProfile,
   buildRuntimeRunPrompt,
+  runBekAgentLoop,
   untrustedContentPromptVersion,
   type RuntimeArtifactRef,
   type RunWorkItem,
@@ -20,12 +21,19 @@ import {
 import {
   DockerSandboxProvider,
   createDefaultSandboxPolicy,
+  evaluateEgressPolicy,
+  evaluateFilesystemAccess,
+  normalizeResourceLimits,
+  type FilesystemPolicy,
+  type ResourceLimitWarning,
+  type SandboxMount,
   type SandboxPolicy,
   type SandboxProvider,
   type SandboxProviderKind,
 } from "@bek/sandbox";
 import {
   VercelAiGatewayModelGateway,
+  calculateModelUsageCostCents,
   createDefaultModelProviderRegistry,
   createModelProviderRegistry,
   createModelProviderRegistryFromBenchmarks,
@@ -2523,6 +2531,80 @@ export function createAiSdkGatewayRuntimeAdapter(
   };
 }
 
+export interface AiSdkAgentRuntimeAdapterOptions {
+  id?: string | undefined;
+  kind?: RuntimeAdapterKind | undefined;
+  /** Override the AI SDK 7 generate function (defaults to a real ToolLoopAgent). */
+  generate?: Parameters<typeof runBekAgentLoop>[1]["generate"] | undefined;
+  registry?: ModelProviderRegistry | undefined;
+  benchmarks?: ModelBenchmark[] | undefined;
+  /** Per-call timeout in ms (or an AI SDK 7 timeout config). */
+  timeoutMs?: number | undefined;
+  /** HMAC secret used to sign AI SDK 7 tool-approval requests. */
+  toolApprovalSecret?: string | undefined;
+}
+
+/**
+ * Opt-in AI SDK 7 agent-loop runtime adapter. Unlike the single-shot gateway
+ * adapter, this drives a `ToolLoopAgent` that can call governed Bek tools, gate
+ * risky calls behind approvals, and suspend the run for the durable worker to
+ * resume after a human decision.
+ */
+export function createAiSdkAgentRuntimeAdapter(
+  options: AiSdkAgentRuntimeAdapterOptions = {},
+): RuntimeAdapter {
+  const id = options.id ?? "ai-sdk-agent";
+  const kind = options.kind ?? "ai_sdk";
+
+  function priceUsageCents(
+    route: RuntimeModelRoute,
+  ): (
+    usage:
+      | { inputTokens?: number | undefined; outputTokens?: number | undefined }
+      | undefined,
+  ) => number {
+    const benchmark =
+      options.benchmarks?.find((entry) => entry.model === route.model) ??
+      options.registry?.resolveModel(route.model)?.benchmark;
+    return (usage) =>
+      calculateModelUsageCostCents(benchmark, {
+        inputTokens: usage?.inputTokens ?? 0,
+        outputTokens: usage?.outputTokens ?? 0,
+      });
+  }
+
+  async function run(
+    input: RuntimeStartInput,
+    isApproved: (grant: CapabilityGrant) => boolean,
+  ): Promise<RuntimeResult> {
+    return runBekAgentLoop(input, {
+      model: input.modelRoute.model,
+      timeout: options.timeoutMs ?? 120_000,
+      ...(options.generate ? { generate: options.generate } : {}),
+      ...(options.toolApprovalSecret
+        ? { toolApprovalSecret: options.toolApprovalSecret }
+        : {}),
+      priceUsageCents: priceUsageCents(input.modelRoute),
+      isApproved,
+    });
+  }
+
+  return {
+    id,
+    kind,
+    canRun(profile) {
+      return profile.runtimeKind === kind && profile.adapter === id;
+    },
+    start: (input) => run(input, () => false),
+    // On resume the gating approval has already been decided, so previously
+    // approval-required grants are treated as approved for this attempt.
+    resume: (input) => run(input, () => true),
+    async cancel() {
+      return;
+    },
+  };
+}
+
 export function createDeterministicLocalRuntimeAdapter(
   options: DeterministicLocalRuntimeAdapterOptions = {},
 ): RuntimeAdapter {
@@ -2614,6 +2696,12 @@ export interface SandboxRuntimeAdapterOptions {
   command?: string[] | undefined;
   cwd?: string | undefined;
   artifactPath?: string | undefined;
+  /**
+   * Egress targets (bare host, host:port, or URL) that the configured command
+   * is expected to reach. Each is evaluated against the sandbox network policy
+   * before the command runs; any denial fails the run closed without executing.
+   */
+  networkTargets?: string[] | undefined;
 }
 
 export function createSandboxRuntimeAdapter(
@@ -2646,6 +2734,86 @@ export function createSandboxRuntimeAdapter(
         actualCostCents: 1,
         error: "Sandbox runtime requires a sandbox lease.",
       };
+    }
+
+    // 1) Normalize the policy's resource limits and surface any clamping as an
+    //    observability event before doing any work.
+    const { warnings: limitWarnings } = normalizeResourceLimits({
+      cpuCount: policy.resourceLimits.cpuCount,
+      memoryMb: policy.resourceLimits.memoryMb,
+      diskMb: policy.resourceLimits.diskMb,
+      processLimit: policy.resourceLimits.processLimit,
+      timeoutMs: policy.resourceLimits.timeoutMs,
+    });
+    if (limitWarnings.length > 0) {
+      await input.emit({
+        type: "sandbox.started",
+        message: `Sandbox runtime ${id} clamped ${limitWarnings.length} resource limit(s) to policy ceilings.`,
+        data: {
+          warnings: limitWarnings.map((warning: ResourceLimitWarning) => ({
+            field: warning.field,
+            requested: warning.requested,
+            applied: warning.applied,
+            kind: warning.kind,
+          })),
+        },
+      });
+    }
+
+    // 2) Evaluate any egress-implying targets against the network policy. Any
+    //    denial fails the run closed and never executes the command.
+    for (const target of options.networkTargets ?? []) {
+      const egress = evaluateEgressPolicy(policy.network, target);
+      if (!egress.allowed) {
+        await input.emit({
+          type: "sandbox.network_changed",
+          message: `Sandbox runtime ${id} blocked egress to ${target}: ${egress.message}`,
+          data: {
+            target,
+            reason: egress.reason,
+            ...(egress.host !== undefined ? { host: egress.host } : {}),
+            ...(egress.port !== undefined ? { port: egress.port } : {}),
+          },
+        });
+        return {
+          status: "failed",
+          artifactRefs: [],
+          actualCostCents: 1,
+          error: `Sandbox egress denied for ${target}: ${egress.message}`,
+        };
+      }
+    }
+
+    // 3) Validate the working directory and artifact path against the policy's
+    //    filesystem rules. Fail closed before executing on any denial.
+    const filesystemPolicy = filesystemPolicyFromMounts(policy.mounts);
+    if (filesystemPolicy) {
+      const cwdDecision = evaluateFilesystemAccess(filesystemPolicy, cwd, {
+        mode: "write",
+      });
+      if (!cwdDecision.allowed) {
+        return {
+          status: "failed",
+          artifactRefs: [],
+          actualCostCents: 1,
+          error: `Sandbox working directory ${cwd} denied: ${cwdDecision.message}`,
+        };
+      }
+      if (options.artifactPath) {
+        const artifactDecision = evaluateFilesystemAccess(
+          filesystemPolicy,
+          options.artifactPath,
+          { mode: "read" },
+        );
+        if (!artifactDecision.allowed) {
+          return {
+            status: "failed",
+            artifactRefs: [],
+            actualCostCents: 1,
+            error: `Sandbox artifact path ${options.artifactPath} denied: ${artifactDecision.message}`,
+          };
+        }
+      }
     }
 
     await input.emit({
@@ -2969,6 +3137,34 @@ function sandboxApprovalRequiredResult(
     finalText: `Sandbox approval required before starting ${provider.kind}: ${reason}`,
     artifactRefs: [],
     actualCostCents: 0,
+  };
+}
+
+/**
+ * Derive a `FilesystemPolicy` from the sandbox mounts so requested paths can be
+ * validated against the configured roots. Returns undefined when no writable
+ * worktree/artifact roots are present, leaving existing (policy-free) behavior
+ * unchanged.
+ */
+function filesystemPolicyFromMounts(
+  mounts: SandboxMount[],
+): FilesystemPolicy | undefined {
+  const worktree = mounts.find((mount) => mount.purpose === "worktree");
+  const artifact = mounts.find((mount) => mount.purpose === "artifact");
+  const source = mounts.find((mount) => mount.purpose === "source");
+  if (!worktree && !artifact) {
+    return undefined;
+  }
+  const worktreeRoot = worktree?.target ?? artifact?.target ?? "";
+  const artifactRoot = artifact?.target ?? worktree?.target ?? "";
+  // Only treat a path as the read-only source root when an actual source mount
+  // exists; otherwise use a sentinel that cannot overlap the writable roots so
+  // writes to the worktree/artifact roots are not mistaken for source writes.
+  const sourceRoot = source?.target ?? "/__bek_no_source_root__";
+  return {
+    sourceRoot,
+    worktreeRoot,
+    artifactRoot,
   };
 }
 

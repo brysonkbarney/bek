@@ -7,13 +7,16 @@ import {
   ClipboardList,
   Cpu,
   Database,
+  Fingerprint,
   GitBranch,
+  HeartPulse,
   KeyRound,
   LayoutDashboard,
   Route,
   Settings,
   ShieldCheck,
   Slack,
+  Wallet,
 } from "lucide-react";
 import type {
   AccessBundle,
@@ -34,6 +37,7 @@ type AdminRoute =
   | "/connectors"
   | "/models"
   | "/runs"
+  | "/health"
   | "/settings";
 
 export interface SetupAction {
@@ -63,13 +67,32 @@ export const navigationItems = [
   { to: "/approvals", label: "Approvals", icon: KeyRound },
   { to: "/connectors", label: "Connectors", icon: Boxes },
   { to: "/models", label: "Models", icon: Route },
+  { to: "/budgets", label: "Budgets", icon: Wallet },
+  { to: "/identities", label: "Identities", icon: Fingerprint },
   { to: "/memory", label: "Memory", icon: Brain },
+  { to: "/health", label: "Health", icon: HeartPulse },
   { to: "/audit", label: "Audit", icon: Activity },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
 
 export function formatMoney(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
+}
+
+export function formatDuration(ms: number | undefined): string {
+  if (ms === undefined || !Number.isFinite(ms) || ms < 0) {
+    return "—";
+  }
+  if (ms < 1000) {
+    return `${Math.round(ms)}ms`;
+  }
+  const seconds = ms / 1000;
+  if (seconds < 60) {
+    return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.round(seconds % 60);
+  return `${minutes}m ${remainingSeconds}s`;
 }
 
 export function formatDateTime(value: string): string {

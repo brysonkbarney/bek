@@ -1138,3 +1138,653 @@ function copySandboxCommand(command: SandboxCommand): SandboxCommand {
   }
   return copy;
 }
+
+// ---------------------------------------------------------------------------
+// Egress policy evaluation
+//
+// Pure helpers that decide whether a sandbox is allowed to reach a given host
+// or URL under its `SandboxNetworkPolicy`. These never perform DNS resolution
+// or any network I/O; they only reason over the textual target and the
+// configured allowlist. Default posture is deny: link-local/metadata, private
+// RFC1918 ranges, and localhost are blocked unless the policy explicitly opts
+// out (or the exact host is allowlisted, when permitted).
+// ---------------------------------------------------------------------------
+
+export type EgressDecisionReason =
+  | "network_disabled"
+  | "not_allowlisted"
+  | "metadata_blocked"
+  | "private_network_blocked"
+  | "localhost_blocked"
+  | "invalid_target"
+  | "allowlisted";
+
+export interface EgressDecision {
+  allowed: boolean;
+  reason: EgressDecisionReason;
+  /** Human-readable explanation suitable for logs and audit trails. */
+  message: string;
+  /** Normalized host extracted from the target, when one could be parsed. */
+  host?: string | undefined;
+  /** Normalized port extracted from the target, when one was present. */
+  port?: number | undefined;
+}
+
+export interface EvaluateEgressOptions {
+  /**
+   * When false, an allowlisted host may bypass the private/localhost guards
+   * (metadata is still always blocked when `blockMetadataService` is set).
+   * Defaults to true: allowlisting never overrides the metadata guard.
+   */
+  allowlistOverridesGuards?: boolean | undefined;
+}
+
+/**
+ * Evaluate a single egress target (a bare host, `host:port`, or full URL)
+ * against a sandbox network policy. Pure function, no I/O.
+ */
+export function evaluateEgressPolicy(
+  policy: SandboxNetworkPolicy,
+  target: string,
+  options: EvaluateEgressOptions = {},
+): EgressDecision {
+  const parsed = parseEgressTarget(target);
+  if (!parsed) {
+    return {
+      allowed: false,
+      reason: "invalid_target",
+      message: `Egress target ${JSON.stringify(target)} could not be parsed.`,
+    };
+  }
+
+  const { host, port } = parsed;
+  const allowlistOverridesGuards = options.allowlistOverridesGuards ?? false;
+  const allowlistMatch = matchesEgressAllowlist(policy.allowlist, host, port);
+
+  if (policy.mode === "disabled") {
+    return {
+      allowed: false,
+      reason: "network_disabled",
+      message: "Sandbox network egress is disabled by policy.",
+      host,
+      ...(port !== undefined ? { port } : {}),
+    };
+  }
+
+  // Metadata services are never reachable when the guard is enabled, even if
+  // somehow allowlisted.
+  if (policy.blockMetadataService && isMetadataNetworkTarget(host)) {
+    return {
+      allowed: false,
+      reason: "metadata_blocked",
+      message: `Egress to cloud metadata service ${host} is blocked.`,
+      host,
+      ...(port !== undefined ? { port } : {}),
+    };
+  }
+
+  const guardsApply = !(allowlistMatch && allowlistOverridesGuards);
+  if (guardsApply) {
+    if (policy.blockPrivateNetworks && isLoopbackTarget(host)) {
+      return {
+        allowed: false,
+        reason: "localhost_blocked",
+        message: `Egress to localhost target ${host} is blocked.`,
+        host,
+        ...(port !== undefined ? { port } : {}),
+      };
+    }
+    if (policy.blockPrivateNetworks && isPrivateNetworkTarget(host)) {
+      return {
+        allowed: false,
+        reason: "private_network_blocked",
+        message: `Egress to private network target ${host} is blocked.`,
+        host,
+        ...(port !== undefined ? { port } : {}),
+      };
+    }
+  }
+
+  if (!allowlistMatch) {
+    return {
+      allowed: false,
+      reason: "not_allowlisted",
+      message: `Egress target ${host} is not on the allowlist.`,
+      host,
+      ...(port !== undefined ? { port } : {}),
+    };
+  }
+
+  return {
+    allowed: true,
+    reason: "allowlisted",
+    message: `Egress target ${host} is allowlisted.`,
+    host,
+    ...(port !== undefined ? { port } : {}),
+  };
+}
+
+interface EgressTarget {
+  host: string;
+  port?: number | undefined;
+}
+
+function parseEgressTarget(target: string): EgressTarget | undefined {
+  const trimmed = target.trim().toLowerCase();
+  if (!trimmed || /[\s,\0]/.test(trimmed) || trimmed.includes("*")) {
+    return undefined;
+  }
+
+  // Full URL or scheme-prefixed origin.
+  if (/^[a-z][a-z0-9+.-]*:\/\//.test(trimmed)) {
+    let url: URL;
+    try {
+      url = new URL(trimmed);
+    } catch {
+      return undefined;
+    }
+    const host = normalizeHost(url.hostname);
+    if (!host) {
+      return undefined;
+    }
+    return url.port ? { host, port: Number(url.port) } : { host };
+  }
+
+  // Bracketed IPv6 with optional port, e.g. "[::1]:443".
+  const bracketed = trimmed.match(/^\[([^\]]+)\](?::(\d{1,5}))?$/);
+  if (bracketed) {
+    const host = normalizeHost(bracketed[1]!);
+    const portText = bracketed[2];
+    if (!host) {
+      return undefined;
+    }
+    return portText !== undefined ? { host, port: Number(portText) } : { host };
+  }
+
+  // Bare IPv6 literal (no port, multiple colons).
+  if (isIP(trimmed) === 6) {
+    return { host: normalizeHost(trimmed) };
+  }
+
+  // host or host:port (IPv4 / hostname).
+  const colonIndex = trimmed.indexOf(":");
+  if (colonIndex !== -1) {
+    const hostPart = trimmed.slice(0, colonIndex);
+    const portPart = trimmed.slice(colonIndex + 1);
+    if (!/^\d{1,5}$/.test(portPart)) {
+      return undefined;
+    }
+    const host = normalizeHost(hostPart);
+    if (!host || host.includes("/")) {
+      return undefined;
+    }
+    return { host, port: Number(portPart) };
+  }
+
+  const host = normalizeHost(trimmed);
+  if (!host || host.includes("/")) {
+    return undefined;
+  }
+  return { host };
+}
+
+function matchesEgressAllowlist(
+  allowlist: string[],
+  host: string,
+  port: number | undefined,
+): boolean {
+  for (const raw of allowlist) {
+    const entry = parseEgressTarget(raw);
+    if (!entry || entry.host !== host) {
+      continue;
+    }
+    // An allowlist entry without a port matches any port on that host; an
+    // entry with a port must match the requested port exactly.
+    if (entry.port === undefined || entry.port === port) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isLoopbackTarget(host: string): boolean {
+  if (host === "localhost" || host.endsWith(".localhost")) {
+    return true;
+  }
+  if (isIP(host) === 4) {
+    return host.startsWith("127.");
+  }
+  if (isIP(host) === 6) {
+    const embedded = ipv4FromMappedIpv6(host);
+    if (embedded) {
+      return embedded.startsWith("127.");
+    }
+    return host === "::1";
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem policy evaluation
+//
+// Pure helper that validates a requested container path against a policy made
+// of a read-only source root, a writable worktree root, an artifact root, and
+// a maximum write size. Rejects path traversal and any path that escapes the
+// configured roots. No filesystem I/O is performed.
+// ---------------------------------------------------------------------------
+
+export type FilesystemAccessMode = "read" | "write";
+
+export type FilesystemDecisionReason =
+  | "invalid_path"
+  | "path_traversal"
+  | "outside_roots"
+  | "read_only_root"
+  | "size_exceeded"
+  | "allowed";
+
+export interface FilesystemPolicy {
+  /** Absolute, read-only source root (writes are always denied here). */
+  sourceRoot: string;
+  /** Absolute, writable worktree root. */
+  worktreeRoot: string;
+  /** Absolute, writable artifact root. */
+  artifactRoot: string;
+  /** Maximum byte size permitted for a single write, when enforced. */
+  maxWriteBytes?: number | undefined;
+}
+
+export interface FilesystemDecision {
+  allowed: boolean;
+  reason: FilesystemDecisionReason;
+  message: string;
+  /** The normalized absolute path that was evaluated, when parseable. */
+  normalizedPath?: string | undefined;
+  /** Which configured root the path resolved into, when any. */
+  root?: "source" | "worktree" | "artifact" | undefined;
+}
+
+export interface EvaluateFilesystemOptions {
+  /** Access mode requested; defaults to "read". */
+  mode?: FilesystemAccessMode | undefined;
+  /** Size of the pending write in bytes, checked against `maxWriteBytes`. */
+  sizeBytes?: number | undefined;
+}
+
+/**
+ * Validate a requested path against a filesystem policy. Pure function: it
+ * normalizes the path lexically (never touching disk) and rejects traversal or
+ * escape outside the configured roots.
+ */
+export function evaluateFilesystemAccess(
+  policy: FilesystemPolicy,
+  requestedPath: string,
+  options: EvaluateFilesystemOptions = {},
+): FilesystemDecision {
+  const mode = options.mode ?? "read";
+
+  if (
+    typeof requestedPath !== "string" ||
+    requestedPath.length === 0 ||
+    /[\0\r\n]/.test(requestedPath) ||
+    !requestedPath.startsWith("/")
+  ) {
+    return {
+      allowed: false,
+      reason: "invalid_path",
+      message: `Requested path ${JSON.stringify(
+        requestedPath,
+      )} must be a non-empty absolute path.`,
+    };
+  }
+
+  // Reject explicit traversal segments before normalization so that escapes
+  // are never silently collapsed away.
+  if (containsTraversalSegment(requestedPath)) {
+    return {
+      allowed: false,
+      reason: "path_traversal",
+      message: `Requested path ${requestedPath} contains a '..' traversal segment.`,
+    };
+  }
+
+  const normalizedPath = path.posix.normalize(requestedPath);
+  // Defense in depth: normalization must not have produced an escape either.
+  if (normalizedPath === ".." || normalizedPath.startsWith("../")) {
+    return {
+      allowed: false,
+      reason: "path_traversal",
+      message: `Requested path ${requestedPath} escapes the filesystem roots.`,
+      normalizedPath,
+    };
+  }
+
+  const roots: Array<{
+    name: "source" | "worktree" | "artifact";
+    root: string;
+    writable: boolean;
+  }> = [
+    { name: "source", root: policy.sourceRoot, writable: false },
+    { name: "worktree", root: policy.worktreeRoot, writable: true },
+    { name: "artifact", root: policy.artifactRoot, writable: true },
+  ];
+
+  const containing = roots.find((candidate) =>
+    isWithinRoot(candidate.root, normalizedPath),
+  );
+
+  if (!containing) {
+    return {
+      allowed: false,
+      reason: "outside_roots",
+      message: `Requested path ${normalizedPath} is outside the source, worktree, and artifact roots.`,
+      normalizedPath,
+    };
+  }
+
+  if (mode === "write" && !containing.writable) {
+    return {
+      allowed: false,
+      reason: "read_only_root",
+      message: `Requested path ${normalizedPath} is in the read-only ${containing.name} root.`,
+      normalizedPath,
+      root: containing.name,
+    };
+  }
+
+  if (
+    mode === "write" &&
+    policy.maxWriteBytes !== undefined &&
+    options.sizeBytes !== undefined &&
+    options.sizeBytes > policy.maxWriteBytes
+  ) {
+    return {
+      allowed: false,
+      reason: "size_exceeded",
+      message: `Write of ${options.sizeBytes} bytes exceeds the ${policy.maxWriteBytes}-byte limit.`,
+      normalizedPath,
+      root: containing.name,
+    };
+  }
+
+  return {
+    allowed: true,
+    reason: "allowed",
+    message: `Requested path ${normalizedPath} is permitted in the ${containing.name} root.`,
+    normalizedPath,
+    root: containing.name,
+  };
+}
+
+function containsTraversalSegment(value: string): boolean {
+  return value.split("/").some((segment) => segment === "..");
+}
+
+function isWithinRoot(root: string, candidate: string): boolean {
+  if (typeof root !== "string" || !root.startsWith("/")) {
+    return false;
+  }
+  const normalizedRoot = path.posix.normalize(root);
+  const base =
+    normalizedRoot.endsWith("/") && normalizedRoot !== "/"
+      ? normalizedRoot.slice(0, -1)
+      : normalizedRoot;
+  if (candidate === base) {
+    return true;
+  }
+  const prefix = base === "/" ? "/" : `${base}/`;
+  return candidate.startsWith(prefix);
+}
+
+// ---------------------------------------------------------------------------
+// Resource limit normalization
+//
+// A typed structure describing the effective resource budget for a sandbox,
+// plus a pure validator/normalizer that clamps requested limits against sane
+// maxima and reports any clamping as warnings. Builds on the existing
+// `SandboxResourceLimits` additively by adding optional wall-clock and egress
+// byte ceilings.
+// ---------------------------------------------------------------------------
+
+export interface ResourceLimitRequest {
+  cpuCount?: number | undefined;
+  memoryMb?: number | undefined;
+  diskMb?: number | undefined;
+  processLimit?: number | undefined;
+  timeoutMs?: number | undefined;
+  /** Wall-clock ceiling distinct from per-command timeout, when desired. */
+  wallClockMs?: number | undefined;
+  /** Maximum cumulative egress bytes permitted, when network is enabled. */
+  egressBytes?: number | undefined;
+}
+
+export interface EffectiveResourceLimits {
+  cpuCount: number;
+  memoryMb: number;
+  diskMb: number;
+  processLimit: number;
+  timeoutMs: number;
+  wallClockMs: number;
+  egressBytes: number;
+}
+
+export interface ResourceLimitBounds {
+  minCpuCount: number;
+  maxCpuCount: number;
+  minMemoryMb: number;
+  maxMemoryMb: number;
+  minDiskMb: number;
+  maxDiskMb: number;
+  minProcessLimit: number;
+  maxProcessLimit: number;
+  minTimeoutMs: number;
+  maxTimeoutMs: number;
+  minWallClockMs: number;
+  maxWallClockMs: number;
+  minEgressBytes: number;
+  maxEgressBytes: number;
+}
+
+export interface ResourceLimitWarning {
+  field: keyof EffectiveResourceLimits;
+  requested: number;
+  applied: number;
+  kind: "clamped_low" | "clamped_high" | "defaulted_invalid";
+  message: string;
+}
+
+export interface NormalizedResourceLimits {
+  limits: EffectiveResourceLimits;
+  warnings: ResourceLimitWarning[];
+}
+
+export const defaultResourceLimitBounds: ResourceLimitBounds = {
+  minCpuCount: 0.25,
+  maxCpuCount: 16,
+  minMemoryMb: 128,
+  maxMemoryMb: 65_536,
+  minDiskMb: 64,
+  maxDiskMb: 102_400,
+  minProcessLimit: 16,
+  maxProcessLimit: 4_096,
+  minTimeoutMs: 1_000,
+  maxTimeoutMs: 60 * 60 * 1000,
+  minWallClockMs: 1_000,
+  maxWallClockMs: 2 * 60 * 60 * 1000,
+  minEgressBytes: 0,
+  maxEgressBytes: 5 * 1024 * 1024 * 1024,
+};
+
+export const defaultEffectiveResourceLimits: EffectiveResourceLimits = {
+  cpuCount: defaultSandboxResourceLimits.cpuCount,
+  memoryMb: defaultSandboxResourceLimits.memoryMb,
+  diskMb: defaultSandboxResourceLimits.diskMb,
+  processLimit: defaultSandboxResourceLimits.processLimit,
+  timeoutMs: defaultSandboxResourceLimits.timeoutMs,
+  wallClockMs: defaultSandboxResourceLimits.timeoutMs,
+  egressBytes: 256 * 1024 * 1024,
+};
+
+/**
+ * Validate and clamp a requested resource budget against sane maxima. Missing
+ * or invalid fields fall back to defaults; out-of-range values are clamped.
+ * Returns the effective limits plus a warning for every adjustment made. Pure
+ * function with no side effects.
+ */
+export function normalizeResourceLimits(
+  request: ResourceLimitRequest = {},
+  bounds: ResourceLimitBounds = defaultResourceLimitBounds,
+  defaults: EffectiveResourceLimits = defaultEffectiveResourceLimits,
+): NormalizedResourceLimits {
+  const warnings: ResourceLimitWarning[] = [];
+
+  const limits: EffectiveResourceLimits = {
+    cpuCount: clampField(
+      "cpuCount",
+      request.cpuCount,
+      bounds.minCpuCount,
+      bounds.maxCpuCount,
+      defaults.cpuCount,
+      false,
+      warnings,
+    ),
+    memoryMb: clampField(
+      "memoryMb",
+      request.memoryMb,
+      bounds.minMemoryMb,
+      bounds.maxMemoryMb,
+      defaults.memoryMb,
+      true,
+      warnings,
+    ),
+    diskMb: clampField(
+      "diskMb",
+      request.diskMb,
+      bounds.minDiskMb,
+      bounds.maxDiskMb,
+      defaults.diskMb,
+      true,
+      warnings,
+    ),
+    processLimit: clampField(
+      "processLimit",
+      request.processLimit,
+      bounds.minProcessLimit,
+      bounds.maxProcessLimit,
+      defaults.processLimit,
+      true,
+      warnings,
+    ),
+    timeoutMs: clampField(
+      "timeoutMs",
+      request.timeoutMs,
+      bounds.minTimeoutMs,
+      bounds.maxTimeoutMs,
+      defaults.timeoutMs,
+      true,
+      warnings,
+    ),
+    wallClockMs: clampField(
+      "wallClockMs",
+      request.wallClockMs,
+      bounds.minWallClockMs,
+      bounds.maxWallClockMs,
+      defaults.wallClockMs,
+      true,
+      warnings,
+    ),
+    egressBytes: clampField(
+      "egressBytes",
+      request.egressBytes,
+      bounds.minEgressBytes,
+      bounds.maxEgressBytes,
+      defaults.egressBytes,
+      true,
+      warnings,
+    ),
+  };
+
+  // Wall-clock must never be shorter than a single command timeout; lift it to
+  // the command timeout if a smaller value slipped through.
+  if (limits.wallClockMs < limits.timeoutMs) {
+    warnings.push({
+      field: "wallClockMs",
+      requested: limits.wallClockMs,
+      applied: limits.timeoutMs,
+      kind: "clamped_low",
+      message: `wallClockMs (${limits.wallClockMs}) cannot be less than timeoutMs (${limits.timeoutMs}); raised to match.`,
+    });
+    limits.wallClockMs = limits.timeoutMs;
+  }
+
+  return { limits, warnings };
+}
+
+function clampField(
+  field: keyof EffectiveResourceLimits,
+  requested: number | undefined,
+  min: number,
+  max: number,
+  fallback: number,
+  integer: boolean,
+  warnings: ResourceLimitWarning[],
+): number {
+  if (
+    requested === undefined ||
+    !Number.isFinite(requested) ||
+    requested < 0 ||
+    (integer && !Number.isInteger(requested))
+  ) {
+    if (requested !== undefined) {
+      warnings.push({
+        field,
+        requested,
+        applied: fallback,
+        kind: "defaulted_invalid",
+        message: `${field} value ${requested} is invalid; using default ${fallback}.`,
+      });
+    }
+    return fallback;
+  }
+
+  if (requested < min) {
+    warnings.push({
+      field,
+      requested,
+      applied: min,
+      kind: "clamped_low",
+      message: `${field} value ${requested} is below the minimum ${min}; clamped up.`,
+    });
+    return min;
+  }
+
+  if (requested > max) {
+    warnings.push({
+      field,
+      requested,
+      applied: max,
+      kind: "clamped_high",
+      message: `${field} value ${requested} exceeds the maximum ${max}; clamped down.`,
+    });
+    return max;
+  }
+
+  return requested;
+}
+
+/**
+ * Project the broader `EffectiveResourceLimits` back onto the existing
+ * `SandboxResourceLimits` shape so normalized budgets can feed directly into a
+ * `SandboxPolicy` without restructuring existing call sites.
+ */
+export function toSandboxResourceLimits(
+  limits: EffectiveResourceLimits,
+): SandboxResourceLimits {
+  return {
+    cpuCount: limits.cpuCount,
+    memoryMb: limits.memoryMb,
+    diskMb: limits.diskMb,
+    processLimit: limits.processLimit,
+    timeoutMs: limits.timeoutMs,
+  };
+}

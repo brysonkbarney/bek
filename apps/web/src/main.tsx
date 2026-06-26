@@ -13,9 +13,12 @@ import {
   AccessBundlesPage,
   ApprovalsPage,
   AuditPage,
+  BudgetsPage,
   ChannelDetailPage,
   ChannelsPage,
   ConnectorsPage,
+  HealthPage,
+  IdentitiesPage,
   MemoryPage,
   ModelsPage,
   RunDetailPage,
@@ -103,10 +106,28 @@ const modelsRoute = createRoute({
   component: ModelsPage,
 });
 
+const budgetsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/budgets",
+  component: BudgetsPage,
+});
+
+const identitiesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/identities",
+  component: IdentitiesPage,
+});
+
 const memoryRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/memory",
   component: MemoryPage,
+});
+
+const healthRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/health",
+  component: HealthPage,
 });
 
 const auditRoute = createRoute({
@@ -134,7 +155,10 @@ const routeTree = rootRoute.addChildren([
   approvalsRoute,
   connectorsRoute,
   modelsRoute,
+  budgetsRoute,
+  identitiesRoute,
   memoryRoute,
+  healthRoute,
   auditRoute,
   settingsRoute,
 ]);

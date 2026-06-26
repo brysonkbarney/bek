@@ -61,4 +61,6 @@ For any design-partner pilot, require:
 - OAuth token storage or a managed token path.
 - Principal mapping for approvers.
 - Low per-run model budgets.
-- Written claims/anti-claims shared before the pilot.
+- Written claims/anti-claims shared before the pilot (see the
+  [do-not-claim list](./do-not-claim.md) and
+  [launch SKU boundaries](./sku-boundaries.md)).

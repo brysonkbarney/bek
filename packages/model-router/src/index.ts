@@ -676,12 +676,24 @@ export class FakeModelGateway implements ModelGateway {
 
 export interface AiSdkTextGenerationResult {
   text: string;
+  // AI SDK 7: `usage` is cumulative across steps and is the canonical field.
   usage?: Partial<LanguageModelUsage> | undefined;
+  // Deprecated in AI SDK 7 (kept for backward compatibility with injected fakes).
   totalUsage?: Partial<LanguageModelUsage> | undefined;
   finishReason?: string | undefined;
   rawFinishReason?: string | undefined;
   response?:
     | { id?: string | undefined; modelId?: string | undefined }
+    | undefined;
+  // AI SDK 7: per-step values live on `finalStep`. Prefer it when present.
+  finalStep?:
+    | {
+        usage?: Partial<LanguageModelUsage> | undefined;
+        finishReason?: string | undefined;
+        response?:
+          | { id?: string | undefined; modelId?: string | undefined }
+          | undefined;
+      }
     | undefined;
 }
 
@@ -736,31 +748,38 @@ export class VercelAiGatewayModelGateway implements ModelGateway {
           request.context ?? this.context,
         ),
       });
-      const usage = normalizeAiSdkUsage(result.totalUsage ?? result.usage, {
-        inputTokens:
-          request.inputTokens ?? estimatePromptTokens(request.prompt),
-        outputTokens: request.outputTokens ?? 0,
-      });
+      // AI SDK 7: prefer `usage` (cumulative) and the `finalStep` metadata, but
+      // fall back to the deprecated top-level fields so injected fakes and older
+      // result shapes keep working.
+      const finalStep = result.finalStep;
+      const usage = normalizeAiSdkUsage(
+        result.usage ?? result.totalUsage ?? finalStep?.usage,
+        {
+          inputTokens:
+            request.inputTokens ?? estimatePromptTokens(request.prompt),
+          outputTokens: request.outputTokens ?? 0,
+        },
+      );
       const costCents = calculateModelUsageCostCents(
         request.route.benchmark,
         usage,
       );
+      const response = finalStep?.response ?? result.response;
+      const finishReason = finalStep?.finishReason ?? result.finishReason;
       return {
         runId: request.runId,
         provider: request.route.provider,
-        model: result.response?.modelId ?? request.route.model,
+        model: response?.modelId ?? request.route.model,
         content: result.text,
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
         costCents,
         latencyMs: Math.max(0, this.clock() - startedAt),
-        ...(result.finishReason ? { finishReason: result.finishReason } : {}),
+        ...(finishReason ? { finishReason } : {}),
         ...(result.rawFinishReason
           ? { rawFinishReason: result.rawFinishReason }
           : {}),
-        ...(result.response?.id
-          ? { gatewayResponseId: result.response.id }
-          : {}),
+        ...(response?.id ? { gatewayResponseId: response.id } : {}),
         createdAt: request.createdAt ?? this.now(),
       };
     } catch (error) {

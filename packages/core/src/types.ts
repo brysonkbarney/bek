@@ -1,3 +1,6 @@
+import type { AgentIdentityProfile, AgentIdentityBinding } from "./identity";
+import type { MemoryChunk, MemorySource } from "./memory";
+
 export type ISODate = string;
 
 export type PrincipalKind =
@@ -350,4 +353,14 @@ export interface BekSnapshot {
   auditEvents: AuditEvent[];
   ingressDeliveries: IngressDelivery[];
   outboundDeliveries: OutboundDelivery[];
+  /**
+   * Optional compartment identity profiles (distinct from the visible `agent`).
+   * When omitted, the run-creation gate derives sensible defaults from places +
+   * access bundles. See `@bek/core` `identity.ts`.
+   */
+  agentIdentities?: AgentIdentityProfile[];
+  agentIdentityBindings?: AgentIdentityBinding[];
+  /** In-memory memory source registry + chunk store (see `memory.ts`). */
+  memorySources?: MemorySource[];
+  memoryChunks?: MemoryChunk[];
 }

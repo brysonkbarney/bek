@@ -16,13 +16,18 @@ budgets, and approvals behind it.
 | Govern MCP tools           | [MCP setup](./setup/mcp.md)                                                         |
 | Understand architecture    | [Architecture](./architecture.md)                                                   |
 | Review worker/runtime plan | [Worker](./architecture/worker.md) and [runtime](./architecture/runtime-sandbox.md) |
+| Understand the agent loop  | [AI SDK 7 architecture](./architecture/ai-sdk-7.md)                                 |
+| Understand agent identity  | [Agent identity model](./architecture/agent-identity.md)                            |
 | Check launch readiness     | [Launch readiness](./launch-readiness.md)                                           |
+| Understand the goal        | [Goal (updated)](./goal.md)                                                         |
 | Track remaining build work | [Build checklist](./build-checklist.md)                                             |
 | Operate a workspace        | [Operator checklist](./operator-checklist.md)                                       |
 | Review security scope      | [Security entry points](./security/threat-model-entry-points.md)                    |
 | Compare alternatives       | [Alternatives](./comparison/alternatives.md)                                        |
 | Position hosted Bek        | [Hosted Bek](./commercial/hosted.md)                                                |
+| Know the launch SKUs       | [Launch SKU boundaries](./commercial/sku-boundaries.md)                             |
 | Keep claims honest         | [Sales-safe claims](./commercial/claims.md)                                         |
+| See what not to claim      | [Do-not-claim list](./commercial/do-not-claim.md)                                   |
 | Draft hosted packaging     | [Hosted packaging draft](./commercial/pricing.md)                                   |
 
 ## Current Product Boundary

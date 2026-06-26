@@ -6,7 +6,7 @@ describe("Bek security helpers", () => {
   it("redacts common secrets before audit persistence", () => {
     expect(
       redactSecrets(
-        "token xoxb-1234567890-secret and key ghp_abcdefghijklmnopqrstuvwxyz",
+        "token xoxb-EXAMPLETOKEN-secret and key ghp_abcdefghijklmnopqrstuvwxyz",
       ),
     ).toContain("[redacted:slack-token]");
     expect(
@@ -25,7 +25,7 @@ describe("Bek security helpers", () => {
       "org_demo",
       "run_test",
       "run.created",
-      "saw xoxp-1234567890-secret",
+      "saw xoxp-EXAMPLETOKEN-secret",
       {
         githubToken: "ghp_abcdefghijklmnopqrstuvwxyz",
         note: "Bearer secret-token-value",
@@ -40,7 +40,7 @@ describe("Bek security helpers", () => {
   });
 
   it("redacts common token formats from nested run event payloads", () => {
-    const slackToken = "xoxb-1234567890-secret";
+    const slackToken = "xoxb-EXAMPLETOKEN-secret";
     const githubClassicToken = "gho_abcdefghijklmnopqrstuvwxyz";
     const githubFineGrainedToken =
       "github_pat_1234567890abcdefghijklmnopqrstuvwxyz";
@@ -87,7 +87,7 @@ describe("Bek security helpers", () => {
   });
 
   it("redacts audit-flagged credential shapes from public text", () => {
-    const slackAppToken = "xapp-1-A1234567890-b1234567890-c1234567890";
+    const slackAppToken = "xapp-1-AEXAMPLETOKEN-bEXAMPLETOKEN-cEXAMPLETOKEN";
     const awsTemporaryAccessKey = "ASIAIOSFODNN7EXAMPLE";
     const apiKey = "abcdefghijklmnopqrstuvwxyz123456";
     const bearerAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
@@ -130,7 +130,7 @@ describe("Bek security helpers", () => {
           name: "deploy",
           passphrase: "correct horse battery staple",
           credentialRef: "cred_live_slack",
-          credentialValue: "xoxb-1234567890-secret",
+          credentialValue: "xoxb-EXAMPLETOKEN-secret",
           accessKeyId: "AKIAIOSFODNN7EXAMPLE",
           refreshToken: "refresh-token-value",
           clientSecret: "client-secret-value",

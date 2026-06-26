@@ -31,6 +31,11 @@ const jsonObject = <
     .$type<T>()
     .notNull()
     .default(sql`'{}'::jsonb`);
+const jsonArray = <T = string>(name: string) =>
+  jsonb(name)
+    .$type<T[]>()
+    .notNull()
+    .default(sql`'[]'::jsonb`);
 
 export const organizationPlanEnum = pgEnum("organization_plan", [
   "oss",
@@ -87,6 +92,27 @@ export const placeProviderEnum = pgEnum("place_provider", [
   "slack",
   "github",
   "system",
+]);
+export const agentIdentityScopeEnum = pgEnum("agent_identity_scope", [
+  "workspace",
+  "public_channel",
+  "private_channel",
+  "dm",
+  "service_account",
+]);
+export const memorySourceKindEnum = pgEnum("memory_source_kind", [
+  "slack_thread",
+  "doc",
+  "repo",
+  "ticket",
+  "mcp_output",
+  "uploaded_file",
+  "generated_report",
+]);
+export const memoryRetentionKindEnum = pgEnum("memory_retention_kind", [
+  "forever",
+  "ttl_days",
+  "keep_until",
 ]);
 export const placeSensitivityEnum = pgEnum("place_sensitivity", [
   "public",
@@ -428,6 +454,139 @@ export const accessBundlePlaces = pgTable(
       columns: [table.accessBundleId, table.placeId],
     }),
     index("access_bundle_places_org_place_idx").on(table.orgId, table.placeId),
+  ],
+);
+
+export const agentIdentityProfiles = pgTable(
+  "agent_identities",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    scope: agentIdentityScopeEnum("scope").notNull(),
+    name: text("name").notNull(),
+    baseline: boolean("baseline").notNull().default(false),
+    enabled: boolean("enabled").notNull().default(true),
+    inheritsBaseline: boolean("inherits_baseline").notNull().default(true),
+    placeId: text("place_id").references(() => places.id, {
+      onDelete: "cascade",
+    }),
+    modelPolicyId: text("model_policy_id").references(() => modelPolicies.id, {
+      onDelete: "set null",
+    }),
+    runtimeProfileId: text("runtime_profile_id").references(
+      () => runtimeProfiles.id,
+      { onDelete: "set null" },
+    ),
+    accessBundleIds: jsonArray("access_bundle_ids"),
+    approverPrincipalIds: jsonArray("approver_principal_ids"),
+    invocationAllowlistPrincipalIds: jsonArray(
+      "invocation_allowlist_principal_ids",
+    ),
+    metadata: jsonObject("metadata"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    index("agent_identities_org_scope_idx").on(table.orgId, table.scope),
+    index("agent_identities_org_place_idx").on(table.orgId, table.placeId),
+    // At most one workspace baseline identity per org.
+    uniqueIndex("agent_identities_org_baseline_unique")
+      .on(table.orgId)
+      .where(sql`${table.baseline} = true`),
+  ],
+);
+
+export const agentIdentityProfileBindings = pgTable(
+  "agent_identity_bindings",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    identityId: text("identity_id")
+      .notNull()
+      .references(() => agentIdentityProfiles.id, { onDelete: "cascade" }),
+    placeId: text("place_id")
+      .notNull()
+      .references(() => places.id, { onDelete: "cascade" }),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("agent_identity_bindings_place_identity_unique").on(
+      table.placeId,
+      table.identityId,
+    ),
+    index("agent_identity_bindings_org_identity_idx").on(
+      table.orgId,
+      table.identityId,
+    ),
+  ],
+);
+
+export const memorySources = pgTable(
+  "memory_sources",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    kind: memorySourceKindEnum("kind").notNull(),
+    placeId: text("place_id").references(() => places.id, {
+      onDelete: "set null",
+    }),
+    identityId: text("identity_id"),
+    sensitivity: placeSensitivityEnum("sensitivity").notNull(),
+    contentHash: text("content_hash").notNull(),
+    createdByPrincipalId: text("created_by_principal_id").notNull(),
+    title: text("title"),
+    uri: text("uri"),
+    retentionKind: memoryRetentionKindEnum("retention_kind").notNull(),
+    retentionTtlDays: integer("retention_ttl_days"),
+    retentionRetainUntil: timestamp("retention_retain_until", {
+      withTimezone: true,
+    }),
+    metadata: jsonObject("metadata"),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    index("memory_sources_org_place_idx").on(table.orgId, table.placeId),
+    index("memory_sources_org_kind_idx").on(table.orgId, table.kind),
+    uniqueIndex("memory_sources_org_content_unique").on(
+      table.orgId,
+      table.contentHash,
+    ),
+  ],
+);
+
+export const memoryChunks = pgTable(
+  "memory_chunks",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    sourceId: text("source_id")
+      .notNull()
+      .references(() => memorySources.id, { onDelete: "cascade" }),
+    placeId: text("place_id").references(() => places.id, {
+      onDelete: "set null",
+    }),
+    identityId: text("identity_id"),
+    allowedPlaceIds: jsonArray("allowed_place_ids"),
+    allowedIdentityIds: jsonArray("allowed_identity_ids"),
+    sensitivity: placeSensitivityEnum("sensitivity").notNull(),
+    contentHash: text("content_hash").notNull(),
+    text: text("text").notNull(),
+    citation: jsonObject("citation"),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    index("memory_chunks_org_place_idx").on(table.orgId, table.placeId),
+    index("memory_chunks_source_idx").on(table.sourceId),
   ],
 );
 
@@ -1312,6 +1471,22 @@ export type NewAccessBundlePlaceRow = InferInsertModel<
 >;
 export type GrantRow = InferSelectModel<typeof grants>;
 export type NewGrantRow = InferInsertModel<typeof grants>;
+export type AgentIdentityProfileRow = InferSelectModel<
+  typeof agentIdentityProfiles
+>;
+export type NewAgentIdentityProfileRow = InferInsertModel<
+  typeof agentIdentityProfiles
+>;
+export type AgentIdentityProfileBindingRow = InferSelectModel<
+  typeof agentIdentityProfileBindings
+>;
+export type NewAgentIdentityProfileBindingRow = InferInsertModel<
+  typeof agentIdentityProfileBindings
+>;
+export type MemorySourceRow = InferSelectModel<typeof memorySources>;
+export type NewMemorySourceRow = InferInsertModel<typeof memorySources>;
+export type MemoryChunkRow = InferSelectModel<typeof memoryChunks>;
+export type NewMemoryChunkRow = InferInsertModel<typeof memoryChunks>;
 export type ModelPolicyRow = InferSelectModel<typeof modelPolicies>;
 export type NewModelPolicyRow = InferInsertModel<typeof modelPolicies>;
 export type RuntimeProfileRow = InferSelectModel<typeof runtimeProfiles>;

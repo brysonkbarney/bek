@@ -14,7 +14,9 @@
   },
   "dependencies": {
     "@bek/core": "workspace:*",
-    "@bek/sandbox": "workspace:*"
+    "@bek/sandbox": "workspace:*",
+    "ai": "^7.0.0",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

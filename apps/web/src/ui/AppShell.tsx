@@ -8,6 +8,8 @@ import {
   hasStoredAdminToken,
   isBekApiError,
   saveAdminApiToken,
+  signInWithSession,
+  signOut,
 } from "../api";
 import { Panel, WarningCallout } from "./components";
 import { navigationItems } from "./product-model";
@@ -70,12 +72,16 @@ export function AppShell() {
             className="sidebar-action"
             type="button"
             onClick={() => {
-              clearAdminApiToken();
-              refreshAuthState();
+              // Tear down the session cookie (best effort) before clearing the
+              // local token so the user is fully signed out either way.
+              void signOut().finally(() => {
+                clearAdminApiToken();
+                refreshAuthState();
+              });
             }}
           >
             <LogOut size={16} aria-hidden="true" />
-            Clear token
+            Sign out
           </button>
         ) : null}
       </aside>
@@ -87,9 +93,15 @@ export function AppShell() {
             onTokenInput={setTokenInput}
             onRememberToken={setRememberToken}
             onUnlock={() => {
-              saveAdminApiToken(tokenInput, { persist: rememberToken });
+              const token = tokenInput;
+              saveAdminApiToken(token, { persist: rememberToken });
               setTokenInput("");
-              refreshAuthState();
+              // Opportunistically upgrade to a session cookie so later requests
+              // use the cookie + csrf. If sessions are disabled (501) or the
+              // call fails, we silently keep using the bearer token.
+              void signInWithSession(token)
+                .catch(() => undefined)
+                .finally(() => refreshAuthState());
             }}
           />
         ) : missingServerToken ? (

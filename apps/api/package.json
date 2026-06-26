@@ -10,13 +10,15 @@
     "start": "tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "preflight": "tsx ../../scripts/preflight.ts"
   },
   "dependencies": {
     "@bek/core": "workspace:*",
     "@bek/credentials": "workspace:*",
     "@bek/db": "workspace:*",
     "@bek/github": "workspace:*",
+    "@bek/mcp-gateway": "workspace:*",
     "@bek/observability": "workspace:*",
     "@bek/runtime": "workspace:*",
     "@bek/slack": "workspace:*",

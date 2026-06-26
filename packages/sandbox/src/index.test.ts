@@ -7,10 +7,18 @@ import {
   buildDockerRunCommand,
   createDefaultSandboxPolicy,
   createSandboxArtifact,
+  defaultEffectiveResourceLimits,
+  defaultResourceLimitBounds,
+  evaluateEgressPolicy,
+  evaluateFilesystemAccess,
   hashSandboxBytes,
+  normalizeResourceLimits,
+  toSandboxResourceLimits,
   validateNetworkAllowlist,
   type DockerProcessCommand,
   type DockerProcessResult,
+  type FilesystemPolicy,
+  type SandboxNetworkPolicy,
   type SandboxPolicy,
   type SandboxResult,
 } from "./index";
@@ -532,5 +540,372 @@ describe("fake sandbox provider", () => {
         risk: "read_internal",
       }),
     ).rejects.toThrow(/destroyed/);
+  });
+});
+
+function egressPolicy(
+  overrides: Partial<SandboxNetworkPolicy> = {},
+): SandboxNetworkPolicy {
+  return {
+    mode: "egress_allowlist",
+    allowlist: ["api.github.com", "cache.example.com:8080"],
+    blockPrivateNetworks: true,
+    blockMetadataService: true,
+    ...overrides,
+  };
+}
+
+describe("evaluateEgressPolicy", () => {
+  it("allows an exact allowlisted host", () => {
+    const decision = evaluateEgressPolicy(
+      egressPolicy(),
+      "https://api.github.com/repos",
+    );
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allowlisted",
+      host: "api.github.com",
+    });
+  });
+
+  it("normalizes case and parses bare hosts, host:port, and URLs", () => {
+    expect(evaluateEgressPolicy(egressPolicy(), "API.GitHub.com").allowed).toBe(
+      true,
+    );
+    expect(
+      evaluateEgressPolicy(egressPolicy(), "cache.example.com:8080").allowed,
+    ).toBe(true);
+    // Wrong port for a port-scoped allowlist entry is denied.
+    expect(
+      evaluateEgressPolicy(egressPolicy(), "cache.example.com:9090"),
+    ).toMatchObject({ allowed: false, reason: "not_allowlisted" });
+    // Port-less allowlist entry matches any port.
+    expect(
+      evaluateEgressPolicy(egressPolicy(), "https://api.github.com:8443/")
+        .allowed,
+    ).toBe(true);
+  });
+
+  it("denies non-allowlisted hosts", () => {
+    expect(
+      evaluateEgressPolicy(egressPolicy(), "evil.example.org"),
+    ).toMatchObject({ allowed: false, reason: "not_allowlisted" });
+  });
+
+  it("denies all egress when the network is disabled", () => {
+    expect(
+      evaluateEgressPolicy(
+        egressPolicy({ mode: "disabled", allowlist: [] }),
+        "api.github.com",
+      ),
+    ).toMatchObject({ allowed: false, reason: "network_disabled" });
+  });
+
+  it("blocks the cloud metadata IP even if it is allowlisted", () => {
+    const policy = egressPolicy({ allowlist: ["169.254.169.254"] });
+    expect(evaluateEgressPolicy(policy, "169.254.169.254")).toMatchObject({
+      allowed: false,
+      reason: "metadata_blocked",
+    });
+    expect(
+      evaluateEgressPolicy(policy, "http://[::ffff:169.254.169.254]/"),
+    ).toMatchObject({ allowed: false, reason: "metadata_blocked" });
+    expect(
+      evaluateEgressPolicy(policy, "metadata.google.internal"),
+    ).toMatchObject({ allowed: false, reason: "metadata_blocked" });
+  });
+
+  it("blocks private RFC1918 ranges and localhost by default", () => {
+    expect(evaluateEgressPolicy(egressPolicy(), "10.0.0.5")).toMatchObject({
+      allowed: false,
+      reason: "private_network_blocked",
+    });
+    expect(evaluateEgressPolicy(egressPolicy(), "192.168.1.1")).toMatchObject({
+      allowed: false,
+      reason: "private_network_blocked",
+    });
+    expect(evaluateEgressPolicy(egressPolicy(), "172.16.4.4")).toMatchObject({
+      allowed: false,
+      reason: "private_network_blocked",
+    });
+    expect(evaluateEgressPolicy(egressPolicy(), "localhost")).toMatchObject({
+      allowed: false,
+      reason: "localhost_blocked",
+    });
+    expect(evaluateEgressPolicy(egressPolicy(), "127.0.0.1")).toMatchObject({
+      allowed: false,
+      reason: "localhost_blocked",
+    });
+    expect(evaluateEgressPolicy(egressPolicy(), "[::1]:443")).toMatchObject({
+      allowed: false,
+      reason: "localhost_blocked",
+    });
+  });
+
+  it("permits private hosts only when guards are disabled or overridden", () => {
+    // Guard disabled on the policy.
+    expect(
+      evaluateEgressPolicy(
+        egressPolicy({
+          allowlist: ["10.0.0.5"],
+          blockPrivateNetworks: false,
+        }),
+        "10.0.0.5",
+      ).allowed,
+    ).toBe(true);
+
+    // Guard still on, but explicit override for an allowlisted host.
+    expect(
+      evaluateEgressPolicy(
+        egressPolicy({ allowlist: ["10.0.0.5"] }),
+        "10.0.0.5",
+        { allowlistOverridesGuards: true },
+      ).allowed,
+    ).toBe(true);
+
+    // Override never bypasses the metadata guard.
+    expect(
+      evaluateEgressPolicy(
+        egressPolicy({ allowlist: ["169.254.169.254"] }),
+        "169.254.169.254",
+        { allowlistOverridesGuards: true },
+      ),
+    ).toMatchObject({ allowed: false, reason: "metadata_blocked" });
+  });
+
+  it("rejects malformed targets", () => {
+    for (const bad of [
+      "",
+      "   ",
+      "ht tp://x",
+      "*.example.com",
+      "host:notaport",
+    ]) {
+      expect(evaluateEgressPolicy(egressPolicy(), bad)).toMatchObject({
+        allowed: false,
+        reason: "invalid_target",
+      });
+    }
+  });
+});
+
+function fsPolicy(overrides: Partial<FilesystemPolicy> = {}): FilesystemPolicy {
+  return {
+    sourceRoot: "/workspace/source",
+    worktreeRoot: "/workspace/worktree",
+    artifactRoot: "/workspace/artifacts",
+    maxWriteBytes: 1_000,
+    ...overrides,
+  };
+}
+
+describe("evaluateFilesystemAccess", () => {
+  it("allows reads within any root", () => {
+    expect(
+      evaluateFilesystemAccess(fsPolicy(), "/workspace/source/src/index.ts"),
+    ).toMatchObject({ allowed: true, reason: "allowed", root: "source" });
+    expect(
+      evaluateFilesystemAccess(fsPolicy(), "/workspace/worktree/a.txt", {
+        mode: "read",
+      }),
+    ).toMatchObject({ allowed: true, root: "worktree" });
+  });
+
+  it("allows writes to worktree and artifact roots but not the source root", () => {
+    expect(
+      evaluateFilesystemAccess(fsPolicy(), "/workspace/worktree/out.txt", {
+        mode: "write",
+      }),
+    ).toMatchObject({ allowed: true, root: "worktree" });
+    expect(
+      evaluateFilesystemAccess(fsPolicy(), "/workspace/artifacts/out.txt", {
+        mode: "write",
+      }),
+    ).toMatchObject({ allowed: true, root: "artifact" });
+    expect(
+      evaluateFilesystemAccess(fsPolicy(), "/workspace/source/out.txt", {
+        mode: "write",
+      }),
+    ).toMatchObject({
+      allowed: false,
+      reason: "read_only_root",
+      root: "source",
+    });
+  });
+
+  it("rejects path traversal and escapes", () => {
+    expect(
+      evaluateFilesystemAccess(
+        fsPolicy(),
+        "/workspace/worktree/../../etc/passwd",
+      ),
+    ).toMatchObject({ allowed: false, reason: "path_traversal" });
+    expect(
+      evaluateFilesystemAccess(
+        fsPolicy(),
+        "/workspace/source/../source-secrets",
+      ),
+    ).toMatchObject({ allowed: false, reason: "path_traversal" });
+    // Traversal that resolves back inside is still rejected (no '..' allowed).
+    expect(
+      evaluateFilesystemAccess(fsPolicy(), "/workspace/worktree/sub/../ok.txt"),
+    ).toMatchObject({ allowed: false, reason: "path_traversal" });
+  });
+
+  it("rejects paths outside all roots", () => {
+    expect(evaluateFilesystemAccess(fsPolicy(), "/etc/passwd")).toMatchObject({
+      allowed: false,
+      reason: "outside_roots",
+    });
+    // Prefix sibling must not be treated as inside the root.
+    expect(
+      evaluateFilesystemAccess(fsPolicy(), "/workspace/worktree-evil/x"),
+    ).toMatchObject({ allowed: false, reason: "outside_roots" });
+  });
+
+  it("rejects invalid paths", () => {
+    expect(evaluateFilesystemAccess(fsPolicy(), "")).toMatchObject({
+      allowed: false,
+      reason: "invalid_path",
+    });
+    expect(evaluateFilesystemAccess(fsPolicy(), "relative/path")).toMatchObject(
+      { allowed: false, reason: "invalid_path" },
+    );
+    expect(
+      evaluateFilesystemAccess(fsPolicy(), "/workspace/worktree/a\0b"),
+    ).toMatchObject({ allowed: false, reason: "invalid_path" });
+  });
+
+  it("enforces the maximum write size", () => {
+    expect(
+      evaluateFilesystemAccess(fsPolicy(), "/workspace/worktree/big.bin", {
+        mode: "write",
+        sizeBytes: 5_000,
+      }),
+    ).toMatchObject({ allowed: false, reason: "size_exceeded" });
+    expect(
+      evaluateFilesystemAccess(fsPolicy(), "/workspace/worktree/ok.bin", {
+        mode: "write",
+        sizeBytes: 500,
+      }),
+    ).toMatchObject({ allowed: true });
+    // Size is not checked on reads.
+    expect(
+      evaluateFilesystemAccess(fsPolicy(), "/workspace/worktree/ok.bin", {
+        mode: "read",
+        sizeBytes: 5_000,
+      }).allowed,
+    ).toBe(true);
+  });
+
+  it("treats the root directory itself as in-range", () => {
+    expect(
+      evaluateFilesystemAccess(fsPolicy(), "/workspace/worktree", {
+        mode: "write",
+      }),
+    ).toMatchObject({ allowed: true, root: "worktree" });
+  });
+});
+
+describe("normalizeResourceLimits", () => {
+  it("returns defaults with no warnings when nothing is requested", () => {
+    const result = normalizeResourceLimits();
+    expect(result.limits).toEqual(defaultEffectiveResourceLimits);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("passes through valid in-range requests untouched", () => {
+    const result = normalizeResourceLimits({
+      cpuCount: 4,
+      memoryMb: 8192,
+      diskMb: 20_480,
+      processLimit: 512,
+      timeoutMs: 120_000,
+      wallClockMs: 240_000,
+      egressBytes: 1024 * 1024,
+    });
+    expect(result.warnings).toEqual([]);
+    expect(result.limits).toEqual({
+      cpuCount: 4,
+      memoryMb: 8192,
+      diskMb: 20_480,
+      processLimit: 512,
+      timeoutMs: 120_000,
+      wallClockMs: 240_000,
+      egressBytes: 1024 * 1024,
+    });
+  });
+
+  it("clamps oversized values down to the maxima and warns", () => {
+    const result = normalizeResourceLimits({
+      cpuCount: 999,
+      memoryMb: 10_000_000,
+      egressBytes: Number.MAX_SAFE_INTEGER,
+    });
+    expect(result.limits.cpuCount).toBe(defaultResourceLimitBounds.maxCpuCount);
+    expect(result.limits.memoryMb).toBe(defaultResourceLimitBounds.maxMemoryMb);
+    expect(result.limits.egressBytes).toBe(
+      defaultResourceLimitBounds.maxEgressBytes,
+    );
+    const fields = result.warnings.map((w) => `${w.field}:${w.kind}`);
+    expect(fields).toContain("cpuCount:clamped_high");
+    expect(fields).toContain("memoryMb:clamped_high");
+    expect(fields).toContain("egressBytes:clamped_high");
+  });
+
+  it("clamps undersized values up to the minima and warns", () => {
+    const result = normalizeResourceLimits({
+      cpuCount: 0.01,
+      memoryMb: 1,
+      timeoutMs: 5,
+    });
+    expect(result.limits.cpuCount).toBe(defaultResourceLimitBounds.minCpuCount);
+    expect(result.limits.memoryMb).toBe(defaultResourceLimitBounds.minMemoryMb);
+    expect(result.limits.timeoutMs).toBe(
+      defaultResourceLimitBounds.minTimeoutMs,
+    );
+    expect(result.warnings.every((w) => w.kind === "clamped_low")).toBe(true);
+  });
+
+  it("falls back to defaults for invalid values and warns", () => {
+    const result = normalizeResourceLimits({
+      memoryMb: 512.5,
+      diskMb: Number.NaN,
+      processLimit: -10,
+    });
+    expect(result.limits.memoryMb).toBe(
+      defaultEffectiveResourceLimits.memoryMb,
+    );
+    expect(result.limits.diskMb).toBe(defaultEffectiveResourceLimits.diskMb);
+    expect(result.limits.processLimit).toBe(
+      defaultEffectiveResourceLimits.processLimit,
+    );
+    expect(
+      result.warnings.filter((w) => w.kind === "defaulted_invalid").length,
+    ).toBe(3);
+  });
+
+  it("raises wall-clock to be at least the command timeout", () => {
+    const result = normalizeResourceLimits({
+      timeoutMs: 300_000,
+      wallClockMs: 60_000,
+    });
+    expect(result.limits.wallClockMs).toBe(300_000);
+    expect(
+      result.warnings.some(
+        (w) => w.field === "wallClockMs" && w.kind === "clamped_low",
+      ),
+    ).toBe(true);
+  });
+
+  it("projects effective limits back onto SandboxResourceLimits", () => {
+    const { limits } = normalizeResourceLimits({ cpuCount: 4, memoryMb: 8192 });
+    expect(toSandboxResourceLimits(limits)).toEqual({
+      cpuCount: 4,
+      memoryMb: 8192,
+      diskMb: limits.diskMb,
+      processLimit: limits.processLimit,
+      timeoutMs: limits.timeoutMs,
+    });
   });
 });
