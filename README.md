@@ -66,6 +66,21 @@ screenshots must avoid.
 
 ## Quick Start
 
+**Prerequisites:** Node.js >= 24 and pnpm 11.1.3 (`corepack enable` will provide
+the right pnpm). No database or external credentials are needed for the local
+demo — it runs on an in-memory store with seeded data.
+
+```bash
+git clone https://github.com/brysonkbarney/bek.git
+cd bek
+pnpm install
+pnpm dev
+```
+
+Then open the admin console at **http://localhost:5173** — it works immediately,
+no configuration required. (`pnpm dev` runs the API on :4317 with the local
+demo bypass; production/self-host is fail-closed — see below.)
+
 Choose the path that matches what you are trying to prove:
 
 | Goal                        | Path                                                                                                                                                      |
@@ -95,6 +110,7 @@ pnpm check
 Release candidates should be tagged only after CI passes. Tag releases publish
 `api`, `web`, `worker`, and `migrate` images to GHCR with BuildKit SBOM and
 provenance attestations, and scheduled secret scanning runs in GitHub Actions.
+See [RELEASING.md](./RELEASING.md) for the full release checklist and flow.
 
 Run the API smoke test:
 

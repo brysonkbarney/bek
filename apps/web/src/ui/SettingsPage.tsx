@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 import { fetchBootstrap, updateAgent } from "../api";
 import {
   EmptyState,
+  ErrorState,
+  LoadingState,
   PageHeader,
   Panel,
   StatusBadge,
@@ -18,7 +20,7 @@ function errorMessage(error: unknown, fallback: string): string {
 
 export function SettingsPage() {
   const queryClient = useQueryClient();
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
   });
@@ -41,9 +43,16 @@ export function SettingsPage() {
     setDefaultRuntimeProfileId(data.agent.defaultRuntimeProfileId ?? "");
   }, [data]);
 
-  if (isLoading) return <div className="state">Loading settings...</div>;
+  if (isLoading) return <LoadingState label="Loading settings..." />;
   if (error || !data)
-    return <div className="state error">No settings found.</div>;
+    return (
+      <ErrorState
+        title="Settings are unavailable"
+        message="Bek could not load workspace settings."
+        onRetry={() => void refetch()}
+        isRetrying={isFetching}
+      />
+    );
 
   const trimmedName = agentName.trim();
   const trimmedDescription = agentDescription.trim();

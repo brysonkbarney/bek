@@ -844,6 +844,90 @@ test("loads the admin overview and navigates representative routes", async ({
   expect(pageErrors).toEqual([]);
 });
 
+test("guided setup recognizes a fully configured workspace", async ({
+  page,
+}) => {
+  await installMockAdminApi(page);
+
+  await page.goto("/setup/guided");
+  // A complete install recedes to a calm summary instead of nagging.
+  await expect(
+    page.getByRole("heading", { name: "Your Bek teammate is set up." }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Setup complete" }),
+  ).toBeVisible();
+  await expect(page.getByText("You're set up.")).toBeVisible();
+  await expect(page.getByText("Connect Slack")).toBeVisible();
+});
+
+test("guided setup shows ordered step status when setup is incomplete", async ({
+  page,
+}) => {
+  // Strip the persisted readiness signals so the wizard surfaces, not the
+  // complete summary: no channels, no bundle, no model/runtime, no approvers.
+  await installMockAdminApi(page, {
+    bootstrap: {
+      ...bootstrapFixture,
+      principals: [],
+      places: [],
+      accessBundles: [],
+      modelPolicies: [],
+      runtimeProfiles: [],
+    },
+    setupStatus: {
+      ...setupStatusFixture,
+      slackInstalled: false,
+      slackInstallStatus: null,
+      slackTokenStored: false,
+      slackChannels: 0,
+      accessBundles: 0,
+      modelPolicies: 0,
+      runtimeProfiles: 0,
+      readyForWorkspace: false,
+      readyForLocalDemo: false,
+    },
+  });
+
+  // Discoverable from the dashboard CTA without hunting.
+  await page.goto("/");
+  const cta = page.getByRole("link", { name: /Open guided setup/i });
+  await expect(cta).toBeVisible();
+  await cta.click();
+
+  await expect(
+    page.getByRole("heading", {
+      name: "Bring your Bek teammate online in seven steps.",
+    }),
+  ).toBeVisible();
+
+  // Progress indicator: step N of 7.
+  await expect(
+    page.getByRole("heading", { name: "Step 1 of 7" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("progressbar", {
+      name: /of 7 setup steps complete/,
+    }),
+  ).toBeVisible();
+
+  // Step rail renders all seven steps with derived status badges.
+  const rail = page.getByRole("list", { name: "Guided setup steps" });
+  await expect(rail.getByText("Connect Slack")).toBeVisible();
+  await expect(rail.getByText("Choose pilot channels")).toBeVisible();
+  await expect(rail.getByText("Run a smoke prompt")).toBeVisible();
+  await expect(rail.getByText("needs action").first()).toBeVisible();
+
+  // Step navigation moves focus through steps.
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Step 2 of 7" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Choose pilot channels" }),
+  ).toBeVisible();
+});
+
 test("prompts for an admin token when the API requires authorization", async ({
   page,
 }) => {
@@ -889,9 +973,15 @@ type ApiRequestRecord = {
 
 async function installMockAdminApi(
   page: Page,
-  options: { adminToken?: string } = {},
+  options: {
+    adminToken?: string;
+    bootstrap?: Bootstrap;
+    setupStatus?: SetupStatus;
+  } = {},
 ): Promise<{ requests: ApiRequestRecord[] }> {
   const requests: ApiRequestRecord[] = [];
+  const bootstrap = options.bootstrap ?? bootstrapFixture;
+  const setupStatus = options.setupStatus ?? setupStatusFixture;
 
   await page.route("**/bek-config.js", async (route) => {
     await route.fulfill({
@@ -934,7 +1024,7 @@ async function installMockAdminApi(
       return;
     }
 
-    const body = responseFor(path);
+    const body = responseFor(path, { bootstrap, setupStatus });
     if (!body) {
       await route.fulfill({
         status: 404,
@@ -953,9 +1043,15 @@ async function installMockAdminApi(
   return { requests };
 }
 
-function responseFor(path: string): unknown {
-  if (path === "/api/bootstrap") return bootstrapFixture;
-  if (path === "/api/setup/status") return setupStatusFixture;
+function responseFor(
+  path: string,
+  overrides: { bootstrap: Bootstrap; setupStatus: SetupStatus } = {
+    bootstrap: bootstrapFixture,
+    setupStatus: setupStatusFixture,
+  },
+): unknown {
+  if (path === "/api/bootstrap") return overrides.bootstrap;
+  if (path === "/api/setup/status") return overrides.setupStatus;
   if (path === "/api/setup/github") return githubSetupFixture;
   if (path === "/api/model-usage") return modelUsageFixture;
   if (path === "/api/audit-events" || path.startsWith("/api/audit-events?")) {

@@ -11,7 +11,7 @@ import {
   signInWithSession,
   signOut,
 } from "../api";
-import { Panel, WarningCallout } from "./components";
+import { ErrorState, LoadingState, Panel, WarningCallout } from "./components";
 import { navigationItems } from "./product-model";
 
 export function AppShell() {
@@ -107,9 +107,14 @@ export function AppShell() {
         ) : missingServerToken ? (
           <AdminServerTokenMissing />
         ) : bootstrapQuery.isLoading ? (
-          <div className="state">Loading Bek admin...</div>
+          <LoadingState label="Loading Bek admin..." />
         ) : bootstrapQuery.isError ? (
-          <div className="state error">{bootstrapQuery.error.message}</div>
+          <ErrorState
+            title="Bek admin is unavailable"
+            message={bootstrapQuery.error.message}
+            onRetry={() => void bootstrapQuery.refetch()}
+            isRetrying={bootstrapQuery.isFetching}
+          />
         ) : (
           <Outlet key={tokenVersion} />
         )}

@@ -25,6 +25,7 @@ import {
   SetupPage,
 } from "./ui/AdminPages";
 import { DashboardPage } from "./ui/DashboardPage";
+import { GuidedSetupPage } from "./ui/GuidedSetupPage";
 import { RunsPage } from "./ui/RunsPage";
 import { SettingsPage } from "./ui/SettingsPage";
 import { WorkerPage } from "./ui/WorkerPage";
@@ -62,6 +63,12 @@ const setupRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/setup",
   component: SetupPage,
+});
+
+const guidedSetupRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/setup/guided",
+  component: GuidedSetupPage,
 });
 
 const channelsRoute = createRoute({
@@ -145,6 +152,7 @@ const settingsRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   setupRoute,
+  guidedSetupRoute,
   channelsRoute,
   channelDetailRoute,
   accessBundlesRoute,

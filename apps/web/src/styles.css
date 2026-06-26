@@ -573,6 +573,13 @@ h2 {
   line-height: 1.55;
 }
 
+/* Intro paragraph at the top of a panel body, before a form or list. */
+.panel-intro {
+  margin: 0 0 12px;
+  max-width: 720px;
+  line-height: 1.5;
+}
+
 /* ---------- Chips ---------- */
 
 .chips {
@@ -951,18 +958,69 @@ select {
 
 .state {
   display: grid;
+  gap: 10px;
   min-height: 60vh;
   place-items: center;
+  align-content: center;
   color: hsl(var(--muted-foreground));
   font-size: 13px;
+  text-align: center;
+}
+
+.state-inner {
+  display: inline-flex;
+  gap: 9px;
+  align-items: center;
 }
 
 .state.error {
+  color: hsl(var(--muted-foreground));
+}
+
+.state-error-icon {
+  display: grid;
+  place-items: center;
   color: hsl(var(--destructive));
+}
+
+.state-error-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+
+.state-error-message {
+  max-width: 420px;
+  line-height: 1.5;
+}
+
+.state .secondary {
+  margin-top: 4px;
 }
 
 .compact-state {
   min-height: 120px;
+}
+
+.spinner {
+  animation: bek-spin 0.7s linear infinite;
+  color: hsl(var(--muted-foreground));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 1.6s;
+  }
+}
+
+@keyframes bek-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.empty-state-action {
+  margin-top: 8px;
 }
 
 /* ---------- Badges (semantic tints) ---------- */
@@ -1184,6 +1242,278 @@ select {
   height: 32px;
   font-size: 12.5px;
   white-space: nowrap;
+}
+
+/* Dashboard CTA — calm, discoverable entry point into the guided wizard. */
+.setup-cta {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 14px 16px;
+  border: 1px solid hsl(var(--primary) / 0.25);
+  border-radius: var(--radius-md);
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+  text-decoration: none;
+}
+
+.setup-cta:hover {
+  border-color: hsl(var(--primary) / 0.45);
+}
+
+.setup-cta-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: var(--radius-pill);
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+}
+
+.setup-cta-body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.setup-cta-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 550;
+  color: hsl(var(--primary));
+  white-space: nowrap;
+}
+
+/* Guided wizard layout: progress, step rail, and focused step detail. */
+.guided-progress {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-md);
+  background: hsl(var(--card));
+}
+
+.guided-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.guided-progress-track {
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: hsl(var(--muted));
+  overflow: hidden;
+}
+
+.guided-progress-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: hsl(var(--success));
+  transition: width 0.3s ease;
+}
+
+.guided-progress-dots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.guided-dot {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: var(--radius-pill);
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.guided-dot.active {
+  border-color: hsl(var(--primary));
+  color: hsl(var(--foreground));
+}
+
+.guided-dot.done {
+  border-color: hsl(var(--success) / 0.4);
+  background: hsl(var(--success) / 0.15);
+  color: hsl(var(--success));
+}
+
+.guided-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.7fr) minmax(0, 1.3fr);
+  gap: 12px;
+}
+
+.guided-step-rail {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.guided-rail-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  width: 100%;
+  align-items: center;
+  padding: 9px 11px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-md);
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  text-align: left;
+  cursor: pointer;
+}
+
+.guided-rail-item:hover {
+  background: hsl(var(--accent));
+}
+
+.guided-rail-item.active {
+  border-color: hsl(var(--primary));
+}
+
+.guided-rail-marker {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: var(--radius-pill);
+  background: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.guided-rail-item.done .guided-rail-marker {
+  background: hsl(var(--success) / 0.15);
+  color: hsl(var(--success));
+}
+
+.guided-rail-title {
+  font-size: 13px;
+  font-weight: 550;
+  min-width: 0;
+}
+
+.guided-step-detail {
+  display: grid;
+  gap: 8px;
+}
+
+.guided-step-heading {
+  margin: 0;
+  font-size: 17px;
+  outline: none;
+}
+
+.guided-step-heading:focus-visible {
+  outline: 2px solid hsl(var(--primary));
+  outline-offset: 3px;
+  border-radius: var(--radius-md);
+}
+
+.guided-step-status-line {
+  margin: 0;
+  font-size: 13px;
+  color: hsl(var(--foreground));
+}
+
+.guided-step-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.guided-smoke {
+  display: grid;
+  gap: 12px;
+}
+
+.guided-smoke-prompt {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-md);
+  background: hsl(var(--muted) / 0.4);
+}
+
+.guided-smoke-prompt code {
+  font-size: 14px;
+  font-weight: 550;
+  color: hsl(var(--foreground));
+}
+
+.guided-complete {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.guided-complete-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border-radius: var(--radius-pill);
+  background: hsl(var(--success) / 0.15);
+  color: hsl(var(--success));
+}
+
+.guided-complete-body {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.guided-complete-list {
+  display: grid;
+  gap: 6px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.guided-complete-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: hsl(var(--foreground));
+}
+
+.guided-complete-check {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: var(--radius-pill);
+  background: hsl(var(--success) / 0.15);
+  color: hsl(var(--success));
+}
+
+.guided-complete-actions {
+  margin-top: 16px;
 }
 
 .guardrail-list {
@@ -1619,6 +1949,7 @@ select {
   .worker-metrics,
   .grid,
   .setup-overview,
+  .guided-layout,
   .settings-grid,
   .channel-grid,
   .connector-grid,
@@ -1626,6 +1957,14 @@ select {
   .grant-columns {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .setup-cta {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .setup-cta-action {
+    grid-column: 2;
   }
 
   .page-header {
@@ -2396,6 +2735,33 @@ select {
   .session-thread {
     border-right: 0;
     border-bottom: 1px solid hsl(var(--border));
+  }
+}
+
+@media (max-width: 560px) {
+  .session-bar {
+    height: auto;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    padding: 10px 14px;
+  }
+
+  .session-crumbs {
+    flex: 1 1 100%;
+  }
+
+  .session-bar-actions {
+    flex-wrap: wrap;
+  }
+
+  .thread-scroll > *,
+  .composer {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .report-fact {
+    grid-template-columns: 104px minmax(0, 1fr);
   }
 }
 

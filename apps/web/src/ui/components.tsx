@@ -4,13 +4,96 @@ import {
   CheckCircle2,
   Clock,
   ExternalLink,
+  Loader2,
   Plus,
+  RefreshCw,
+  TriangleAlert,
   X,
   XCircle,
 } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 import type { BudgetState, CapabilityGrant, HealthStatus, Run } from "../api";
 import { formatMoney } from "./product-model";
+
+/**
+ * A small, calm spinner used by loading states. Decorative by default; callers
+ * that need an accessible name should wrap it in an element carrying the label.
+ */
+export function Spinner({ size = 16 }: { size?: number }) {
+  return <Loader2 className="spinner" size={size} aria-hidden="true" />;
+}
+
+/**
+ * Full-page loading state. Replaces the one-off `<div className="state">…`
+ * pattern so every route announces loading consistently (aria-live) and shows a
+ * calm spinner instead of bare text.
+ */
+export function LoadingState({ label }: { label: string }) {
+  return (
+    <div className="state" role="status" aria-live="polite">
+      <span className="state-inner">
+        <Spinner size={18} />
+        {label}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Full-page error state with a human message and an optional retry. Replaces the
+ * one-off `<div className="state error">…` pattern; the alert role surfaces it to
+ * assistive tech immediately.
+ */
+export function ErrorState({
+  title = "Something went wrong",
+  message,
+  onRetry,
+  retryLabel = "Try again",
+  isRetrying = false,
+}: {
+  title?: string;
+  message: string;
+  onRetry?: (() => void) | undefined;
+  retryLabel?: string;
+  isRetrying?: boolean;
+}) {
+  return (
+    <div className="state error" role="alert">
+      <span className="state-error-icon" aria-hidden="true">
+        <TriangleAlert size={22} />
+      </span>
+      <strong className="state-error-title">{title}</strong>
+      <span className="state-error-message">{message}</span>
+      {onRetry ? (
+        <button
+          type="button"
+          className="secondary"
+          onClick={onRetry}
+          disabled={isRetrying}
+          aria-busy={isRetrying}
+        >
+          <RefreshCw size={15} aria-hidden="true" />
+          {isRetrying ? "Retrying..." : retryLabel}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Compact inline loading state for panel bodies (not full page). Keeps the same
+ * spinner + aria-live language as LoadingState at a smaller scale.
+ */
+export function InlineLoading({ label }: { label: string }) {
+  return (
+    <div className="state compact-state" role="status" aria-live="polite">
+      <span className="state-inner">
+        <Spinner size={16} />
+        {label}
+      </span>
+    </div>
+  );
+}
 
 export function PageHeader({
   eyebrow,
@@ -105,11 +188,20 @@ export function CollapsibleSection({
   );
 }
 
-export function EmptyState({ title, body }: { title: string; body: string }) {
+export function EmptyState({
+  title,
+  body,
+  action,
+}: {
+  title: string;
+  body: string;
+  action?: ReactNode;
+}) {
   return (
     <div className="empty-state" role="status" aria-live="polite">
       <strong>{title}</strong>
       <span>{body}</span>
+      {action ? <div className="empty-state-action">{action}</div> : null}
     </div>
   );
 }

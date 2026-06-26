@@ -25,6 +25,7 @@ import {
   Server,
   ShieldCheck,
   Slack,
+  Sparkles,
   Trash2,
   Unlink,
   Users,
@@ -106,7 +107,10 @@ import {
   CostCell,
   DecisionBadge,
   EmptyState,
+  ErrorState,
   HealthBadge,
+  InlineLoading,
+  LoadingState,
   MetricCard,
   PageHeader,
   Panel,
@@ -143,7 +147,7 @@ function slackTeamIdForPlace(place: Bootstrap["places"][number]) {
 }
 
 export function SetupPage() {
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
   });
@@ -151,15 +155,26 @@ export function SetupPage() {
     data: setupStatus,
     isLoading: isSetupLoading,
     error: setupError,
+    isFetching: isSetupFetching,
+    refetch: refetchSetup,
   } = useQuery({
     queryKey: ["setupStatus"],
     queryFn: fetchSetupStatus,
   });
 
   if (isLoading || isSetupLoading)
-    return <div className="state">Loading setup...</div>;
+    return <LoadingState label="Loading setup..." />;
   if (error || setupError || !data || !setupStatus)
-    return <div className="state error">Bek API is not reachable.</div>;
+    return (
+      <ErrorState
+        message="Bek API is not reachable."
+        onRetry={() => {
+          void refetch();
+          void refetchSetup();
+        }}
+        isRetrying={isFetching || isSetupFetching}
+      />
+    );
 
   const adminAuthDetail = hasBuildTimeAdminToken()
     ? "Using a local dev admin token."
@@ -215,6 +230,12 @@ export function SetupPage() {
         eyebrow="Setup"
         title="Bring @bek online one real operation at a time."
         description="Use the facts already reported by the API to unlock admin access, validate the local demo, connect Slack, and finish the policy needed for workspace use."
+        actions={
+          <Link to="/setup/guided" className="primary">
+            <Sparkles size={16} aria-hidden="true" />
+            Start guided setup
+          </Link>
+        }
       />
       <section className="metrics">
         <MetricCard
@@ -277,7 +298,7 @@ export function SetupPage() {
           </div>
         </Panel>
         <Panel title="Guardrails">
-          <p className="muted" style={{ margin: "0 0 12px" }}>
+          <p className="muted panel-intro">
             Bek stays one visible teammate. Teams never pick the right bot
             before asking for help, so it avoids:
           </p>
@@ -339,7 +360,7 @@ function SetupOperationCard({ operation }: { operation: SetupOperation }) {
 
 export function ChannelsPage() {
   const queryClient = useQueryClient();
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
   });
@@ -361,9 +382,15 @@ export function ChannelsPage() {
     },
   });
 
-  if (isLoading) return <div className="state">Loading channels...</div>;
+  if (isLoading) return <LoadingState label="Loading channels..." />;
   if (error || !data)
-    return <div className="state error">Bek API is not reachable.</div>;
+    return (
+      <ErrorState
+        message="Bek API is not reachable."
+        onRetry={() => void refetch()}
+        isRetrying={isFetching}
+      />
+    );
 
   const trimmedChannelName = channelName.trim();
   const trimmedExternalId = externalId.trim();
@@ -516,6 +543,12 @@ export function ChannelsPage() {
           <EmptyState
             title="No channel scopes"
             body="Connect Slack and choose a pilot channel to scope Bek access."
+            action={
+              <Link to="/connectors" className="secondary">
+                Connect Slack
+                <ExternalLink size={14} aria-hidden="true" />
+              </Link>
+            }
           />
         ) : (
           data.places.map((place) => {
@@ -696,7 +729,7 @@ function slackPlaceTeamId(place: Bootstrap["places"][number]) {
 
 export function AccessBundlesPage() {
   const queryClient = useQueryClient();
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
   });
@@ -713,9 +746,15 @@ export function AccessBundlesPage() {
     },
   });
 
-  if (isLoading) return <div className="state">Loading access bundles...</div>;
+  if (isLoading) return <LoadingState label="Loading access bundles..." />;
   if (error || !data)
-    return <div className="state error">Bek API is not reachable.</div>;
+    return (
+      <ErrorState
+        message="Bek API is not reachable."
+        onRetry={() => void refetch()}
+        isRetrying={isFetching}
+      />
+    );
 
   const trimmedBundleName = bundleName.trim();
   const trimmedBundleDescription = bundleDescription.trim();
@@ -1420,7 +1459,7 @@ function GrantEditorRow({
 export function ChannelDetailPage() {
   const { channelId } = useParams({ from: "/channels/$channelId" });
   const queryClient = useQueryClient();
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
   });
@@ -1450,9 +1489,15 @@ export function ChannelDetailPage() {
     setSensitivity(place.sensitivity);
   }, [place]);
 
-  if (isLoading) return <div className="state">Loading channel...</div>;
+  if (isLoading) return <LoadingState label="Loading channel..." />;
   if (error || !data)
-    return <div className="state error">Bek API is not reachable.</div>;
+    return (
+      <ErrorState
+        message="Bek API is not reachable."
+        onRetry={() => void refetch()}
+        isRetrying={isFetching}
+      />
+    );
   if (!place) {
     return (
       <div className="page">
@@ -1687,14 +1732,20 @@ export function ChannelDetailPage() {
 
 export function AccessBundleDetailPage() {
   const { bundleId } = useParams({ from: "/access-bundles/$bundleId" });
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
   });
 
-  if (isLoading) return <div className="state">Loading access bundle...</div>;
+  if (isLoading) return <LoadingState label="Loading access bundle..." />;
   if (error || !data)
-    return <div className="state error">Bek API is not reachable.</div>;
+    return (
+      <ErrorState
+        message="Bek API is not reachable."
+        onRetry={() => void refetch()}
+        isRetrying={isFetching}
+      />
+    );
 
   const bundle = data.accessBundles.find(
     (candidate) => candidate.id === bundleId,
@@ -1768,7 +1819,7 @@ export function ApprovalsPage() {
   const [confirmationApprovalId, setConfirmationApprovalId] = useState<
     string | undefined
   >();
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
   });
@@ -1780,9 +1831,15 @@ export function ApprovalsPage() {
     },
   });
 
-  if (isLoading) return <div className="state">Loading approvals...</div>;
+  if (isLoading) return <LoadingState label="Loading approvals..." />;
   if (error || !data)
-    return <div className="state error">Bek API is not reachable.</div>;
+    return (
+      <ErrorState
+        message="Bek API is not reachable."
+        onRetry={() => void refetch()}
+        isRetrying={isFetching}
+      />
+    );
 
   const approvalContexts = sortedApprovalContexts(data);
 
@@ -2068,7 +2125,7 @@ function shortHash(hash: string): string {
 
 export function ConnectorsPage() {
   const queryClient = useQueryClient();
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
   });
@@ -2076,6 +2133,8 @@ export function ConnectorsPage() {
     data: setupStatus,
     isLoading: isSetupLoading,
     error: setupError,
+    isFetching: isSetupFetching,
+    refetch: refetchSetup,
   } = useQuery({
     queryKey: ["setupStatus"],
     queryFn: fetchSetupStatus,
@@ -2140,9 +2199,18 @@ export function ConnectorsPage() {
   );
 
   if (isLoading || isSetupLoading)
-    return <div className="state">Loading connectors...</div>;
+    return <LoadingState label="Loading connectors..." />;
   if (error || setupError || !data || !setupStatus)
-    return <div className="state error">Bek API is not reachable.</div>;
+    return (
+      <ErrorState
+        message="Bek API is not reachable."
+        onRetry={() => {
+          void refetch();
+          void refetchSetup();
+        }}
+        isRetrying={isFetching || isSetupFetching}
+      />
+    );
 
   const slackSummary = connectorSummaries(data).find(
     (connector) => connector.id === "slack",
@@ -2891,10 +2959,7 @@ function GitHubConnectorPanel({
           </button>
         </div>
         {isLoading ? (
-          <EmptyState
-            title="Loading GitHub setup"
-            body="Bek is reading repo grants, App config, and installation preview state."
-          />
+          <InlineLoading label="Loading GitHub setup..." />
         ) : setup.repositories.length === 0 ? (
           <EmptyState
             title="No valid repo grants"
@@ -2998,7 +3063,7 @@ function GitHubConnectorPanel({
 }
 
 export function ModelsPage() {
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
   });
@@ -3007,9 +3072,15 @@ export function ModelsPage() {
     queryFn: fetchSetupStatus,
   });
 
-  if (isLoading) return <div className="state">Loading models...</div>;
+  if (isLoading) return <LoadingState label="Loading models..." />;
   if (error || !data)
-    return <div className="state error">Bek API is not reachable.</div>;
+    return (
+      <ErrorState
+        message="Bek API is not reachable."
+        onRetry={() => void refetch()}
+        isRetrying={isFetching}
+      />
+    );
 
   return (
     <div className="page">
@@ -3209,9 +3280,15 @@ export function HealthPage() {
     queryFn: fetchHealthDashboard,
   });
 
-  if (isLoading) return <div className="state">Loading system health...</div>;
+  if (isLoading) return <LoadingState label="Loading system health..." />;
   if (error || !data)
-    return <div className="state error">Bek API is not reachable.</div>;
+    return (
+      <ErrorState
+        message="Bek API is not reachable."
+        onRetry={() => void refetch()}
+        isRetrying={isFetching}
+      />
+    );
 
   const statusOrder = ["ok", "degraded", "down", "unknown"] as const;
   const orderedCounts = statusOrder.filter(
@@ -3328,6 +3405,8 @@ export function MemoryPage() {
     data: inventory,
     isLoading,
     error,
+    isFetching,
+    refetch,
   } = useQuery({
     queryKey: ["memoryInventory"],
     queryFn: fetchMemoryInventory,
@@ -3341,9 +3420,15 @@ export function MemoryPage() {
     mutationFn: retrieveMemory,
   });
 
-  if (isLoading) return <div className="state">Loading memory...</div>;
+  if (isLoading) return <LoadingState label="Loading memory..." />;
   if (error || !inventory)
-    return <div className="state error">Bek API is not reachable.</div>;
+    return (
+      <ErrorState
+        message="Bek API is not reachable."
+        onRetry={() => void refetch()}
+        isRetrying={isFetching}
+      />
+    );
 
   const places = bootstrapQuery.data?.places ?? [];
   const sourceById = new Map(
@@ -3380,7 +3465,7 @@ export function MemoryPage() {
         />
       </section>
       <Panel title="Preview retrieval for a place">
-        <p className="muted" style={{ margin: "0 0 12px" }}>
+        <p className="muted panel-intro">
           Pick a place to see which memory chunks the ACL boundary allows versus
           excludes, with the reason for every exclusion.
         </p>
@@ -3617,9 +3702,15 @@ export function BudgetsPage() {
     queryFn: fetchBudgetStatus,
   });
 
-  if (isLoading) return <div className="state">Loading budgets...</div>;
+  if (isLoading) return <LoadingState label="Loading budgets..." />;
   if (error || !data)
-    return <div className="state error">Bek API is not reachable.</div>;
+    return (
+      <ErrorState
+        message="Bek API is not reachable."
+        onRetry={() => void refetch()}
+        isRetrying={isFetching}
+      />
+    );
 
   const exceeded = data.budgets.filter(
     (budget) => budget.state === "exceeded",
@@ -3748,9 +3839,15 @@ export function IdentitiesPage() {
     queryFn: fetchBootstrap,
   });
 
-  if (isLoading) return <div className="state">Loading identities...</div>;
+  if (isLoading) return <LoadingState label="Loading identities..." />;
   if (error || !data)
-    return <div className="state error">Bek API is not reachable.</div>;
+    return (
+      <ErrorState
+        message="Bek API is not reachable."
+        onRetry={() => void refetch()}
+        isRetrying={isFetching}
+      />
+    );
 
   const places = bootstrapQuery.data?.places ?? [];
   const placeName = (id: string | undefined): string | undefined =>
@@ -3891,7 +3988,7 @@ export function AuditPage() {
     runId,
     limit,
   };
-  const { data, isLoading, error, isFetching } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ["audit-events", filters],
     queryFn: () => fetchAuditEvents(filters),
   });
@@ -3901,9 +3998,15 @@ export function AuditPage() {
     action.trim().length > 0 ||
     runId.trim().length > 0;
 
-  if (isLoading) return <div className="state">Loading audit log...</div>;
+  if (isLoading) return <LoadingState label="Loading audit log..." />;
   if (error || !data)
-    return <div className="state error">Bek API is not reachable.</div>;
+    return (
+      <ErrorState
+        message="Bek API is not reachable."
+        onRetry={() => void refetch()}
+        isRetrying={isFetching}
+      />
+    );
 
   async function downloadAudit(format: AuditExportFormat) {
     setExportError(null);

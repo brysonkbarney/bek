@@ -2,11 +2,18 @@ import { useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useRef } from "react";
 import { fetchBootstrap } from "../api";
-import { CostCell, EmptyState, RunLink, StatusBadge } from "./components";
+import {
+  CostCell,
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  RunLink,
+  StatusBadge,
+} from "./components";
 import { findRunPlace, formatDateTime } from "./product-model";
 
 export function RunsPage() {
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
   });
@@ -18,14 +25,15 @@ export function RunsPage() {
     estimateSize: () => 112,
   });
 
-  if (isLoading)
-    return (
-      <div className="state" role="status" aria-live="polite">
-        Loading runs...
-      </div>
-    );
+  if (isLoading) return <LoadingState label="Loading runs..." />;
   if (error || !data)
-    return <div className="state error">Bek API is not reachable.</div>;
+    return (
+      <ErrorState
+        message="Bek API is not reachable."
+        onRetry={() => void refetch()}
+        isRetrying={isFetching}
+      />
+    );
 
   return (
     <div className="page">

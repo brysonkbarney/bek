@@ -32,6 +32,8 @@ import type {
 
 type AdminRoute =
   | "/"
+  | "/setup"
+  | "/setup/guided"
   | "/channels"
   | "/access-bundles"
   | "/connectors"
@@ -1024,6 +1026,237 @@ function missingSlackScopesFact(status: SetupStatus): string {
 
 function formatSlackScopes(scopes: string[] | undefined): string {
   return scopes?.length ? scopes.join(", ") : "none";
+}
+
+/**
+ * One ordered step in the guided first-run wizard. Status is always derived from
+ * real bootstrap/readiness data (never a stored flag), so completion can never be
+ * faked. The optional `action` routes a fresh operator to the existing page that
+ * lets them finish the step; the final smoke step is handled inline by the page.
+ */
+export interface GuidedSetupStep {
+  id:
+    | "slack"
+    | "channels"
+    | "access"
+    | "model"
+    | "runtime"
+    | "approvers"
+    | "smoke";
+  title: string;
+  explanation: string;
+  complete: boolean;
+  status: string;
+  detail: string;
+  /** Existing page that completes this step, or undefined for the inline step. */
+  action?: { label: string; route: AdminRoute };
+}
+
+/** True when Slack is installed with an active token (OAuth or manual bot-token). */
+export function guidedSlackReady(status: SetupStatus): boolean {
+  return Boolean(
+    status.slackInstalled &&
+    status.slackInstallStatus === "active" &&
+    status.slackTokenStored &&
+    !hasMissingSlackScopes(status),
+  );
+}
+
+function guidedSlackDetail(status: SetupStatus): string {
+  if (guidedSlackReady(status)) {
+    const workspace =
+      status.slackWorkspaceName ?? status.slackWorkspaceId ?? "Slack";
+    return `${workspace} is connected with a stored bot token.`;
+  }
+  if (status.slackInstalled && status.slackTokenStored) {
+    return slackInstallSetupDetail(status);
+  }
+  return "Install Bek in Slack, or store a bot token for manual bot-token mode.";
+}
+
+/** Pilot channels are Slack-provider places scoped for @bek to work in. */
+export function guidedPilotPlaces(data: Bootstrap): PlaceScope[] {
+  return data.places.filter((place) => place.provider === "slack");
+}
+
+/** A bundle counts as attached when it governs at least one configured place. */
+export function guidedAttachedBundles(data: Bootstrap): AccessBundle[] {
+  const placeIds = new Set(data.places.map((place) => place.id));
+  return data.accessBundles.filter((bundle) =>
+    bundle.attachedPlaceIds.some((placeId) => placeIds.has(placeId)),
+  );
+}
+
+/** Human approvers are people who can decide approvals — Slack-mapped principals. */
+export function guidedApprovers(
+  data: Bootstrap,
+): NonNullable<Bootstrap["principals"]> {
+  return (data.principals ?? []).filter(
+    (principal) =>
+      principal.kind === "human" && principal.externalProvider === "slack",
+  );
+}
+
+/** First pilot place that already has a governing bundle — the safest smoke target. */
+export function guidedSmokePlace(data: Bootstrap): PlaceScope | undefined {
+  const attached = guidedAttachedBundles(data);
+  const attachedPlaceIds = new Set(
+    attached.flatMap((bundle) => bundle.attachedPlaceIds),
+  );
+  const pilots = guidedPilotPlaces(data);
+  return pilots.find((place) => attachedPlaceIds.has(place.id)) ?? pilots[0];
+}
+
+/**
+ * Builds the ordered guided steps from live data. `smokeComplete` reflects the
+ * in-session smoke run (the API has no "smoke done" flag), so steps 1-6 come from
+ * persisted readiness and only the final step folds in session state.
+ */
+export function guidedSetupSteps(
+  data: Bootstrap,
+  status: SetupStatus,
+  options: { smokeComplete?: boolean } = {},
+): GuidedSetupStep[] {
+  const slackReady = guidedSlackReady(status);
+  const pilots = guidedPilotPlaces(data);
+  const channelsReady = pilots.length > 0;
+  const attachedBundles = guidedAttachedBundles(data);
+  const accessReady = attachedBundles.length > 0;
+  const modelReady = data.modelPolicies.length > 0;
+  const runtimeReady = data.runtimeProfiles.length > 0;
+  const approvers = guidedApprovers(data);
+  const approversReady = approvers.length > 0;
+  const smokeComplete = options.smokeComplete ?? false;
+
+  const channelNames = pilots
+    .map((place) => place.name)
+    .slice(0, 3)
+    .join(", ");
+  const bundleNames = attachedBundles
+    .map((bundle) => bundle.name)
+    .slice(0, 2)
+    .join(", ");
+  const approverNames = approvers
+    .map((principal) => principal.displayName)
+    .slice(0, 3)
+    .join(", ");
+
+  return [
+    {
+      id: "slack",
+      title: "Connect Slack",
+      explanation: "Give Bek a workspace so people can @mention it.",
+      complete: slackReady,
+      status: slackReady ? "ready" : "needs action",
+      detail: guidedSlackDetail(status),
+      action: {
+        label: slackReady ? "Review Slack" : "Connect Slack",
+        route: "/connectors",
+      },
+    },
+    {
+      id: "channels",
+      title: "Choose pilot channels",
+      explanation: "Pick the channels Bek is allowed to work in.",
+      complete: channelsReady,
+      status: channelsReady ? "ready" : "needs action",
+      detail: channelsReady
+        ? `${pilots.length} pilot channel${pilots.length === 1 ? "" : "s"}: ${channelNames}`
+        : "No pilot channels yet. Add at least one Slack channel.",
+      action: {
+        label: channelsReady ? "Review channels" : "Add a channel",
+        route: "/channels",
+      },
+    },
+    {
+      id: "access",
+      title: "Attach an access bundle",
+      explanation: "Govern what Bek can do in those channels.",
+      complete: accessReady,
+      status: accessReady ? "ready" : "needs action",
+      detail: accessReady
+        ? `${attachedBundles.length} bundle${attachedBundles.length === 1 ? "" : "s"} attached: ${bundleNames}`
+        : "No access bundle is attached to a pilot channel yet.",
+      action: {
+        label: accessReady ? "Review access" : "Attach a bundle",
+        route: "/access-bundles",
+      },
+    },
+    {
+      id: "model",
+      title: "Choose a model policy",
+      explanation: "Decide which models Bek routes to, and the per-run budget.",
+      complete: modelReady,
+      status: modelReady ? "ready" : "needs action",
+      detail: modelReady
+        ? `${data.modelPolicies.length} model polic${data.modelPolicies.length === 1 ? "y" : "ies"} — default ${data.modelPolicies[0]?.defaultModel ?? "model"}.`
+        : "No model policy yet. Add one model provider policy.",
+      action: {
+        label: modelReady ? "Tune models" : "Choose a model",
+        route: "/models",
+      },
+    },
+    {
+      id: "runtime",
+      title: "Choose a runtime profile",
+      explanation: "Pick where Bek's work actually executes.",
+      complete: runtimeReady,
+      status: runtimeReady ? "ready" : "needs action",
+      detail: runtimeReady
+        ? `${data.runtimeProfiles.length} runtime profile${data.runtimeProfiles.length === 1 ? "" : "s"} — ${data.runtimeProfiles[0]?.adapter ?? "adapter"}.`
+        : "No runtime profile yet. Register an execution adapter.",
+      action: {
+        label: runtimeReady ? "Review runtime" : "Choose a runtime",
+        route: "/connectors",
+      },
+    },
+    {
+      id: "approvers",
+      title: "Map approvers",
+      explanation: "Name the people who can approve risky actions.",
+      complete: approversReady,
+      status: approversReady ? "ready" : "needs action",
+      detail: approversReady
+        ? `${approvers.length} approver${approvers.length === 1 ? "" : "s"} mapped: ${approverNames}`
+        : "No Slack-mapped approvers yet. Link at least one person.",
+      action: {
+        label: approversReady ? "Review approvers" : "Map approvers",
+        route: "/connectors",
+      },
+    },
+    {
+      id: "smoke",
+      title: "Run a smoke prompt",
+      explanation: "Send a real prompt end to end to prove Bek works.",
+      complete: smokeComplete,
+      status: smokeComplete ? "ready" : "needs action",
+      detail: smokeComplete
+        ? "Smoke run created — Bek answered through the governed pipeline."
+        : channelsReady
+          ? "Send a harmless prompt to a pilot channel and watch the run."
+          : "Add a pilot channel first, then run the smoke prompt.",
+    },
+  ];
+}
+
+export function guidedSetupProgress(steps: GuidedSetupStep[]): {
+  complete: number;
+  total: number;
+} {
+  return {
+    complete: steps.filter((step) => step.complete).length,
+    total: steps.length,
+  };
+}
+
+/** Setup is complete only when every persisted step (1-6) is ready. */
+export function guidedSetupComplete(
+  data: Bootstrap,
+  status: SetupStatus,
+): boolean {
+  return guidedSetupSteps(data, status)
+    .filter((step) => step.id !== "smoke")
+    .every((step) => step.complete);
 }
 
 export const setupSteps = [
