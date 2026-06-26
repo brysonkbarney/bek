@@ -16,6 +16,20 @@ This project uses semantic versioning once public releases begin.
 
 ### Added
 
+- Zero-config local dev: `pnpm dev` now works straight after `pnpm install` with
+  no env file (the dev API enables the local demo bypass; production/self-host
+  stays fail-closed). The API also auto-loads a local `.env` when present.
+- Guided first-run setup wizard (`/setup/guided`): a 7-step flow (Slack →
+  channels → access bundle → model → runtime → approvers → smoke prompt) whose
+  per-step status is derived from real bootstrap/readiness data, with a dashboard
+  CTA while setup is incomplete and a compact "complete" summary afterward.
+- Product-grade console polish: shared loading/empty/error states with retry,
+  accessibility (roles, focus management, scoped headers, aria-live), and
+  responsive layouts across every admin page.
+- `RELEASING.md` release checklist; the self-host stack's optional MinIO object
+  store moved behind a `storage` compose profile (and off a retracted image tag)
+  so `docker compose --profile app up` is robust. Verified: all four production
+  images (`api`/`web`/`worker`/`migrate`) build and the stack comes up healthy.
 - Embeddings pipeline (`@bek/core`): a swappable `MemoryEmbedder` with a
   deterministic, dependency-free local embedder + cosine ranking. Memory
   retrieval accepts an optional `query` to rank ACL-allowed chunks by similarity

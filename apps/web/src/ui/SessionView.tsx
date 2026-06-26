@@ -33,7 +33,7 @@ import {
   type RunEvent,
   type RunTrace,
 } from "../api";
-import { StatusBadge } from "./components";
+import { ErrorState, LoadingState, Spinner, StatusBadge } from "./components";
 import { formatDuration, formatMoney } from "./product-model";
 
 export function RunSessionView() {
@@ -52,10 +52,17 @@ export function RunSessionView() {
   });
 
   if (runQuery.isLoading) {
-    return <div className="state">Loading session…</div>;
+    return <LoadingState label="Loading session..." />;
   }
   if (runQuery.error || !runQuery.data) {
-    return <div className="state error">Session not found.</div>;
+    return (
+      <ErrorState
+        title="Session not found"
+        message="This run could not be loaded. It may have been removed, or the link is stale."
+        onRetry={() => void runQuery.refetch()}
+        isRetrying={runQuery.isFetching}
+      />
+    );
   }
 
   return (
@@ -160,8 +167,12 @@ function RunSession({
               <AgentMessage text={finalMessage} run={run} />
             ) : null}
 
-            <div className="thread-status">
-              <Sparkles size={15} aria-hidden="true" />
+            <div className="thread-status" role="status" aria-live="polite">
+              {isTerminal(run.status) ? (
+                <Sparkles size={15} aria-hidden="true" />
+              ) : (
+                <Spinner size={15} />
+              )}
               <span>
                 {isTerminal(run.status)
                   ? "Bek finished this run."
@@ -527,7 +538,10 @@ function ArtifactSection({ artifacts }: { artifacts: Artifact[] }) {
             <button
               type="button"
               role="tab"
+              id={`artifact-tab-${artifact.kind}`}
               aria-selected={selected}
+              aria-controls="artifact-panel"
+              tabIndex={selected ? 0 : -1}
               className={`artifact-tab ${selected ? "active" : ""}`}
               key={artifact.kind}
               onClick={() => setActiveKind(artifact.kind)}
@@ -538,7 +552,7 @@ function ArtifactSection({ artifacts }: { artifacts: Artifact[] }) {
           );
         })}
       </div>
-      <div className="artifact-body" role="tabpanel">
+      <div className="artifact-body" role="tabpanel" id="artifact-panel">
         <ArtifactView artifact={active} />
       </div>
     </section>

@@ -106,8 +106,14 @@ services:
       timeout: 5s
       retries: 10
 
+  # Optional S3-compatible object store for run artifacts. The core stack
+  # (api/web/worker) does not depend on it, so it lives behind the "storage"
+  # profile: `docker compose --profile app --profile storage up`. Pin a specific
+  # MinIO RELEASE tag for reproducible self-host; `latest` is used here to avoid
+  # breakage from MinIO retiring older dated tags from Docker Hub.
   minio:
-    image: minio/minio:RELEASE.2026-06-06T09-32-03Z
+    profiles: ["storage"]
+    image: minio/minio:latest
     command: server /data --console-address ":9001"
     ports:
       - "${MINIO_API_PORT:-9000}:9000"

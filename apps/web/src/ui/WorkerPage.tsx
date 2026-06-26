@@ -27,6 +27,9 @@ import {
 } from "../api";
 import {
   EmptyState,
+  ErrorState,
+  InlineLoading,
+  LoadingState,
   MetricCard,
   PageHeader,
   Panel,
@@ -93,10 +96,17 @@ export function WorkerPage() {
   });
 
   if (isLoading) {
-    return <div className="state">Loading worker queue...</div>;
+    return <LoadingState label="Loading worker queue..." />;
   }
   if (error || !data) {
-    return <div className="state error">Worker queue is not reachable.</div>;
+    return (
+      <ErrorState
+        title="Worker queue is unavailable"
+        message="Bek could not reach the worker queue."
+        onRetry={() => void refetch()}
+        isRetrying={isFetching}
+      />
+    );
   }
 
   const summary = workerQueueSummary(data.queue);
@@ -334,7 +344,7 @@ export function WorkerPage() {
         {outboxQuery.isError ? (
           <WarningCallout>Bek could not load the Slack outbox.</WarningCallout>
         ) : outboxQuery.isLoading ? (
-          <div className="state compact-state">Loading Slack outbox...</div>
+          <InlineLoading label="Loading Slack outbox..." />
         ) : (
           <SlackOutboxTable deliveries={outboxQuery.data?.deliveries ?? []} />
         )}
@@ -471,13 +481,13 @@ function SlackOutboxTable({
         <caption className="sr-only">Bek Slack outbound deliveries</caption>
         <thead>
           <tr>
-            <th>Delivery</th>
-            <th>Status</th>
-            <th>Attempts</th>
-            <th>Run / Approval</th>
-            <th>Last Error</th>
-            <th>Next / Delivered</th>
-            <th>Updated</th>
+            <th scope="col">Delivery</th>
+            <th scope="col">Status</th>
+            <th scope="col">Attempts</th>
+            <th scope="col">Run / Approval</th>
+            <th scope="col">Last Error</th>
+            <th scope="col">Next / Delivered</th>
+            <th scope="col">Updated</th>
           </tr>
         </thead>
         <tbody>
@@ -559,13 +569,13 @@ function WorkerRecordsTable({
         <caption className="sr-only">Bek worker work records</caption>
         <thead>
           <tr>
-            <th>Run</th>
-            <th>Status</th>
-            <th>Attempt</th>
-            <th>Available</th>
-            <th>Lease</th>
-            <th>Result</th>
-            <th>Action</th>
+            <th scope="col">Run</th>
+            <th scope="col">Status</th>
+            <th scope="col">Attempt</th>
+            <th scope="col">Available</th>
+            <th scope="col">Lease</th>
+            <th scope="col">Result</th>
+            <th scope="col">Action</th>
           </tr>
         </thead>
         <tbody>
@@ -679,11 +689,11 @@ function DeadLettersTable({
         <caption className="sr-only">Bek worker dead letters</caption>
         <thead>
           <tr>
-            <th>Run</th>
-            <th>Reason</th>
-            <th>Attempts</th>
-            <th>Failed</th>
-            <th>Action</th>
+            <th scope="col">Run</th>
+            <th scope="col">Reason</th>
+            <th scope="col">Attempts</th>
+            <th scope="col">Failed</th>
+            <th scope="col">Action</th>
           </tr>
         </thead>
         <tbody>

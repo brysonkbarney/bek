@@ -5,17 +5,30 @@ import {
   getCoreRowModel,
   useReactTable,
 } from "@tanstack/react-table";
-import { Coins, ShieldCheck, Sparkles, Timer, WalletCards } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import {
+  Coins,
+  Compass,
+  ExternalLink,
+  ShieldCheck,
+  Sparkles,
+  Timer,
+  WalletCards,
+} from "lucide-react";
 import {
   createRun,
   fetchBootstrap,
   fetchModelUsage,
+  fetchSetupStatus,
   type ModelUsage,
   type Run,
 } from "../api";
 import {
   CostCell,
   EmptyState,
+  ErrorState,
+  InlineLoading,
+  LoadingState,
   MetricCard,
   Panel,
   RunLink,
@@ -23,7 +36,13 @@ import {
   SuccessCallout,
   WarningCallout,
 } from "./components";
-import { formatDateTime, formatMoney } from "./product-model";
+import {
+  formatDateTime,
+  formatMoney,
+  guidedSetupComplete,
+  guidedSetupProgress,
+  guidedSetupSteps,
+} from "./product-model";
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
@@ -65,13 +84,17 @@ const columns = [
 
 export function DashboardPage() {
   const queryClient = useQueryClient();
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
   });
   const usageQuery = useQuery({
     queryKey: ["model-usage"],
     queryFn: fetchModelUsage,
+  });
+  const setupStatusQuery = useQuery({
+    queryKey: ["setupStatus"],
+    queryFn: fetchSetupStatus,
   });
   const runMutation = useMutation({
     mutationFn: createRun,
@@ -84,15 +107,54 @@ export function DashboardPage() {
     getCoreRowModel: getCoreRowModel(),
   });
 
-  if (isLoading) return <div className="state">Loading Bek...</div>;
+  if (isLoading) return <LoadingState label="Loading Bek..." />;
   if (error || !data)
-    return <div className="state error">Bek API is not reachable.</div>;
+    return (
+      <ErrorState
+        message="Bek API is not reachable."
+        onRetry={() => void refetch()}
+        isRetrying={isFetching}
+      />
+    );
+
+  // Surface the guided wizard prominently while setup is incomplete, so a
+  // first-run operator discovers it without hunting. Derived from live data; the
+  // banner disappears the moment every required step is configured.
+  const setupStatus = setupStatusQuery.data;
+  const showSetupBanner = Boolean(
+    setupStatus && !guidedSetupComplete(data, setupStatus),
+  );
+  const setupProgress = setupStatus
+    ? guidedSetupProgress(guidedSetupSteps(data, setupStatus))
+    : undefined;
 
   return (
     <div className="page">
+      {showSetupBanner && setupProgress ? (
+        <Link
+          to="/setup/guided"
+          className="setup-cta"
+          aria-label="Open guided setup to finish configuring your Bek teammate"
+        >
+          <span className="setup-cta-icon" aria-hidden="true">
+            <Compass size={22} />
+          </span>
+          <span className="setup-cta-body">
+            <strong>Finish setting up {data.agent.handle}</strong>
+            <span className="muted">
+              {setupProgress.complete} of {setupProgress.total} steps ready —
+              open the guided setup to bring your teammate fully online.
+            </span>
+          </span>
+          <span className="setup-cta-action">
+            Open guided setup
+            <ExternalLink size={15} aria-hidden="true" />
+          </span>
+        </Link>
+      ) : null}
       <header className="page-header">
         <div>
-          <p className="eyebrow">Open-source Claude Tag</p>
+          <p className="eyebrow">Overview</p>
           <h1>
             {data.agent.handle} is one teammate with governed capabilities.
           </h1>
@@ -151,27 +213,45 @@ export function DashboardPage() {
       />
 
       <section className="grid">
-        <article className="panel">
-          <h2>Internal Capabilities</h2>
-          <div className="chips">
-            {data.capabilityProfiles.map((capability) => (
-              <span className="chip" key={capability.id}>
-                {capability.name}
-              </span>
-            ))}
-          </div>
-        </article>
-        <article className="panel">
-          <h2>Access Bundles</h2>
-          <div className="bundle-list">
-            {data.accessBundles.map((bundle) => (
-              <div className="bundle" key={bundle.id}>
-                <strong>{bundle.name}</strong>
-                <span>{bundle.description}</span>
-              </div>
-            ))}
-          </div>
-        </article>
+        <Panel title="Internal Capabilities">
+          {data.capabilityProfiles.length === 0 ? (
+            <EmptyState
+              title="No capabilities yet"
+              body="Capability profiles appear here once configured."
+            />
+          ) : (
+            <div className="chips">
+              {data.capabilityProfiles.map((capability) => (
+                <span className="chip" key={capability.id}>
+                  {capability.name}
+                </span>
+              ))}
+            </div>
+          )}
+        </Panel>
+        <Panel title="Access Bundles">
+          {data.accessBundles.length === 0 ? (
+            <EmptyState
+              title="No access bundles"
+              body="Create a bundle to govern what Bek can do in each place."
+              action={
+                <Link to="/access-bundles" className="secondary">
+                  Open access
+                  <ExternalLink size={14} aria-hidden="true" />
+                </Link>
+              }
+            />
+          ) : (
+            <div className="bundle-list">
+              {data.accessBundles.map((bundle) => (
+                <div className="bundle" key={bundle.id}>
+                  <strong>{bundle.name}</strong>
+                  <span>{bundle.description}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Panel>
       </section>
 
       <Panel title="Recent Runs">
@@ -239,7 +319,7 @@ function UsageCostPanel({
   if (isLoading) {
     return (
       <Panel title="Usage / Cost">
-        <p className="muted">Loading usage...</p>
+        <InlineLoading label="Loading usage..." />
       </Panel>
     );
   }
@@ -247,7 +327,10 @@ function UsageCostPanel({
   if (isError || !usage) {
     return (
       <Panel title="Usage / Cost">
-        <p className="muted">Usage totals are unavailable.</p>
+        <EmptyState
+          title="Usage totals are unavailable"
+          body="Bek could not load model usage. Refresh once the API is reachable."
+        />
       </Panel>
     );
   }

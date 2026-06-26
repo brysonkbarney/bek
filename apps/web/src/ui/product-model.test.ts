@@ -3,6 +3,10 @@ import type { Bootstrap, GitHubSetupPreview, SetupStatus } from "../api";
 import {
   connectorSummaries,
   githubConnectorSetupModel,
+  guidedSetupComplete,
+  guidedSetupProgress,
+  guidedSetupSteps,
+  guidedSmokePlace,
   setupChecklistFromStatus,
   setupOperationsFromStatus,
   setupProgress,
@@ -797,6 +801,98 @@ describe("admin product helpers", () => {
       deadLetters: 1,
       events: 1,
     });
+  });
+});
+
+const configuredBootstrap: Bootstrap = {
+  ...emptyBootstrap,
+  principals: [
+    {
+      id: "principal_bryson",
+      kind: "human",
+      displayName: "Bryson",
+      externalProvider: "slack",
+      externalId: "T123:U123",
+    },
+  ],
+  places: [
+    {
+      id: "place_checkout",
+      name: "#checkout-eng",
+      kind: "slack_channel",
+      provider: "slack",
+      externalId: "C123",
+      sensitivity: "internal",
+    },
+  ],
+  accessBundles: [
+    {
+      id: "bundle_checkout",
+      name: "Checkout Engineering",
+      description: "Draft PRs after review.",
+      attachedPlaceIds: ["place_checkout"],
+      budgetPolicyId: "budget_demo",
+      grants: [],
+    },
+  ],
+  modelPolicies: [
+    {
+      id: "model_policy_demo",
+      name: "Default Gateway Policy",
+      defaultModel: "anthropic/claude-sonnet-4-5",
+      fallbackModels: [],
+      perRunBudgetCents: 250,
+    },
+  ],
+  runtimeProfiles: [
+    {
+      id: "runtime_local",
+      name: "Local worker",
+      runtimeKind: "ai_sdk",
+      adapter: "ai-sdk-local-stub",
+    },
+  ],
+};
+
+describe("guided setup helpers", () => {
+  it("marks every persisted step complete from real configured data", () => {
+    const steps = guidedSetupSteps(configuredBootstrap, readySetup);
+    expect(steps).toHaveLength(7);
+    const byId = Object.fromEntries(steps.map((step) => [step.id, step]));
+    expect(byId.slack?.complete).toBe(true);
+    expect(byId.channels?.complete).toBe(true);
+    expect(byId.access?.complete).toBe(true);
+    expect(byId.model?.complete).toBe(true);
+    expect(byId.runtime?.complete).toBe(true);
+    expect(byId.approvers?.complete).toBe(true);
+    // The smoke step only completes via an in-session run.
+    expect(byId.smoke?.complete).toBe(false);
+    expect(guidedSetupComplete(configuredBootstrap, readySetup)).toBe(true);
+  });
+
+  it("derives incomplete status from missing config, never a stored flag", () => {
+    const steps = guidedSetupSteps(emptyBootstrap, {
+      ...readySetup,
+      slackInstalled: false,
+      slackInstallStatus: null,
+      slackTokenStored: false,
+    });
+    expect(steps.every((step) => !step.complete)).toBe(true);
+    expect(guidedSetupComplete(emptyBootstrap, readySetup)).toBe(false);
+    expect(guidedSetupProgress(steps)).toEqual({ complete: 0, total: 7 });
+  });
+
+  it("folds the in-session smoke run into the final step", () => {
+    const steps = guidedSetupSteps(configuredBootstrap, readySetup, {
+      smokeComplete: true,
+    });
+    const smoke = steps.find((step) => step.id === "smoke");
+    expect(smoke?.complete).toBe(true);
+  });
+
+  it("picks a pilot place that already has a governing bundle for the smoke run", () => {
+    expect(guidedSmokePlace(configuredBootstrap)?.id).toBe("place_checkout");
+    expect(guidedSmokePlace(emptyBootstrap)).toBeUndefined();
   });
 });
 
