@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Ban,
   CheckCircle2,
+  ChevronDown,
   ListChecks,
   Play,
   RefreshCw,
@@ -11,7 +12,7 @@ import {
   Send,
   TimerReset,
 } from "lucide-react";
-import { useState } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import {
   cancelRun,
   drainSlackOutbox,
@@ -166,7 +167,7 @@ export function WorkerPage() {
             ) : (
               <>
                 <label className="inline-control">
-                  <span className="sr-only">Drain max items</span>
+                  <span className="inline-label">Max</span>
                   <input
                     type="number"
                     min={1}
@@ -179,7 +180,7 @@ export function WorkerPage() {
                   />
                 </label>
                 <button
-                  className="primary"
+                  className="primary destructive"
                   type="button"
                   disabled={!data.enabled || drainMutation.isPending}
                   onClick={() =>
@@ -299,7 +300,7 @@ export function WorkerPage() {
             ) : (
               <>
                 <label className="inline-control">
-                  <span className="sr-only">Slack outbox drain limit</span>
+                  <span className="inline-label">Max</span>
                   <input
                     type="number"
                     min={1}
@@ -312,7 +313,7 @@ export function WorkerPage() {
                   />
                 </label>
                 <button
-                  className="primary"
+                  className="primary destructive"
                   type="button"
                   disabled={drainOutboxMutation.isPending}
                   onClick={() =>
@@ -663,6 +664,7 @@ function DeadLettersTable({
   onConfirmRedrive: (deadLetter: WorkerDeadLetterRecord) => void;
   onCancelConfirmation: () => void;
 }) {
+  const [expandedId, setExpandedId] = useState<string | undefined>();
   if (deadLetters.length === 0) {
     return (
       <EmptyState
@@ -685,61 +687,141 @@ function DeadLettersTable({
           </tr>
         </thead>
         <tbody>
-          {deadLetters.map((deadLetter) => (
-            <tr key={deadLetter.id}>
-              <td data-label="Run">
-                <Link
-                  to="/runs/$runId"
-                  params={{ runId: deadLetter.item.runId }}
-                  className="inline-link"
-                >
-                  {deadLetter.item.runId}
-                </Link>
-              </td>
-              <td data-label="Reason">{deadLetter.reason}</td>
-              <td data-label="Attempts">
-                {deadLetter.item.attempt}/
-                {deadLetter.retryPolicy.maxAttempts ?? "-"}
-              </td>
-              <td data-label="Failed">{formatDateTime(deadLetter.failedAt)}</td>
-              <td data-label="Action">
-                {confirmingRedriveDeadLetterId === deadLetter.id ? (
-                  <ConfirmationState
-                    title="Confirm dead-letter redrive"
-                    body={`Queue a redrive for run ${deadLetter.item.runId}.`}
-                    details={[
-                      `Dead letter ${deadLetter.id}`,
-                      `Work ${deadLetter.workId}`,
-                      `Attempt ${deadLetter.item.attempt}`,
-                    ]}
-                    confirmLabel={
-                      redrivingDeadLetterId === deadLetter.id
-                        ? "Redriving..."
-                        : "Confirm"
-                    }
-                    confirmDisabled={redrivingDeadLetterId === deadLetter.id}
-                    cancelDisabled={redrivingDeadLetterId === deadLetter.id}
-                    isBusy={redrivingDeadLetterId === deadLetter.id}
-                    onConfirm={() => onConfirmRedrive(deadLetter)}
-                    onCancel={onCancelConfirmation}
-                  />
-                ) : (
-                  <button
-                    className="icon-button"
-                    type="button"
-                    onClick={() => onRequestRedrive(deadLetter)}
-                    aria-label={`Redrive ${deadLetter.item.runId}`}
-                    disabled={redrivingDeadLetterId === deadLetter.id}
-                    title="Redrive dead letter"
-                  >
-                    <RotateCcw size={15} aria-hidden="true" />
-                  </button>
-                )}
-              </td>
-            </tr>
-          ))}
+          {deadLetters.map((deadLetter) => {
+            const expanded = expandedId === deadLetter.id;
+            const detailId = `dead-letter-detail-${deadLetter.id}`;
+            return (
+              <Fragment key={deadLetter.id}>
+                <tr>
+                  <td data-label="Run">
+                    <button
+                      type="button"
+                      className="dead-letter-toggle"
+                      aria-expanded={expanded}
+                      aria-controls={detailId}
+                      onClick={() =>
+                        setExpandedId(expanded ? undefined : deadLetter.id)
+                      }
+                      title={expanded ? "Hide details" : "Show details"}
+                    >
+                      <ChevronDown
+                        size={14}
+                        className={`dead-letter-caret ${expanded ? "open" : ""}`}
+                        aria-hidden="true"
+                      />
+                      <span className="inline-link">
+                        {deadLetter.item.runId}
+                      </span>
+                    </button>
+                  </td>
+                  <td data-label="Reason">{deadLetter.reason}</td>
+                  <td data-label="Attempts">
+                    {deadLetter.item.attempt}/
+                    {deadLetter.retryPolicy.maxAttempts ?? "-"}
+                  </td>
+                  <td data-label="Failed">
+                    {formatDateTime(deadLetter.failedAt)}
+                  </td>
+                  <td data-label="Action">
+                    {confirmingRedriveDeadLetterId === deadLetter.id ? (
+                      <ConfirmationState
+                        title="Confirm dead-letter redrive"
+                        body={`Queue a redrive for run ${deadLetter.item.runId}.`}
+                        details={[
+                          `Dead letter ${deadLetter.id}`,
+                          `Work ${deadLetter.workId}`,
+                          `Attempt ${deadLetter.item.attempt}`,
+                        ]}
+                        confirmLabel={
+                          redrivingDeadLetterId === deadLetter.id
+                            ? "Redriving..."
+                            : "Confirm"
+                        }
+                        confirmDisabled={
+                          redrivingDeadLetterId === deadLetter.id
+                        }
+                        cancelDisabled={redrivingDeadLetterId === deadLetter.id}
+                        isBusy={redrivingDeadLetterId === deadLetter.id}
+                        onConfirm={() => onConfirmRedrive(deadLetter)}
+                        onCancel={onCancelConfirmation}
+                      />
+                    ) : (
+                      <button
+                        className="icon-button"
+                        type="button"
+                        onClick={() => onRequestRedrive(deadLetter)}
+                        aria-label={`Redrive ${deadLetter.item.runId}`}
+                        disabled={redrivingDeadLetterId === deadLetter.id}
+                        title="Redrive dead letter"
+                      >
+                        <RotateCcw size={15} aria-hidden="true" />
+                      </button>
+                    )}
+                  </td>
+                </tr>
+                {expanded ? (
+                  <tr className="dead-letter-detail-row">
+                    <td colSpan={5}>
+                      <DeadLetterDetail deadLetter={deadLetter} id={detailId} />
+                    </td>
+                  </tr>
+                ) : null}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function DeadLetterDetail({
+  deadLetter,
+  id,
+}: {
+  deadLetter: WorkerDeadLetterRecord;
+  id: string;
+}) {
+  const lastError = deadLetter.result.error ?? deadLetter.reason;
+  return (
+    <div className="dead-letter-detail" id={id}>
+      <dl className="dead-letter-facts">
+        <DeadLetterFact label="Status">
+          {deadLetter.result.status ?? "failed"}
+        </DeadLetterFact>
+        <DeadLetterFact label="Attempts">
+          {deadLetter.item.attempt}/{deadLetter.retryPolicy.maxAttempts ?? "-"}
+        </DeadLetterFact>
+        <DeadLetterFact label="Reason">{deadLetter.reason}</DeadLetterFact>
+        <DeadLetterFact label="Dead letter">{deadLetter.id}</DeadLetterFact>
+        <DeadLetterFact label="Work">{deadLetter.workId}</DeadLetterFact>
+        <DeadLetterFact label="Trace">{deadLetter.item.traceId}</DeadLetterFact>
+        <DeadLetterFact label="Enqueued">
+          {formatDateTime(deadLetter.item.enqueuedAt)}
+        </DeadLetterFact>
+        <DeadLetterFact label="Failed">
+          {formatDateTime(deadLetter.failedAt)}
+        </DeadLetterFact>
+      </dl>
+      <div className="dead-letter-error">
+        <span className="trace-group-label">Last error</span>
+        <pre className="dead-letter-error-body">{lastError}</pre>
+      </div>
+    </div>
+  );
+}
+
+function DeadLetterFact({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="dead-letter-fact">
+      <dt>{label}</dt>
+      <dd>{children}</dd>
     </div>
   );
 }

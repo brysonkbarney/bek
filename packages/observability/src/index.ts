@@ -478,6 +478,245 @@ export function buildObservabilityHealthReport(
   return report;
 }
 
+export type HealthStatus = "ok" | "degraded" | "down" | "unknown";
+
+export type HealthComponentName =
+  | "api"
+  | "db"
+  | "worker_queue"
+  | "outbox"
+  | "slack"
+  | "github"
+  | "model_provider"
+  | "sandbox"
+  | "credential_broker"
+  | "mcp_transports";
+
+export interface HealthComponentInput {
+  name: HealthComponentName | string;
+  status: HealthStatus;
+  detail?: string | undefined;
+  checkedAt?: ISODate | Date | undefined;
+}
+
+export interface HealthDashboardOptions {
+  generatedAt?: ISODate | Date | undefined;
+}
+
+export interface UnhealthyHealthComponent {
+  name: string;
+  status: HealthStatus;
+  reason: string;
+}
+
+export interface HealthDashboardComponent {
+  name: string;
+  status: HealthStatus;
+  detail?: string | undefined;
+  checkedAt?: ISODate | undefined;
+}
+
+export interface HealthDashboard {
+  status: HealthStatus;
+  generatedAt: ISODate;
+  componentCount: number;
+  healthy: boolean;
+  statusCounts: Record<HealthStatus, number>;
+  unhealthy: UnhealthyHealthComponent[];
+  components: HealthDashboardComponent[];
+}
+
+export function buildHealthDashboard(
+  components: HealthComponentInput[],
+  options: HealthDashboardOptions = {},
+): HealthDashboard {
+  const generatedAt = toIsoDate(options.generatedAt ?? new Date());
+  const normalized = components
+    .map((component) => normalizeHealthComponent(component, generatedAt))
+    .sort((left, right) => left.name.localeCompare(right.name));
+
+  const statusCounts: Record<HealthStatus, number> = {
+    ok: 0,
+    degraded: 0,
+    down: 0,
+    unknown: 0,
+  };
+  for (const component of normalized) {
+    statusCounts[component.status] += 1;
+  }
+
+  const unhealthy = normalized
+    .filter((component) => component.status !== "ok")
+    .map((component) => {
+      const reason =
+        component.detail ??
+        defaultHealthReason(component.name, component.status);
+      return {
+        name: component.name,
+        status: component.status,
+        reason,
+      };
+    });
+
+  const status = worstHealthStatus(
+    normalized.map((component) => component.status),
+  );
+
+  return {
+    status,
+    generatedAt,
+    componentCount: normalized.length,
+    healthy: status === "ok",
+    statusCounts,
+    unhealthy,
+    components: normalized,
+  };
+}
+
+export type RunTracePhaseStatus =
+  | "completed"
+  | "failed"
+  | "denied"
+  | "in_progress"
+  | "pending"
+  | "unknown";
+
+export interface RunTraceViewEvent {
+  type: string;
+  message?: string | undefined;
+  data?: Record<string, unknown> | null | undefined;
+  attempt?: number | null | undefined;
+  at?: ISODate | Date | undefined;
+}
+
+export interface RunTraceViewOptions {
+  runId?: string | undefined;
+}
+
+export interface RunTracePhase {
+  type: string;
+  status: RunTracePhaseStatus;
+  message?: string | undefined;
+  startedAt?: ISODate | undefined;
+  endedAt?: ISODate | undefined;
+  durationMs?: number | undefined;
+}
+
+export interface RunTraceModelCall {
+  message?: string | undefined;
+  requestedAt?: ISODate | undefined;
+  completedAt?: ISODate | undefined;
+  durationMs?: number | undefined;
+}
+
+export interface RunTraceToolCall {
+  name?: string | undefined;
+  status: "approved" | "denied" | "completed" | "requested";
+  message?: string | undefined;
+  requestedAt?: ISODate | undefined;
+  resolvedAt?: ISODate | undefined;
+  durationMs?: number | undefined;
+}
+
+export interface RunTraceApproval {
+  decision: "approved" | "denied" | "requested";
+  message?: string | undefined;
+  at?: ISODate | undefined;
+}
+
+export interface RunTraceView {
+  runId: string;
+  eventCount: number;
+  startedAt?: ISODate | undefined;
+  endedAt?: ISODate | undefined;
+  durationMs?: number | undefined;
+  finalStatus: RunTraceTerminalStatus;
+  phases: RunTracePhase[];
+  modelCalls: RunTraceModelCall[];
+  toolCalls: RunTraceToolCall[];
+  approvals: RunTraceApproval[];
+}
+
+export function buildRunTraceView(
+  events: RunTraceViewEvent[],
+  options: RunTraceViewOptions = {},
+): RunTraceView {
+  const ordered = events
+    .map((event, index) => ({ event, index }))
+    .sort((left, right) => {
+      const leftAt = traceEventTime(left.event.at);
+      const rightAt = traceEventTime(right.event.at);
+      if (leftAt !== undefined && rightAt !== undefined && leftAt !== rightAt) {
+        return leftAt - rightAt;
+      }
+      return left.index - right.index;
+    })
+    .map((entry) => entry.event);
+
+  const phases = ordered.map((event) => {
+    const phase: RunTracePhase = {
+      type: event.type,
+      status: traceEventStatus(event.type),
+    };
+    const message = traceMessage(event.message);
+    assignDefined(phase, "message", message);
+    const at = traceIso(event.at);
+    assignDefined(phase, "startedAt", at);
+    assignDefined(phase, "endedAt", at);
+    return phase;
+  });
+
+  const modelCalls = pairTraceEvents(
+    ordered,
+    (type) => type === "model.requested",
+    (type) => type === "model.completed",
+  ).map(({ open, close }) => {
+    const call: RunTraceModelCall = {};
+    assignDefined(call, "message", traceMessage((open ?? close)?.message));
+    const requestedAt = traceIso(open?.at);
+    const completedAt = traceIso(close?.at);
+    assignDefined(call, "requestedAt", requestedAt);
+    assignDefined(call, "completedAt", completedAt);
+    if (requestedAt && completedAt) {
+      assignDefined(call, "durationMs", durationMs(requestedAt, completedAt));
+    }
+    return call;
+  });
+
+  const toolCalls = buildTraceToolCalls(ordered);
+
+  const approvals = ordered.flatMap((event) => {
+    const decision = traceApprovalDecision(event.type);
+    if (!decision) {
+      return [];
+    }
+    const approval: RunTraceApproval = { decision };
+    assignDefined(approval, "message", traceMessage(event.message));
+    assignDefined(approval, "at", traceIso(event.at));
+    return [approval];
+  });
+
+  const startedAt = traceIso(ordered[0]?.at);
+  const endedAt = traceIso(ordered.at(-1)?.at);
+  const last = ordered.at(-1);
+
+  const view: RunTraceView = {
+    runId: options.runId ?? "unknown",
+    eventCount: ordered.length,
+    finalStatus: last ? inferTerminalStatus(last.type) : "unknown",
+    phases,
+    modelCalls,
+    toolCalls,
+    approvals,
+  };
+  assignDefined(view, "startedAt", startedAt);
+  assignDefined(view, "endedAt", endedAt);
+  if (startedAt && endedAt) {
+    assignDefined(view, "durationMs", durationMs(startedAt, endedAt));
+  }
+  return view;
+}
+
 function exportRecordForEvent(
   event: StructuredAuditEvent,
   options: Required<
@@ -945,4 +1184,237 @@ function worstStatus(statuses: OperatorHealthStatus[]): OperatorHealthStatus {
     return "degraded";
   }
   return "ok";
+}
+
+function normalizeHealthComponent(
+  component: HealthComponentInput,
+  generatedAt: ISODate,
+): HealthDashboardComponent {
+  const normalized: HealthDashboardComponent = {
+    name: component.name,
+    status: component.status,
+  };
+  assignDefined(normalized, "detail", emptyToUndefined(component.detail));
+  assignDefined(
+    normalized,
+    "checkedAt",
+    component.checkedAt === undefined
+      ? undefined
+      : toIsoDate(component.checkedAt),
+  );
+  void generatedAt;
+  return normalized;
+}
+
+function defaultHealthReason(name: string, status: HealthStatus): string {
+  switch (status) {
+    case "down":
+      return `Component "${name}" is reporting as down.`;
+    case "degraded":
+      return `Component "${name}" is reporting as degraded.`;
+    case "unknown":
+      return `Component "${name}" health is unknown.`;
+    default:
+      return `Component "${name}" is healthy.`;
+  }
+}
+
+function worstHealthStatus(statuses: HealthStatus[]): HealthStatus {
+  if (statuses.length === 0) {
+    return "unknown";
+  }
+  if (statuses.includes("down")) {
+    return "down";
+  }
+  if (statuses.includes("degraded")) {
+    return "degraded";
+  }
+  if (statuses.includes("unknown")) {
+    return "unknown";
+  }
+  return "ok";
+}
+
+function traceEventTime(value: ISODate | Date | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Date.parse(toIsoDate(value));
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+function traceIso(value: ISODate | Date | undefined): ISODate | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const iso = toIsoDate(value);
+  return Number.isNaN(Date.parse(iso)) ? undefined : iso;
+}
+
+function traceMessage(value: string | undefined): string | undefined {
+  if (value === undefined || value === "") {
+    return undefined;
+  }
+  return redactSecrets(value);
+}
+
+function traceEventStatus(type: string): RunTracePhaseStatus {
+  if (type.includes("denied")) {
+    return "denied";
+  }
+  if (type.includes("failed") || type.includes("dead_lettered")) {
+    return "failed";
+  }
+  if (type.includes("completed") || type.includes("revoked")) {
+    return "completed";
+  }
+  if (
+    type.includes("requested") ||
+    type.includes("started") ||
+    type.includes("selected") ||
+    type.includes("claimed") ||
+    type.includes("checked") ||
+    type.includes("approved") ||
+    type.includes("created") ||
+    type.includes("changed") ||
+    type.includes("leased")
+  ) {
+    return "in_progress";
+  }
+  return "unknown";
+}
+
+function traceApprovalDecision(
+  type: string,
+): RunTraceApproval["decision"] | undefined {
+  if (
+    type.includes("approval_waiting") ||
+    type.includes("approval.requested")
+  ) {
+    return "requested";
+  }
+  if (type === "tool.approved" || type.includes("approval.approved")) {
+    return "approved";
+  }
+  if (type === "tool.denied" || type.includes("approval.denied")) {
+    return "denied";
+  }
+  return undefined;
+}
+
+function pairTraceEvents(
+  events: RunTraceViewEvent[],
+  isOpen: (type: string) => boolean,
+  isClose: (type: string) => boolean,
+): Array<{ open?: RunTraceViewEvent; close?: RunTraceViewEvent }> {
+  const pairs: Array<{ open?: RunTraceViewEvent; close?: RunTraceViewEvent }> =
+    [];
+  const openStack: RunTraceViewEvent[] = [];
+  for (const event of events) {
+    if (isOpen(event.type)) {
+      openStack.push(event);
+    } else if (isClose(event.type)) {
+      const open = openStack.shift();
+      if (open) {
+        pairs.push({ open, close: event });
+      } else {
+        pairs.push({ close: event });
+      }
+    }
+  }
+  for (const open of openStack) {
+    pairs.push({ open });
+  }
+  return pairs;
+}
+
+function buildTraceToolCalls(events: RunTraceViewEvent[]): RunTraceToolCall[] {
+  const toolEvents = events.filter((event) => isToolAction(event.type));
+  const requests = toolEvents.filter(
+    (event) => event.type === "tool.requested",
+  );
+  const resolutions = toolEvents.filter(
+    (event) => event.type !== "tool.requested",
+  );
+
+  const calls: RunTraceToolCall[] = [];
+  const resolutionQueue = [...resolutions];
+
+  for (const request of requests) {
+    const requestName = toolName(request);
+    const matches = (resolution: RunTraceViewEvent): boolean =>
+      requestName === undefined || toolName(resolution) === requestName;
+    // Consume this request's lifecycle: intermediate approvals plus a terminal
+    // resolution (completed/denied) collapse into a single tool call.
+    let resolution: RunTraceViewEvent | undefined;
+    while (resolutionQueue.length > 0) {
+      const nextIndex = resolutionQueue.findIndex(matches);
+      if (nextIndex < 0) {
+        break;
+      }
+      const next = resolutionQueue.splice(nextIndex, 1)[0];
+      resolution = next;
+      if (next && isTerminalToolResolution(next.type)) {
+        break;
+      }
+    }
+    calls.push(toolCallFromEvents(request, resolution));
+  }
+
+  for (const resolution of resolutionQueue) {
+    calls.push(toolCallFromEvents(undefined, resolution));
+  }
+
+  return calls;
+}
+
+function isTerminalToolResolution(type: string): boolean {
+  return type === "tool.completed" || type === "tool.denied";
+}
+
+function toolCallFromEvents(
+  request: RunTraceViewEvent | undefined,
+  resolution: RunTraceViewEvent | undefined,
+): RunTraceToolCall {
+  const call: RunTraceToolCall = {
+    status: toolCallStatus(
+      resolution?.type ?? request?.type ?? "tool.requested",
+    ),
+  };
+  assignDefined(call, "name", toolName(request ?? resolution));
+  assignDefined(
+    call,
+    "message",
+    traceMessage((resolution ?? request)?.message),
+  );
+  const requestedAt = traceIso(request?.at);
+  const resolvedAt = traceIso(resolution?.at);
+  assignDefined(call, "requestedAt", requestedAt);
+  assignDefined(call, "resolvedAt", resolvedAt);
+  if (requestedAt && resolvedAt) {
+    assignDefined(call, "durationMs", durationMs(requestedAt, resolvedAt));
+  }
+  return call;
+}
+
+function toolCallStatus(type: string): RunTraceToolCall["status"] {
+  if (type === "tool.approved") {
+    return "approved";
+  }
+  if (type === "tool.denied") {
+    return "denied";
+  }
+  if (type === "tool.completed") {
+    return "completed";
+  }
+  return "requested";
+}
+
+function toolName(event: RunTraceViewEvent | undefined): string | undefined {
+  if (!event?.data) {
+    return undefined;
+  }
+  const name =
+    event.data["name"] ?? event.data["tool"] ?? event.data["toolName"];
+  return typeof name === "string" && name !== "" ? name : undefined;
 }

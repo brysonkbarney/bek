@@ -1,10 +1,22 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   BekStore,
   bundlesForPlace,
+  canInvokeAgent,
+  createSessionToken,
+  deriveDefaultIdentityProfiles,
   evaluatePolicy,
+  isRole,
   redactSecrets,
   redactUnknown,
+  createDeterministicEmbedder,
+  rankBySimilarity,
+  requiredScopeForRequest,
+  resolveAgentIdentity,
+  roleHasScope,
+  selectInjectableMemoryChunks,
+  summarizeBudgetStatus,
+  verifySessionToken,
 } from "@bek/core";
 import type {
   ApprovalRequest,
@@ -16,6 +28,7 @@ import type {
   OutboundDelivery,
   PlaceScope,
   Principal,
+  Role,
   Run,
   RunEvent,
   RuntimeProfile,
@@ -64,6 +77,7 @@ import {
 } from "@bek/slack";
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
 import {
   createLocalCredentialVaultFromEnv,
@@ -88,16 +102,31 @@ import {
   type WorkerGitHubDraftPullRequestExecutionOptions,
 } from "@bek/worker";
 import {
+  buildHealthDashboard,
+  buildRunTraceView,
   exportAuditEvents,
   formatAuditEventExportNdjson,
   type AuditEventExportRecord,
   type AuditEventLike,
+  type HealthComponentInput,
+  type RunTraceViewEvent,
 } from "@bek/observability";
+import {
+  deriveCredentialHealth,
+  isLeaseableCredentialHealthState,
+} from "@bek/credentials";
+import {
+  classifyToolRisk,
+  createToolInvocationLedgerEntry,
+  summarizeToolInvocationLedger,
+  type ToolInvocationLedgerEntry,
+} from "@bek/mcp-gateway";
 import {
   modelUsageTotalsFromRuns,
   type ModelUsageRepository,
   type ModelUsageSink,
 } from "./persistence";
+import { buildOpenApiDocument } from "./openapi";
 
 export interface CreateAppOptions {
   runAdvancement?: RunAdvancementMode | undefined;
@@ -146,12 +175,30 @@ interface RuntimeSetupReadiness {
   sandboxProvider: SandboxProviderStatus;
 }
 type SlackDiscoveryClientSource = "injected" | "stored_oauth" | "env";
-type AdminAuthMethod = "bearer_token" | "local_bypass";
+type AdminAuthMethod = "bearer_token" | "local_bypass" | "session";
 
 interface AdminAuthContext {
   orgId: string;
   principalId: string;
   method: AdminAuthMethod;
+  role: Role;
+}
+
+const SESSION_COOKIE = "bek_session";
+const CSRF_HEADER = "x-bek-csrf";
+
+function sessionSecret(): string | undefined {
+  return process.env.BEK_SESSION_SECRET?.trim() || undefined;
+}
+
+function isUnsafeWriteMethod(method: string): boolean {
+  const upper = method.toUpperCase();
+  return (
+    upper === "POST" ||
+    upper === "PATCH" ||
+    upper === "PUT" ||
+    upper === "DELETE"
+  );
 }
 
 interface RecordAdminAuditEventInput {
@@ -192,6 +239,99 @@ interface ResolvedSlackDiscoveryClient {
   workspaceName?: string | undefined;
 }
 
+/** Thrown when a governed action is not permitted; mapped to HTTP 403. */
+class BekForbiddenError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BekForbiddenError";
+  }
+}
+
+interface RunIdentityDecision {
+  allowed: boolean;
+  reason: string;
+  identityId?: string | undefined;
+  isolated?: boolean | undefined;
+}
+
+/**
+ * Resolves the agent identity governing a run in a place and decides whether
+ * the run may proceed: the compartment identity must be enabled and the
+ * requester must be allowed to invoke Bek there. Identities come from the
+ * snapshot when configured, else from sensible derived defaults.
+ */
+function governingRunIdentity(
+  snapshot: BekSnapshot,
+  placeScopeId: string,
+  requesterPrincipalId: string | undefined,
+  isPlaceMember = true,
+): RunIdentityDecision {
+  const place = snapshot.places.find(
+    (candidate) => candidate.id === placeScopeId,
+  );
+  if (!place) {
+    // Place validity is enforced elsewhere; do not block here.
+    return { allowed: true, reason: "No place to resolve an identity for." };
+  }
+  // Tenant isolation: never create a run for a place in another org.
+  if (place.orgId !== snapshot.org.id) {
+    return {
+      allowed: false,
+      reason: `Place ${place.id} belongs to another org.`,
+    };
+  }
+  const identities =
+    snapshot.agentIdentities ??
+    deriveDefaultIdentityProfiles({
+      orgId: snapshot.org.id,
+      places: snapshot.places,
+      accessBundles: snapshot.accessBundles,
+    });
+  const resolved = resolveAgentIdentity({
+    identities,
+    place,
+    accessBundles: snapshot.accessBundles,
+    ...(snapshot.agentIdentityBindings
+      ? { bindings: snapshot.agentIdentityBindings }
+      : {}),
+  });
+
+  if (!resolved.enabled) {
+    return {
+      allowed: false,
+      reason: `Bek is disabled in ${place.name}.`,
+      identityId: resolved.identity.id,
+      isolated: resolved.isolated,
+    };
+  }
+
+  const requester = snapshot.principals.find(
+    (candidate) => candidate.id === requesterPrincipalId,
+  );
+  if (requester) {
+    const invocation = canInvokeAgent({
+      resolved,
+      principal: requester,
+      isPlaceMember,
+    });
+    if (invocation.decision === "deny") {
+      return {
+        allowed: false,
+        reason: invocation.reason,
+        identityId: resolved.identity.id,
+        isolated: resolved.isolated,
+      };
+    }
+  }
+
+  return {
+    allowed: true,
+    reason: resolved.reason,
+    identityId: resolved.identity.id,
+    isolated: resolved.isolated,
+  };
+}
+
 export function createApp(
   store = new BekStore(),
   options: CreateAppOptions = {},
@@ -219,6 +359,11 @@ export function createApp(
     slackClient: options.slackClient,
   });
   const rateLimitBuckets = new Map<string, RateLimitBucket>();
+  // In-memory MCP tool-invocation ledger (per app instance). Each governed MCP
+  // tool call records a risk classification + ledger entry here.
+  const mcpInvocationLedger: ToolInvocationLedgerEntry[] = [];
+  // Swappable embedder for semantic memory ranking (deterministic, no creds).
+  const memoryEmbedder = createDeterministicEmbedder();
   app.use(
     "*",
     cors({
@@ -231,10 +376,12 @@ export function createApp(
       allowHeaders: [
         "authorization",
         "content-type",
+        "x-bek-csrf",
         "x-slack-request-timestamp",
         "x-slack-signature",
       ],
       allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+      credentials: true,
     }),
   );
   app.use("/api/*", async (c, next) => {
@@ -279,8 +426,54 @@ export function createApp(
       return;
     }
 
-    const token = process.env.BEK_ADMIN_API_TOKEN?.trim();
-    if (!token) {
+    // Session cookie auth (when BEK_SESSION_SECRET is set): a signed session
+    // cookie authenticates the caller; writes additionally require a matching
+    // CSRF header. Falls through to token auth when absent/invalid.
+    const secret = sessionSecret();
+    if (secret) {
+      const cookie = getCookie(c, SESSION_COOKIE);
+      const verified = cookie
+        ? verifySessionToken(cookie, secret, Date.now())
+        : undefined;
+      if (verified?.ok && verified.payload.orgId === store.read().org.id) {
+        const payload = verified.payload;
+        if (
+          isUnsafeWriteMethod(c.req.method) &&
+          !c.req.path.startsWith("/api/auth/") &&
+          c.req.header(CSRF_HEADER) !== payload.csrf
+        ) {
+          return c.json({ error: "Missing or invalid CSRF token." }, 403);
+        }
+        const sessionScope = requiredScopeForRequest(c.req.method, c.req.path);
+        if (sessionScope && !roleHasScope(payload.role, sessionScope)) {
+          return c.json(
+            {
+              error: `Forbidden: role ${payload.role} lacks required scope ${sessionScope}.`,
+            },
+            403,
+          );
+        }
+        c.set("adminAuth", {
+          orgId: payload.orgId,
+          principalId: payload.principalId,
+          method: "session",
+          role: payload.role,
+        });
+        await next();
+        return;
+      }
+    }
+
+    const bootstrapToken = process.env.BEK_ADMIN_API_TOKEN?.trim();
+    const roleTokens = parseRoleApiTokens(process.env.BEK_ADMIN_API_TOKENS);
+    const authorization = c.req.header("authorization");
+
+    let method: AdminAuthMethod;
+    let role: Role;
+    let principalIdOverride: string | undefined;
+
+    if (!bootstrapToken && roleTokens.length === 0) {
+      // No tokens configured: local demo bypass (owner) or fail closed.
       if (!allowsUnauthenticatedLocalAdminApi()) {
         return c.json(
           {
@@ -292,29 +485,60 @@ export function createApp(
           500,
         );
       }
-      const adminAuth = resolveAdminAuthContext(store.read(), "local_bypass");
-      if (!adminAuth.ok) {
-        return c.json({ error: adminAuth.error }, 500);
+      method = "local_bypass";
+      role = "owner";
+    } else {
+      if (bootstrapToken) {
+        const unsafeTokenReason = unsafeAdminApiTokenReason(bootstrapToken);
+        if (unsafeTokenReason) {
+          return c.json({ error: unsafeTokenReason }, 500);
+        }
       }
-      c.set("adminAuth", adminAuth.context);
-      await next();
-      return;
+      if (
+        bootstrapToken &&
+        isExpectedBearerToken(authorization, bootstrapToken)
+      ) {
+        method = "bearer_token";
+        role = "owner";
+      } else {
+        const matched = matchRoleApiToken(authorization, roleTokens);
+        if (!matched) {
+          return c.json({ error: "Unauthorized" }, 401);
+        }
+        method = "bearer_token";
+        role = matched.role;
+        principalIdOverride = matched.principalId;
+      }
     }
-    const unsafeTokenReason = unsafeAdminApiTokenReason(token);
-    if (unsafeTokenReason) {
-      return c.json({ error: unsafeTokenReason }, 500);
-    }
-    if (!isExpectedBearerToken(c.req.header("authorization"), token)) {
-      return c.json({ error: "Unauthorized" }, 401);
-    }
-    const adminAuth = resolveAdminAuthContext(store.read(), "bearer_token");
+
+    const adminAuth = resolveAdminAuthContext(
+      store.read(),
+      method,
+      role,
+      principalIdOverride,
+    );
     if (!adminAuth.ok) {
       return c.json({ error: adminAuth.error }, 500);
     }
+
+    // Scope enforcement: deny governed writes/exports the role cannot perform.
+    const requiredScope = requiredScopeForRequest(c.req.method, c.req.path);
+    if (requiredScope && !roleHasScope(role, requiredScope)) {
+      return c.json(
+        {
+          error: `Forbidden: role ${role} lacks required scope ${requiredScope}.`,
+        },
+        403,
+      );
+    }
+
     c.set("adminAuth", adminAuth.context);
     await next();
   });
   app.onError((error, c) => {
+    if (error instanceof BekForbiddenError) {
+      return c.json({ error: error.message }, 403);
+    }
     const message =
       error instanceof Error ? error.message : "Bek request failed.";
     const normalized = message.toLowerCase();
@@ -328,6 +552,16 @@ export function createApp(
   });
 
   function createRunAndQueue(input: CreateStoreRunInput) {
+    // Identity gate: the place's agent identity must be enabled and the
+    // requester must be allowed to invoke Bek there.
+    const identityDecision = governingRunIdentity(
+      store.read(),
+      input.placeScopeId,
+      input.requesterPrincipalId,
+    );
+    if (!identityDecision.allowed) {
+      throw new BekForbiddenError(identityDecision.reason);
+    }
     const runInput: CreateStoreRunInput = {
       ...input,
       advanceMode: workerController.enabled ? "worker" : "inline_stub",
@@ -350,6 +584,18 @@ export function createApp(
       await workerController.flushChanges();
     }
     return latestRun(store, run.id);
+  }
+
+  /**
+   * Tenant isolation: a resource is only visible/mutable when it belongs to the
+   * authenticated org. Cross-org resources are treated as not present.
+   */
+  function inAuthOrg(
+    c: Context<BekHonoEnv>,
+    resourceOrgId: string | undefined,
+  ): boolean {
+    const adminAuth = c.get("adminAuth");
+    return Boolean(adminAuth) && resourceOrgId === adminAuth?.orgId;
   }
 
   function approvalDecisionFromAdminAuth(
@@ -1622,6 +1868,433 @@ export function createApp(
     );
   });
 
+  // ---- Admin sessions (token -> signed expiring cookie + CSRF) ----
+  app.post("/api/auth/session", (c) => {
+    const secret = sessionSecret();
+    if (!secret) {
+      return c.json(
+        {
+          error:
+            "Sessions are not configured. Set BEK_SESSION_SECRET to enable cookie sign-in.",
+        },
+        501,
+      );
+    }
+    const adminAuth = c.get("adminAuth");
+    if (!adminAuth) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+    const csrf = randomBytes(18).toString("base64url");
+    const ttlMs = 12 * 60 * 60 * 1000;
+    const nowMs = Date.now();
+    const token = createSessionToken({
+      role: adminAuth.role,
+      principalId: adminAuth.principalId,
+      orgId: adminAuth.orgId,
+      csrf,
+      secret,
+      nowMs,
+      ttlMs,
+    });
+    setCookie(c, SESSION_COOKIE, token, {
+      httpOnly: true,
+      sameSite: "Strict",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: Math.floor(ttlMs / 1000),
+    });
+    return c.json({
+      ok: true,
+      role: adminAuth.role,
+      principalId: adminAuth.principalId,
+      orgId: adminAuth.orgId,
+      csrfToken: csrf,
+      expiresAt: new Date(nowMs + ttlMs).toISOString(),
+    });
+  });
+
+  app.get("/api/auth/session", (c) => {
+    const adminAuth = c.get("adminAuth");
+    if (!adminAuth) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+    return c.json({
+      ok: true,
+      role: adminAuth.role,
+      principalId: adminAuth.principalId,
+      orgId: adminAuth.orgId,
+      method: adminAuth.method,
+    });
+  });
+
+  app.post("/api/auth/logout", (c) => {
+    deleteCookie(c, SESSION_COOKIE, { path: "/" });
+    return c.json({ ok: true });
+  });
+
+  // ---- Memory: governed source registry + ACL-before-injection retrieval ----
+  app.get("/api/memory/chunks", (c) => {
+    const adminAuth = c.get("adminAuth");
+    return c.json({
+      sources:
+        store
+          .read()
+          .memorySources?.filter((s) => s.orgId === adminAuth?.orgId) ?? [],
+      chunks: store
+        .listMemoryChunks()
+        .filter((k) => k.orgId === adminAuth?.orgId),
+    });
+  });
+
+  app.post("/api/memory/sources", async (c) => {
+    const adminAuth = c.get("adminAuth");
+    if (!adminAuth) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+    const body = memorySourceSchema.parse(await c.req.json());
+    if (body.placeId) {
+      const place = store
+        .read()
+        .places.find((candidate) => candidate.id === body.placeId);
+      if (!place || !inAuthOrg(c, place.orgId)) {
+        return c.json({ error: "Place not found" }, 404);
+      }
+    }
+    const source = store.recordMemorySource({
+      kind: body.kind,
+      sensitivity: body.sensitivity,
+      contentHash: body.contentHash,
+      createdByPrincipalId: adminAuth.principalId,
+      retention: body.retention ?? { kind: "forever" },
+      ...(body.placeId ? { placeId: body.placeId } : {}),
+      ...(body.identityId ? { identityId: body.identityId } : {}),
+      ...(body.title ? { title: body.title } : {}),
+      ...(body.uri ? { uri: body.uri } : {}),
+    });
+    recordAdminAuditEvent(c, {
+      action: "memory_source.created",
+      resourceType: "memory_source",
+      resourceId: source.id,
+      message: `Registered memory source ${source.id}.`,
+      data: { kind: source.kind, placeId: source.placeId },
+    });
+    await store.flushChanges();
+    return c.json(source, 201);
+  });
+
+  app.post("/api/memory/chunks", async (c) => {
+    const adminAuth = c.get("adminAuth");
+    if (!adminAuth) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+    const body = memoryChunksSchema.parse(await c.req.json());
+    const source = store
+      .read()
+      .memorySources?.find((candidate) => candidate.id === body.sourceId);
+    if (!source || !inAuthOrg(c, source.orgId)) {
+      return c.json({ error: "Memory source not found" }, 404);
+    }
+    const chunks = store.recordMemoryChunks(
+      body.chunks.map((chunk) => ({
+        sourceId: body.sourceId,
+        sensitivity: chunk.sensitivity ?? source.sensitivity,
+        contentHash: chunk.contentHash,
+        citation: chunk.citation,
+        text: chunk.text,
+        ...((chunk.placeId ?? source.placeId)
+          ? { placeId: chunk.placeId ?? source.placeId }
+          : {}),
+        ...((chunk.identityId ?? source.identityId)
+          ? { identityId: chunk.identityId ?? source.identityId }
+          : {}),
+        ...(chunk.allowedPlaceIds
+          ? { allowedPlaceIds: chunk.allowedPlaceIds }
+          : {}),
+        ...(chunk.allowedIdentityIds
+          ? { allowedIdentityIds: chunk.allowedIdentityIds }
+          : {}),
+      })),
+    );
+    await store.flushChanges();
+    return c.json({ created: chunks.length, chunks }, 201);
+  });
+
+  app.get("/api/memory/retrieve", (c) => {
+    const placeId = c.req.query("placeId");
+    if (!placeId) {
+      return c.json({ error: "placeId is required." }, 400);
+    }
+    const snapshot = store.read();
+    const place = snapshot.places.find((candidate) => candidate.id === placeId);
+    if (!place || !inAuthOrg(c, place.orgId)) {
+      return c.json({ error: "Place not found" }, 404);
+    }
+    const identities =
+      snapshot.agentIdentities ??
+      deriveDefaultIdentityProfiles({
+        orgId: snapshot.org.id,
+        places: snapshot.places,
+        accessBundles: snapshot.accessBundles,
+      });
+    const resolved = resolveAgentIdentity({
+      identities,
+      place,
+      accessBundles: snapshot.accessBundles,
+      ...(snapshot.agentIdentityBindings
+        ? { bindings: snapshot.agentIdentityBindings }
+        : {}),
+    });
+    const result = selectInjectableMemoryChunks({
+      chunks: (snapshot.memoryChunks ?? []).filter(
+        (chunk) => chunk.orgId === snapshot.org.id,
+      ),
+      context: { orgId: snapshot.org.id, placeId: place.id, resolved },
+    });
+    // Optional semantic ranking: when a query is supplied, rank the ACL-allowed
+    // chunks by embedding similarity (ACL is always enforced first).
+    const query = c.req.query("query");
+    const allowed = query
+      ? rankBySimilarity(
+          memoryEmbedder,
+          query,
+          result.allowed,
+          (chunk) => chunk.text,
+        ).map((ranked) => ({ ...ranked.item, score: ranked.score }))
+      : result.allowed;
+    return c.json({
+      placeId: place.id,
+      identityId: resolved.identity.id,
+      isolated: resolved.isolated,
+      ...(query ? { query, embedder: memoryEmbedder.id } : {}),
+      allowed,
+      excluded: result.excluded,
+    });
+  });
+
+  // ---- Operator health dashboard (component rollup) ----
+  app.get("/api/health/dashboard", (c) => {
+    const snapshot = store.read();
+    const queue = workerController.read();
+    const deadLetters = queue.deadLetters.length;
+    const slackActive = snapshot.connectorInstalls.some(
+      (install) => install.kind === "slack" && install.status === "active",
+    );
+    const failedOutbox = snapshot.outboundDeliveries.filter(
+      (delivery) => delivery.status === "failed",
+    ).length;
+    const components: HealthComponentInput[] = [
+      { name: "api", status: "ok" },
+      { name: "db", status: "ok", detail: "Snapshot store reachable." },
+      {
+        name: "worker_queue",
+        status: !workerController.enabled
+          ? "unknown"
+          : deadLetters > 0
+            ? "degraded"
+            : "ok",
+        detail: workerController.enabled
+          ? `${deadLetters} dead letter(s).`
+          : "Worker advancement disabled.",
+      },
+      {
+        name: "outbox",
+        status: failedOutbox > 0 ? "degraded" : "ok",
+        detail: `${failedOutbox} failed Slack deliver(ies).`,
+      },
+      {
+        name: "slack",
+        status: slackActive ? "ok" : "unknown",
+        detail: slackActive ? "Active install." : "No active Slack install.",
+      },
+      {
+        name: "github",
+        status: githubExecution.status.mode === "real" ? "ok" : "unknown",
+        detail: `Execution mode: ${githubExecution.status.mode}.`,
+      },
+      { name: "model_provider", status: "unknown" },
+      { name: "sandbox", status: "unknown" },
+      { name: "credential_broker", status: "unknown" },
+      { name: "mcp_transports", status: "unknown" },
+    ];
+    return c.json(buildHealthDashboard(components));
+  });
+
+  // ---- Credential health + lease-issuance (records last-used) ----
+  app.get("/api/credentials/health", (c) => {
+    const adminAuth = c.get("adminAuth");
+    const now = new Date();
+    const credentials = store
+      .read()
+      .credentials.filter((credential) => credential.orgId === adminAuth?.orgId)
+      .map((credential) => deriveCredentialHealth(credential, { now }));
+    const summary = credentials.reduce<Record<string, number>>(
+      (counts, health) => {
+        counts[health.state] = (counts[health.state] ?? 0) + 1;
+        return counts;
+      },
+      {},
+    );
+    return c.json({
+      credentials,
+      summary,
+      leaseableCount: credentials.filter((health) => health.leaseable).length,
+    });
+  });
+
+  app.post("/api/credentials/:id/lease", async (c) => {
+    const credential = store
+      .read()
+      .credentials.find((candidate) => candidate.id === c.req.param("id"));
+    if (!credential || !inAuthOrg(c, credential.orgId)) {
+      return c.json({ error: "Credential not found" }, 404);
+    }
+    const health = deriveCredentialHealth(credential, { now: new Date() });
+    if (!isLeaseableCredentialHealthState(health.state)) {
+      return c.json(
+        {
+          error: `Credential is not leaseable (state: ${health.state}).`,
+          health,
+        },
+        409,
+      );
+    }
+    const leasedAt = new Date().toISOString();
+    store.markCredentialUsed(credential.id, leasedAt);
+    recordAdminAuditEvent(c, {
+      action: "credential.leased",
+      resourceType: "credential",
+      resourceId: credential.id,
+      message: `Issued a credential lease for ${credential.name}.`,
+      data: { provider: credential.provider },
+    });
+    await store.flushChanges();
+    return c.json({
+      credentialId: credential.id,
+      leasedAt,
+      health: deriveCredentialHealth(
+        store
+          .read()
+          .credentials.find((candidate) => candidate.id === credential.id) ??
+          credential,
+        { now: new Date() },
+      ),
+    });
+  });
+
+  // ---- MCP tool-invocation risk classification + ledger ----
+  app.post("/api/mcp/invocations", async (c) => {
+    const body = mcpInvocationSchema.parse(await c.req.json());
+    const run = store
+      .read()
+      .runs.find((candidate) => candidate.id === body.runId);
+    if (!run || !inAuthOrg(c, run.orgId)) {
+      return c.json({ error: "Run not found" }, 404);
+    }
+    const risk = classifyToolRisk({
+      name: body.toolName,
+      ...(body.description ? { description: body.description } : {}),
+      resource: body.resource,
+      ...(body.inputSchema ? { inputSchema: body.inputSchema } : {}),
+    });
+    const inputHash = createHash("sha256")
+      .update(JSON.stringify(body.input ?? {}))
+      .digest("hex");
+    const sequence =
+      mcpInvocationLedger.filter((entry) => entry.runId === body.runId).length +
+      1;
+    const entry = createToolInvocationLedgerEntry(
+      {
+        runId: body.runId,
+        resource: body.resource,
+        inputHash,
+        latencyMs: body.latencyMs,
+        status: body.status,
+        ...(body.identityId ? { identityId: body.identityId } : {}),
+        ...(body.error ? { error: body.error } : {}),
+      },
+      sequence,
+    );
+    mcpInvocationLedger.push(entry);
+    recordAdminAuditEvent(c, {
+      action: "mcp.tool_invoked",
+      resourceType: "mcp_tool",
+      resourceId: body.resource,
+      runId: body.runId,
+      message: `MCP tool ${body.toolName} ${body.status} (${risk.risk}).`,
+      risk: risk.risk,
+      data: { requiresApproval: risk.requiresApproval, reason: risk.reason },
+    });
+    await store.flushChanges();
+    return c.json({ entry, risk }, 201);
+  });
+
+  app.get("/api/mcp/invocations", (c) => {
+    const runId = c.req.query("runId");
+    if (runId) {
+      const run = store.read().runs.find((candidate) => candidate.id === runId);
+      if (run && !inAuthOrg(c, run.orgId)) {
+        return c.json({ entries: [], summary: { entries: 0 } });
+      }
+    }
+    const entries = runId
+      ? mcpInvocationLedger.filter((entry) => entry.runId === runId)
+      : mcpInvocationLedger;
+    const summary = summarizeToolInvocationLedger(
+      mcpInvocationLedger,
+      runId ? { runId } : undefined,
+    );
+    return c.json({ entries, summary });
+  });
+
+  // ---- Daily budget status (per-policy spend vs ceiling + alert state) ----
+  app.get("/api/budgets/status", (c) => {
+    const adminAuth = c.get("adminAuth");
+    const snapshot = store.read();
+    const statuses = summarizeBudgetStatus({
+      policies: snapshot.budgetPolicies.filter(
+        (policy) => policy.orgId === adminAuth?.orgId,
+      ),
+      accessBundles: snapshot.accessBundles,
+      runs: snapshot.runs,
+      now: new Date(),
+    });
+    return c.json({
+      budgets: statuses,
+      alerts: statuses.filter((status) => status.state !== "ok"),
+    });
+  });
+
+  // ---- Agent identity profiles (compartment identities) ----
+  app.get("/api/identities", (c) => {
+    const adminAuth = c.get("adminAuth");
+    const snapshot = store.read();
+    const identities = (
+      snapshot.agentIdentities ??
+      deriveDefaultIdentityProfiles({
+        orgId: snapshot.org.id,
+        places: snapshot.places,
+        accessBundles: snapshot.accessBundles,
+      })
+    ).filter((identity) => identity.orgId === adminAuth?.orgId);
+    return c.json({
+      identities,
+      bindings: (snapshot.agentIdentityBindings ?? []).filter(
+        (binding) => binding.orgId === adminAuth?.orgId,
+      ),
+      derived: !snapshot.agentIdentities,
+    });
+  });
+
+  // ---- Machine-readable API description (generated from live routes) ----
+  app.get("/api/openapi.json", (c) =>
+    c.json(
+      buildOpenApiDocument(app, {
+        description:
+          "Bek admin control-plane API. Generated from registered routes.",
+      }),
+    ),
+  );
+
   app.get("/api/bootstrap", (c) => c.json(publicSnapshot(store.read())));
   app.get("/api/org", (c) => c.json(store.read().org));
   app.get("/api/principals", (c) =>
@@ -2166,7 +2839,7 @@ export function createApp(
         place.id === c.req.param("channelId") ||
         place.externalId === c.req.param("channelId"),
     );
-    if (!channel) {
+    if (!channel || !inAuthOrg(c, channel.orgId)) {
       return c.json({ error: "Channel not found" }, 404);
     }
     const bundles = snapshot.accessBundles.filter((bundle) =>
@@ -2453,7 +3126,7 @@ export function createApp(
     const run = snapshot.runs.find(
       (candidate) => candidate.id === c.req.param("runId"),
     );
-    if (!run) {
+    if (!run || !inAuthOrg(c, run.orgId)) {
       return c.json({ error: "Run not found" }, 404);
     }
     return c.json({
@@ -2467,10 +3140,36 @@ export function createApp(
     });
   });
   app.get("/api/runs/:runId/events", (c) => {
-    const events = store
-      .read()
-      .events.filter((event) => event.runId === c.req.param("runId"));
+    const snapshot = store.read();
+    const run = snapshot.runs.find(
+      (candidate) => candidate.id === c.req.param("runId"),
+    );
+    // Isolate cross-org runs (return nothing) but keep missing-run → [] behavior.
+    if (run && !inAuthOrg(c, run.orgId)) {
+      return c.json([]);
+    }
+    const events = snapshot.events.filter(
+      (event) => event.runId === c.req.param("runId"),
+    );
     return c.json(events.map(publicRunEvent));
+  });
+  app.get("/api/runs/:runId/trace", (c) => {
+    const snapshot = store.read();
+    const run = snapshot.runs.find(
+      (candidate) => candidate.id === c.req.param("runId"),
+    );
+    if (!run || !inAuthOrg(c, run.orgId)) {
+      return c.json({ error: "Run not found" }, 404);
+    }
+    const traceEvents: RunTraceViewEvent[] = snapshot.events
+      .filter((event) => event.runId === run.id)
+      .map((event) => ({
+        type: event.type,
+        message: event.message,
+        ...(event.data ? { data: event.data } : {}),
+        at: event.createdAt,
+      }));
+    return c.json(buildRunTraceView(traceEvents, { runId: run.id }));
   });
   app.get("/api/worker/queue", (c) =>
     c.json({
@@ -2626,7 +3325,7 @@ export function createApp(
     const run = snapshot.runs.find(
       (candidate) => candidate.id === c.req.param("runId"),
     );
-    if (!run) {
+    if (!run || !inAuthOrg(c, run.orgId)) {
       return c.json({ error: "Run not found" }, 404);
     }
     if (isTerminalRunStatus(run.status)) {
@@ -2719,6 +3418,11 @@ export function createApp(
         trigger: run.trigger,
         placeScopeId: run.placeScopeId,
         requesterPrincipalId: run.requesterPrincipalId,
+        agentIdentityId: governingRunIdentity(
+          store.read(),
+          run.placeScopeId,
+          run.requesterPrincipalId,
+        ).identityId,
         capability: body.capability,
         resource: body.resource,
         idempotencyKeyPresent: Boolean(idempotency.key),
@@ -2749,6 +3453,9 @@ export function createApp(
     const before = store
       .read()
       .approvals.find((approval) => approval.id === c.req.param("approvalId"));
+    if (!before || !inAuthOrg(c, before.orgId)) {
+      return c.json({ error: "Approval not found" }, 404);
+    }
     const approval = await decideApprovalAndAdvance(
       c.req.param("approvalId"),
       "approved",
@@ -2766,6 +3473,9 @@ export function createApp(
     const before = store
       .read()
       .approvals.find((approval) => approval.id === c.req.param("approvalId"));
+    if (!before || !inAuthOrg(c, before.orgId)) {
+      return c.json({ error: "Approval not found" }, 404);
+    }
     const approval = await decideApprovalAndAdvance(
       c.req.param("approvalId"),
       "denied",
@@ -2783,7 +3493,7 @@ export function createApp(
     const place = snapshot.places.find(
       (candidate) => candidate.id === body.placeScopeId,
     );
-    if (!place) {
+    if (!place || !inAuthOrg(c, place.orgId)) {
       return c.json({ error: "Place not found" }, 404);
     }
     return c.json(
@@ -3744,6 +4454,96 @@ const linkPrincipalExternalIdentitySchema = z
       .regex(/^[a-z0-9._-]+$/),
     externalId: z.string().trim().min(1).max(240),
     metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
+
+const memorySensitivityEnum = z.enum([
+  "public",
+  "internal",
+  "confidential",
+  "restricted",
+]);
+
+const memoryRetentionSchema = z
+  .object({
+    kind: z.enum(["forever", "ttl_days", "keep_until"]),
+    ttlDays: z.number().int().positive().optional(),
+    retainUntil: z.string().min(1).optional(),
+  })
+  .strict();
+
+const memorySourceSchema = z
+  .object({
+    kind: z.enum([
+      "slack_thread",
+      "doc",
+      "repo",
+      "ticket",
+      "mcp_output",
+      "uploaded_file",
+      "generated_report",
+    ]),
+    sensitivity: memorySensitivityEnum,
+    contentHash: z.string().min(1).max(256),
+    placeId: z.string().min(1).optional(),
+    identityId: z.string().min(1).optional(),
+    title: z.string().min(1).max(256).optional(),
+    uri: z.string().min(1).max(1024).optional(),
+    retention: memoryRetentionSchema.optional(),
+  })
+  .strict();
+
+const memoryChunksSchema = z
+  .object({
+    sourceId: z.string().min(1),
+    chunks: z
+      .array(
+        z
+          .object({
+            contentHash: z.string().min(1).max(256),
+            text: z.string().min(1).max(20_000),
+            sensitivity: memorySensitivityEnum.optional(),
+            placeId: z.string().min(1).optional(),
+            identityId: z.string().min(1).optional(),
+            allowedPlaceIds: z.array(z.string().min(1)).optional(),
+            allowedIdentityIds: z.array(z.string().min(1)).optional(),
+            citation: z
+              .object({
+                sourceId: z.string().min(1),
+                sourceKind: z.enum([
+                  "slack_thread",
+                  "doc",
+                  "repo",
+                  "ticket",
+                  "mcp_output",
+                  "uploaded_file",
+                  "generated_report",
+                ]),
+                label: z.string().min(1).max(256),
+                uri: z.string().min(1).max(1024).optional(),
+                locator: z.string().min(1).max(256).optional(),
+              })
+              .strict(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(200),
+  })
+  .strict();
+
+const mcpInvocationSchema = z
+  .object({
+    runId: z.string().min(1),
+    toolName: z.string().min(1).max(256),
+    resource: z.string().min(1).max(512),
+    status: z.enum(["executed", "blocked", "error"]),
+    latencyMs: z.number().int().nonnegative(),
+    input: z.record(z.string(), z.unknown()).optional(),
+    description: z.string().max(2000).optional(),
+    inputSchema: z.record(z.string(), z.unknown()).optional(),
+    identityId: z.string().min(1).optional(),
+    error: z.string().max(2000).optional(),
   })
   .strict();
 
@@ -5749,9 +6549,13 @@ function isAllowedAdminOrigin(origin: string): boolean {
 function resolveAdminAuthContext(
   snapshot: BekSnapshot,
   method: AdminAuthMethod,
+  role: Role = "owner",
+  principalIdOverride?: string,
 ): { ok: true; context: AdminAuthContext } | { ok: false; error: string } {
   const principalId =
-    process.env.BEK_ADMIN_PRINCIPAL_ID?.trim() || "principal_admin";
+    principalIdOverride?.trim() ||
+    process.env.BEK_ADMIN_PRINCIPAL_ID?.trim() ||
+    "principal_admin";
   const principal = snapshot.principals.find(
     (candidate) =>
       candidate.id === principalId && candidate.orgId === snapshot.org.id,
@@ -5759,14 +6563,13 @@ function resolveAdminAuthContext(
   if (!principal) {
     return {
       ok: false,
-      error:
-        "BEK_ADMIN_PRINCIPAL_ID must reference a principal in the current org.",
+      error: "Admin principal must reference a principal in the current org.",
     };
   }
   if (principal.kind !== "human") {
     return {
       ok: false,
-      error: "BEK_ADMIN_PRINCIPAL_ID must reference a human principal.",
+      error: "Admin principal must reference a human principal.",
     };
   }
   return {
@@ -5775,8 +6578,66 @@ function resolveAdminAuthContext(
       orgId: snapshot.org.id,
       principalId: principal.id,
       method,
+      role,
     },
   };
+}
+
+interface RoleApiToken {
+  token: string;
+  role: Role;
+  principalId?: string | undefined;
+}
+
+/**
+ * Optional role-scoped admin API tokens, configured as a JSON array in
+ * `BEK_ADMIN_API_TOKENS`: `[{ "token": "...", "role": "operator", "principalId": "..." }]`.
+ * The bootstrap `BEK_ADMIN_API_TOKEN` always maps to the `owner` role.
+ */
+function parseRoleApiTokens(raw: string | undefined): RoleApiToken[] {
+  const trimmed = raw?.trim();
+  if (!trimmed) {
+    return [];
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+  const tokens: RoleApiToken[] = [];
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const token =
+      typeof record.token === "string" ? record.token.trim() : undefined;
+    const role = typeof record.role === "string" ? record.role : undefined;
+    if (!token || !role || !isRole(role)) {
+      continue;
+    }
+    tokens.push({
+      token,
+      role,
+      ...(typeof record.principalId === "string"
+        ? { principalId: record.principalId }
+        : {}),
+    });
+  }
+  return tokens;
+}
+
+function matchRoleApiToken(
+  authorization: string | undefined,
+  tokens: RoleApiToken[],
+): RoleApiToken | undefined {
+  return tokens.find((entry) =>
+    isExpectedBearerToken(authorization, entry.token),
+  );
 }
 
 const defaultMaxRequestBodyBytes = 256 * 1024;

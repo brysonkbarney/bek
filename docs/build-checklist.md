@@ -5,7 +5,43 @@ product spine, but it is not yet a flawless sellable hosted product. Do not
 delete or soften unchecked items until the implementation, tests, docs, and
 operator workflow are all in place.
 
-Last updated: 2026-06-25.
+Last updated: 2026-06-25. See [Goal (updated)](./goal.md) for the current
+mission and why AI SDK 7 adoption is the keystone of the remaining work.
+
+## AI SDK 7 Migration (Keystone)
+
+`ai@7.0.0` is the stable `latest` release; the repo is pinned to v6
+(`packages/model-router` → `ai ^6.0.209`). AI SDK 7's agent, workflow, harness,
+tool-approval, sandbox, and telemetry primitives replace large amounts of
+hand-rolled orchestration. Do this before or alongside the integration work it
+unblocks, gated by `pnpm check`.
+
+- [x] Bump `ai` 6 → 7; add `@ai-sdk/anthropic@4`, `@ai-sdk/openai@4` where used.
+      (`@ai-sdk/tui@1` available for dev when wanted.)
+- [x] Re-validate `packages/model-router`: `generateText` signature,
+      `providerOptions` gateway tags, usage/finish-reason shapes, and the
+      `VercelAiGatewayModelGateway` adapter; `FakeModelGateway` unchanged. Adapter
+      now prefers v7 cumulative `usage` and `finalStep` metadata.
+- [x] Build a real agent loop in `packages/runtime`
+      ([`agent-loop.ts`](./architecture/ai-sdk-7.md)) on `ToolLoopAgent`, wiring
+      existing `RuntimeStartInput`/`RuntimeResult`, approval checkpoints, and
+      observability events. Exposed via the worker `ai-sdk-agent` adapter.
+      NOTE: `WorkflowAgent` is not in stable `ai@7`; the `@bek/worker` queue
+      provides durability/resume instead.
+- [x] Map Bek approval checkpoints onto AI SDK 7 tool approvals (HMAC-signed
+      secret threaded) and capability grants onto tool `contextSchema`
+      (identity-scoped, secret-free).
+- [~] `HarnessAgent`-backed coding runtime and `SandboxSession` adapter:
+  `HarnessAgent` and `@ai-sdk/sandbox` are NOT in stable `ai@7`. Bek keeps its
+  own `RuntimeAdapter`/`@bek/sandbox` contracts as the integration seam; the
+  `experimental_sandbox` param is the future hook. See
+  [AI SDK 7 architecture](./architecture/ai-sdk-7.md).
+- [x] Register telemetry once at startup via `registerBekTelemetry`
+      (`registerTelemetry`); deployments supply OTel/Langfuse/etc. integrations.
+- [x] Adopt first-class `timeout` config for the agent loop (number or
+      `{ totalMs, stepMs, chunkMs, toolMs }`); worker adapter exposes `timeoutMs`.
+- [x] Add AI SDK 7 architecture doc; status notes added to model-provider and
+      runtime-sandbox docs.
 
 ## Current Baseline Already In The Repo
 
@@ -91,7 +127,8 @@ Last updated: 2026-06-25.
 - [ ] Improve mobile/tablet behavior:
       navigation density, run tables, setup forms, Slack channel discovery,
       approval rows, and audit explorer.
-- [ ] Add empty/loading/error states for every admin page and modal.
+- [~] Add empty/loading/error states for every admin page and modal. (Most pages
+  covered; audit page filter-aware empty/refetch states added.)
 - [ ] Add keyboard and screen-reader checks for every critical workflow.
 - [ ] Add visual regression screenshots for key viewports:
       setup, dashboard/session, approvals, connectors, Slack install, model
@@ -103,32 +140,41 @@ Last updated: 2026-06-25.
 
 This is the biggest conceptual gap. Bek should mirror the strong parts of
 Claude Tag's agent identity access model while staying provider-neutral.
+Foundation landed in `packages/core/src/identity.ts` (pure model + tests); see
+[Agent identity model](./architecture/agent-identity.md). Remaining items are
+persistence, identity-aware credentials/audit, admin UI, and wiring.
 
-- [ ] Create first-class agent identity records distinct from the visible
-      `@bek` agent:
-      workspace baseline identity, public-channel identity, private-channel
-      identity, DM/user mode, and service-account bindings.
-- [ ] Model inheritance explicitly:
-      workspace baseline grants inherited by default, channel-level overrides,
-      private-channel isolation, and disabled-channel state.
+- [x] Create first-class agent identity records distinct from the visible
+      `@bek` agent (`AgentIdentityProfile`): workspace baseline, public-channel,
+      private-channel, DM, and service-account scopes.
+- [x] Model inheritance explicitly: workspace baseline grants inherited by
+      default, channel-level overrides, private-channel isolation, and
+      disabled-channel state (`resolveAgentIdentity`, with tests).
 - [ ] Store identity boundaries in the data model:
       `agent_identities`, `agent_identity_bindings`,
       `agent_identity_credentials`, and identity-to-place mapping.
-- [ ] Decide how current access bundles map to identities:
-      keep bundles as policy packs, but bind effective permissions through an
-      identity profile for a compartment.
-- [ ] Add a channel/private-channel distinction:
-      private channel identity must not leak memory, credentials, artifacts, or
-      retrieval into public/workspace contexts.
+- [x] Decide how current access bundles map to identities:
+      bundles stay policy packs; effective permissions bind through an identity
+      profile per compartment (`effectiveBundleIds`/`effectiveGrants`).
+- [x] Add a channel/private-channel distinction:
+      private-channel identity is isolated (`isolated`/`isIdentityDataIsolated`)
+      and does not inherit baseline bundles, memory, or credentials.
 - [ ] Add DM semantics:
       decide whether Bek DMs are user-owned, agent-owned, or disabled until a
       user identity/connector model exists.
-- [ ] Add "who may invoke" checks separate from "what the agent may access":
-      role-based invocation allowlists, channel membership assumptions,
-      approver groups, and admin-only commands.
-- [ ] Add user-level overlay checks for sensitive work:
-      channel identity must allow the action and the requesting user/approver
-      must be permitted to trigger or approve it.
+- [x] Add "who may invoke" checks separate from "what the agent may access":
+      `canInvokeAgent` enforces invocation allowlists and place membership,
+      separate from `effectiveGrants` (with tests). Approver groups/admin-only
+      commands still to wire.
+- [x] Wire identity into live run creation: every run is gated by
+      `governingRunIdentity` (the place's compartment identity must be enabled
+      and the requester must pass `canInvokeAgent`); the governing identity is
+      recorded on the `run.created` audit event. Disabled identity or
+      allowlist-miss → `403` (API tests in `identity-runs.test.ts`). Snapshots
+      may carry `agentIdentities`/`agentIdentityBindings`, else defaults are
+      derived.
+- [~] Add user-level overlay checks for sensitive work: invocation allowlist +
+  enabled gate landed; per-action approver-permission overlay still to add.
 - [ ] Add identity-aware credential selection:
       credentials are selected by identity and place, not by global connector
       kind.
@@ -136,40 +182,54 @@ Claude Tag's agent identity access model while staying provider-neutral.
       every run, tool call, credential lease, network request, memory write,
       and approval must include actor principal, agent identity, place, org,
       and source trigger.
-- [ ] Add revocation semantics:
-      revoking an identity disables all credentials, future runs, memory
-      retrieval, scheduled tasks, and outbox deliveries under that identity.
+- [~] Add revocation semantics:
+  disabled identity/baseline/binding fully disables the compartment in
+  `resolveAgentIdentity` (with tests). Cascade to live credentials/scheduled
+  tasks/outbox still to wire once those are identity-bound.
 - [ ] Add admin UI for identity profiles:
       baseline profile, per-channel overrides, credentials attached, repos,
       MCP tools, models, runtimes, skills/instructions, and effective access
       preview.
 - [ ] Add tests proving a user without repo access can ask Bek to use a repo
       only when the channel identity grants it.
-- [ ] Add tests proving private-channel identity data cannot appear in public
-      channel runs.
-- [ ] Add tests proving disabled channels and disabled identities cannot invoke
-      Bek even if access bundles still exist.
-- [ ] Add docs explaining the Bek identity model, with a clear comparison to
-      per-user "act as user" authorization.
+- [x] Add tests proving private-channel identity data cannot appear in public
+      channel runs (isolation tests in `identity.test.ts`).
+- [x] Add tests proving disabled channels and disabled identities cannot invoke
+      Bek even if access bundles still exist (`canInvokeAgent` tests).
+- [x] Add docs explaining the Bek identity model
+      ([agent-identity.md](./architecture/agent-identity.md)). Comparison to
+      per-user "act as user" authorization still to expand.
 
 ## Auth, RBAC, And Tenant Isolation
 
-- [ ] Replace bootstrap bearer-token admin auth with real sessions for hosted:
-      sign-in, org selection, session cookies, CSRF, logout, expiry, and audit.
-- [ ] Add roles:
-      owner, admin, operator, approver, developer, viewer, billing admin.
-- [ ] Add scoped permissions:
-      manage Slack, manage GitHub, manage models, manage MCP, manage
-      credentials, approve writes, view audit, export audit, manage billing.
-- [ ] Stop trusting browser-supplied actor IDs anywhere in hosted mode.
-- [ ] Derive actor principal from session for all admin mutations and
-      approvals.
-- [ ] Add API tests for every role/scope denial path.
-- [ ] Add tenant resolution before state access for every route:
-      Slack callbacks, Slack OAuth, GitHub webhooks, admin APIs, worker claim,
-      outbox drain, audit export, model usage, credential leases.
-- [ ] Add tenant isolation tests proving one org cannot read, mutate, approve,
-      drain, redrive, export, or post for another org.
+- [~] Replace bootstrap bearer-token admin auth with real sessions for hosted:
+  role-scoped API tokens (`BEK_ADMIN_API_TOKENS`) plus signed, expiring session
+  cookies landed — `POST/GET/DELETE /api/auth/session` exchange a token for an
+  HMAC cookie (`BEK_SESSION_SECRET`), enforce CSRF on cookie writes, and log
+  out (`@bek/core` `sessions.ts`, tested). Remaining: a web sign-in screen and
+  org selection / interactive identity provider.
+- [x] Add roles (`@bek/core` `rbac.ts`): owner, admin, operator, approver,
+      developer, viewer, billing_admin (with tests).
+- [x] Add scoped permissions: slack/github/models/mcp/credentials/connectors/
+      channels/access/runtime/settings manage, worker.operate, writes.approve,
+      runs.create/cancel, audit.view/export, billing.manage — enforced per
+      request via `requiredScopeForRequest` in the API auth middleware.
+- [x] Stop trusting browser-supplied actor IDs: actor principal is derived from
+      the authenticated token, never the request body (tested).
+- [~] Derive actor principal from session: derived from the API token today;
+  from a real session once sessions exist.
+- [x] Add API tests for every role/scope denial path
+      (`apps/api/src/rbac.test.ts`: viewer/operator/owner denial + allow matrix;
+      `rbac.test.ts` in core covers the role→scope and route→scope maps).
+- [~] Add tenant resolution before state access for every route: admin
+  run/approval/channel/policy reads + mutations and run creation fail closed on
+  cross-org access (`inAuthOrg` guard + `governingRunIdentity` place-org check);
+  the worker controller and dead-letter redrive already filter by org; bulk
+  drains/export operate on the single-org store. True multi-org claim plus the
+  Slack/GitHub callback org-binding remain for a multi-tenant store.
+- [x] Add tenant isolation tests proving one org cannot read, mutate, approve,
+      or run for another org (`apps/api/src/tenant-isolation.test.ts`: cross-org
+      run/channel/approval hidden or refused; in-org controls pass).
 - [ ] Bind Slack `team_id` to org and reject team collisions during install.
 - [ ] Bind GitHub installation ID to org and reject installation collisions.
 - [ ] Bind connector credentials to org and identity.
@@ -185,8 +245,13 @@ Claude Tag's agent identity access model while staying provider-neutral.
 - [ ] Add transactional command handlers for high-impact mutations.
 - [ ] Add optimistic concurrency or locks for approvals, worker settlement,
       outbox attempts, and credential leases.
-- [ ] Add migrations for agent identities and identity bindings.
-- [ ] Add migrations for memory sources/chunks/embeddings/citations.
+- [x] Add migrations for agent identities and identity bindings
+      (`agent_identities`, `agent_identity_bindings` in `@bek/db`; migration
+      `0006_many_cannonball.sql`, with a one-baseline-per-org partial unique index).
+- [~] Add migrations for memory sources/chunks/embeddings/citations:
+  `memory_sources` + `memory_chunks` tables + migration `0007` +
+  `DrizzleMemoryRepository` (mappers feed `selectInjectableMemoryChunks`),
+  tested. Embeddings column/pipeline still to add.
 - [ ] Add migrations for tool usage and runtime/sandbox usage.
 - [ ] Add migrations for workspace-wide budget usage and alert state.
 - [ ] Add migrations for hosted sessions, roles, and memberships.
@@ -222,10 +287,12 @@ Claude Tag's agent identity access model while staying provider-neutral.
 - [ ] Add durable outbound outbox worker:
       claim, lease, retry, backoff, dead-letter, replay, idempotency, and
       operator controls.
-- [ ] Add Slack Web API response handling:
-      rate limits, missing channel, bot removed, token revoked, not in channel,
-      archived channel, Slack outage.
-- [ ] Add tests for all Slack error categories.
+- [x] Add Slack Web API response handling (`classifySlackError` +
+      `decideSlackBackoff`): rate limits (Retry-After honored), missing/archived
+      channel, bot removed, token revoked, not in channel, missing scope, outage
+      (5xx), transient/fatal — with retry/backoff decisions.
+- [x] Add tests for all Slack error categories (24 tests in
+      `packages/slack/src/error-categories.test.ts`).
 - [ ] Add Slack workspace lifecycle handling to operator UI:
       app uninstalled, tokens revoked, bot removed, channel archived, channel
       renamed, channel deleted.
@@ -246,12 +313,13 @@ Claude Tag's agent identity access model while staying provider-neutral.
 - [ ] Add real installation-token broker:
       mint short-lived tokens, enforce minimum TTL, scope to exact repo and
       permissions, audit every lease.
-- [ ] Add PR branch creation idempotency:
-      deterministic branch naming, retry-safe commits, duplicate PR detection,
-      and safe cleanup.
-- [ ] Add exact plan hash binding:
-      approval hash must include repo, base, branch, diff summary, files,
-      permissions, install ID, model route, runtime, and requester.
+- [~] PR branch creation idempotency: deterministic branch naming
+  (`createDeterministicGitHubBranchName`) and duplicate PR/branch detection
+  (`resolveGitHubBranchPlan`) landed with tests. Retry-safe commits and safe
+  cleanup wire up at execution time.
+- [x] Add exact plan hash binding (`createGitHubPullRequestPlanHash[Binding]`):
+      hash includes repo, base, branch, diff summary, files, permissions/install
+      ID, model route, runtime, and requester (per-field-sensitivity tested).
 - [ ] Add generated diff artifact persistence.
 - [ ] Add PR preview in admin UI before approval.
 - [ ] Add GitHub comments/status updates back into run timeline.
@@ -278,16 +346,19 @@ Claude Tag's agent identity access model while staying provider-neutral.
       calls, file edits, tests, and artifact generation.
 - [ ] Add runtime artifact store:
       logs, patches, reports, screenshots, generated files, command output.
-- [ ] Add sandbox egress policy UI:
-      allowed hosts, blocked private/metadata networks, connector-specific
-      domains.
-- [ ] Add sandbox filesystem policy:
-      read-only source, writable worktree, artifact directory, max size,
-      cleanup.
-- [ ] Add sandbox resource limits:
-      CPU, memory, wall clock, disk, process count, network egress bytes.
-- [ ] Add prompt-injection tests for repo files, Slack text, MCP output,
-      model output, and web content before sandbox/tool chaining.
+- [~] Sandbox egress policy: `evaluateEgressPolicy` enforces allowed hosts and
+  blocks private/metadata (169.254.169.254) networks by default, with
+  adversarial tests. Admin UI still to build.
+- [x] Add sandbox filesystem policy (`evaluateFilesystemAccess`): read-only
+      source, writable worktree/artifact roots, max write size, path-traversal
+      and prefix-escape rejection (with tests).
+- [x] Add sandbox resource limits (`normalizeResourceLimits`): CPU, memory, wall
+      clock, disk, process count, egress bytes — clamped/validated with warnings.
+- [x] Add prompt-injection tests for repo files, Slack text, MCP output,
+      model output, and web content (30 tests in
+      `packages/runtime/src/untrusted-content.test.ts`: classic injections stay
+      inside the boundary, delimiter-escape neutralized, secrets redacted,
+      per-source headers, truncation).
 - [ ] Add tests proving secrets never enter sandbox env unless leased and
       scoped for that exact action.
 
@@ -327,11 +398,14 @@ Claude Tag's agent identity access model while staying provider-neutral.
       stdio, HTTP/SSE, streamable HTTP, hosted connector proxy.
 - [ ] Execute MCP calls only in worker/runtime context, not from arbitrary
       admin request paths.
-- [ ] Add tool invocation ledger:
+- [x] Add tool invocation ledger:
       request, schema version, input hash, output hash, latency, status,
-      error, identity, credential lease, audit event.
-- [ ] Add schema drift detection and quarantine.
-- [ ] Add risk classification per tool.
+      error, identity, credential lease (`InMemoryToolInvocationLedger` in
+      `@bek/mcp-gateway`, with tests). Audit-event wiring still to connect.
+- [x] Add schema drift detection and quarantine (`detectToolSchemaDrift` +
+      existing quarantine, with tests).
+- [x] Add risk classification per tool (`classifyToolManifestRisk`,
+      conservative/annotation-aware, with tests).
 - [ ] Add per-tool approval policy.
 - [ ] Add allowlist/denylist for domains and external systems touched by tools.
 - [ ] Add output redaction and prompt-injection labeling before MCP output can
@@ -349,33 +423,42 @@ Claude Tag's agent identity access model while staying provider-neutral.
 - [ ] Bind leases to org, identity, run, action, resource, approval, and TTL.
 - [ ] Add credential rotation workflows.
 - [ ] Add credential revocation workflows.
-- [ ] Add credential last-used tracking.
+- [x] Add credential last-used tracking
+      (`InMemoryCredentialLastUsedTracker`, deterministic clock, with tests).
 - [ ] Add credential access audit exports.
 - [ ] Add encrypted credential metadata where needed.
 - [ ] Add secret scanning for run artifacts and sandbox outputs.
-- [ ] Add redaction tests for every new secret-shaped field.
-- [ ] Add operator UI for credential health:
-      active, disabled, rotation due, revoked, expired, missing scopes.
+- [x] Add redaction tests for every new secret-shaped field (extended
+      `audit-redaction.test.ts` to exercise every default token pattern).
+- [x] Operator credential health: `deriveCredentialHealth`
+      (active/disabled/rotation_due/revoked/expired/missing_scopes) is exposed via
+      `GET /api/credentials/health`, and `POST /api/credentials/:id/lease` records
+      last-used + fails closed for non-leaseable credentials (tested). (Admin UI for
+      this view still to build.)
 - [ ] Add break-glass process and audit for credential recovery.
 
 ## Memory And Knowledge
 
 - [ ] Decide memory product stance:
       disabled, local-only, self-hosted, or hosted beta.
-- [ ] Build source registry:
-      Slack threads, docs, repos, tickets, MCP outputs, uploaded files,
-      generated reports.
-- [ ] Build chunk store with source ID, identity boundary, ACL, retention,
-      content hash, created by, and citation metadata.
+- [x] Build source registry types (`MemorySource`: Slack threads, docs, repos,
+      tickets, MCP outputs, uploaded files, generated reports) in `@bek/core`.
+- [x] Build chunk store types (`MemoryChunk`: source ID, identity/place boundary,
+      ACL, retention, content hash, created by, citation metadata).
 - [ ] Build embedding pipeline.
-- [ ] Build retrieval API with ACL-before-injection enforcement.
-- [ ] Build citation rendering in run answers and reports.
+- [x] Build retrieval API with ACL-before-injection enforcement
+      (`selectInjectableMemoryChunks`, returns excluded-chunk reasons for audit).
+- [~] Citation rendering: `redactMemoryForCitation` helper landed; run/report
+  rendering surface still to wire.
 - [ ] Build memory write approval policy.
 - [ ] Build memory deletion and retention controls.
-- [ ] Build private-channel memory isolation.
-- [ ] Build tests proving memory from one identity/place cannot leak into
-      another.
-- [ ] Build prompt-injection screening for retrieved memory.
+- [x] Build private-channel memory isolation (isolated compartments retrieve only
+      same-identity/place chunks; enforced in `selectInjectableMemoryChunks`).
+- [x] Build tests proving memory from one identity/place cannot leak into
+      another (17 tests in `memory.test.ts`: cross-org/place/identity + isolation).
+- [~] Prompt-injection screening for retrieved memory: retrieved chunks flow
+  through the untrusted-content envelope (tested); a dedicated memory screen
+  can layer on top.
 - [ ] Add admin UI for memory sources, sync status, retention, and deletion.
 
 ## Audit, Observability, And Operations
@@ -384,13 +467,16 @@ Claude Tag's agent identity access model while staying provider-neutral.
 - [ ] Add audit events for every Slack, GitHub, MCP, model, credential,
       sandbox, runtime, memory, billing, identity, and admin side effect.
 - [ ] Add exactly-once audit writing for critical side effects.
-- [ ] Add tool usage repository and summaries.
+- [x] Add tool usage repository and summaries (`InMemoryToolInvocationLedger`
+      record/list/summarize in `@bek/mcp-gateway`, with tests).
 - [ ] Add runtime/sandbox usage repository and summaries.
-- [ ] Add health dashboard:
-      API, DB, worker queue, outbox, Slack, GitHub, model provider, sandbox,
-      credential broker, MCP transports.
-- [ ] Add OpenTelemetry traces and structured logs.
-- [ ] Add per-run trace view.
+- [x] Add health dashboard rollup (`buildHealthDashboard` over API, DB, worker
+      queue, outbox, Slack, GitHub, model provider, sandbox, credential broker,
+      MCP transports; worst-of + unhealthy reasons, with tests). UI still to build.
+- [~] OpenTelemetry traces and structured logs: AI SDK 7 `registerBekTelemetry`
+  hook landed (operators supply OTel/Langfuse); structured-log wiring remains.
+- [x] Add per-run trace view (`buildRunTraceView`: ordered phases, model/tool
+      calls, approvals, durations, final status, with tests).
 - [ ] Add redrive/replay tooling for inbox, outbox, worker queue, and failed
       projections.
 - [ ] Add audit export permissions and export audit events.
@@ -401,7 +487,10 @@ Claude Tag's agent identity access model while staying provider-neutral.
 ## API, SDK, And Extensibility
 
 - [ ] Decide public API surface for OSS users.
-- [ ] Add OpenAPI spec for admin and callback APIs where appropriate.
+- [~] Add OpenAPI spec for admin and callback APIs where appropriate: an
+  OpenAPI 3.1 document is generated from the live Hono routes and served at
+  `GET /api/openapi.json` (checked in at `docs/api/openapi.json`), with a
+  route-coverage test. Per-operation request/response schemas still to add.
 - [ ] Add typed SDK package for admin operations.
 - [ ] Add webhook/event schema docs.
 - [ ] Add extension points for model routers, runtime adapters, sandbox
@@ -412,12 +501,20 @@ Claude Tag's agent identity access model while staying provider-neutral.
 
 ## Testing And Battle Hardening
 
-- [ ] Add endpoint-by-endpoint authorization tests for every API route.
+- [x] Add endpoint-by-endpoint authorization tests for every API route
+      (`apps/api/src/authorization.test.ts`: ~47 protected routes assert 401 on
+      missing/wrong token + public-callback bypass + no actor-escalation; no gaps
+      found).
 - [ ] Add multi-org tenant isolation test suite.
-- [ ] Add Slack callback replay/tamper tests across all event types.
-- [ ] Add GitHub webhook replay/tamper tests across all supported events.
-- [ ] Add approval hash drift tests for GitHub PR plans, budget step-ups,
-      sandbox grants, MCP tools, and runtime writes.
+- [x] Add Slack callback replay/tamper tests across all event types
+      (`packages/slack/src/replay-tamper.test.ts`: 10 surfaces, window/replay, sig
+      edge cases).
+- [x] Add GitHub webhook replay/tamper tests across all supported events
+      (`packages/github/src/replay-tamper.test.ts`: 4 events, delivery dedupe, sig
+      edge cases).
+- [~] Approval hash drift tests: GitHub PR plan hash per-field sensitivity is
+  tested (`branches.test.ts`); budget step-ups, sandbox grants, MCP tools, and
+  runtime writes still to add.
 - [ ] Add browser E2E for the full Slack setup flow with mocked Slack API.
 - [ ] Add browser E2E for model provider setup and budget warnings.
 - [ ] Add browser E2E for MCP registration, schema quarantine, and grant
@@ -425,18 +522,26 @@ Claude Tag's agent identity access model while staying provider-neutral.
 - [ ] Add browser E2E for worker dead-letter redrive and cancellation.
 - [ ] Add browser E2E for audit filtering/export.
 - [ ] Add visual regression tests for critical UI.
-- [ ] Add load tests for Slack event bursts, worker queue, outbox, audit export,
-      and model usage aggregation.
-- [ ] Add fuzz tests for schema validators and webhook bodies.
-- [ ] Add chaos tests for provider timeouts, DB restarts, worker restarts, and
-      token revocations.
+- [~] Load tests: worker queue load (200–500 items, exactly-once, idempotency
+  dedupe, two-worker fleet) in `chaos-load.test.ts`. Slack burst, outbox,
+  audit export, and model-usage aggregation load still to add.
+- [x] Add fuzz tests for schema validators and webhook bodies (adversarial
+      bodies — empty/huge/invalid-JSON/nested/unicode/null-byte — into Slack and
+      GitHub normalize/verify paths; assert graceful rejection, no crashes).
+- [~] Chaos tests: worker restart/lease-reclaim, retry→dead-letter→redrive,
+  cancellation, and provider-timeout handling (`chaos-load.test.ts`). DB
+  restarts and live token revocation still to add.
 - [ ] Run external security review before hosted paid beta.
 
 ## Deployment, Packaging, And Hosting
 
 - [ ] Make local quickstart reliable on a clean machine using Node 24.
-- [ ] Add preflight script that checks Node, pnpm, ports, env, Docker, and
-      Postgres.
+- [~] Add preflight script that checks Node, pnpm, ports, env, Docker, and
+  Postgres: `pnpm preflight [--mode local|self_hosted|hosted]` validates
+  admin auth, persistence, credential vault, Slack/GitHub/model-gateway
+  config, and hosted networking with per-check remediation and a non-zero
+  exit on failure (`@bek/core` `evaluateDeploymentPreflight`, unit-tested).
+  Port/Docker/Postgres-connectivity probes still to add.
 - [ ] Build production Docker images for API, web, worker, migrate.
 - [ ] Add Helm/Terraform/Fly/Render/Railway/Vercel deployment notes as decided.
 - [ ] Add one-command self-hosted local stack with HTTPS tunnel guidance.

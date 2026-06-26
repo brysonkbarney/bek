@@ -82,6 +82,40 @@ export interface ToolRiskClassification {
   reason: string;
 }
 
+export interface ToolAnnotations {
+  readOnlyHint?: boolean | undefined;
+  destructiveHint?: boolean | undefined;
+  idempotentHint?: boolean | undefined;
+  openWorldHint?: boolean | undefined;
+}
+
+export interface ToolManifestRiskInput {
+  name: string;
+  description?: string | undefined;
+  resource?: string | undefined;
+  inputSchema?: Record<string, unknown> | undefined;
+  annotations?: ToolAnnotations | undefined;
+  externalDomains?: string[] | undefined;
+}
+
+export type ToolRiskSignal =
+  | "annotation_destructive"
+  | "annotation_read_only"
+  | "annotation_open_world"
+  | "external_domain"
+  | "keyword_privileged"
+  | "keyword_write"
+  | "keyword_draft"
+  | "keyword_read"
+  | "unknown_conservative";
+
+export interface ToolManifestRiskClassification {
+  risk: RiskLevel;
+  requiresApproval: boolean;
+  reason: string;
+  signals: ToolRiskSignal[];
+}
+
 export interface McpProxyRequest {
   id: string;
   runId: string;
@@ -200,6 +234,86 @@ export interface McpRedactionResult {
 export interface ManifestOptions {
   serverRegistry?: McpServerRegistry | undefined;
   schemaCache?: ToolSchemaCache | undefined;
+}
+
+export type ToolInvocationStatus = "executed" | "blocked" | "error";
+
+export interface ToolInvocationLedgerInput {
+  id?: string | undefined;
+  runId: string;
+  resource: string;
+  schemaVersion?: string | undefined;
+  schemaHash?: string | undefined;
+  inputHash: string;
+  outputHash?: string | undefined;
+  latencyMs: number;
+  status: ToolInvocationStatus;
+  error?: string | undefined;
+  identityId?: string | undefined;
+  credentialLeaseId?: string | undefined;
+  createdAt?: string | undefined;
+}
+
+export interface ToolInvocationLedgerEntry {
+  id: string;
+  runId: string;
+  resource: string;
+  inputHash: string;
+  latencyMs: number;
+  status: ToolInvocationStatus;
+  createdAt: string;
+  schemaVersion?: string | undefined;
+  schemaHash?: string | undefined;
+  outputHash?: string | undefined;
+  error?: string | undefined;
+  identityId?: string | undefined;
+  credentialLeaseId?: string | undefined;
+}
+
+export interface ToolInvocationSummary {
+  runId?: string | undefined;
+  resource?: string | undefined;
+  entries: number;
+  executed: number;
+  blocked: number;
+  errors: number;
+  totalLatencyMs: number;
+  averageLatencyMs: number;
+  maxLatencyMs: number;
+}
+
+export type SchemaDriftSeverity = "none" | "compatible" | "breaking";
+
+export type SchemaDriftDecision = "unchanged" | "accept" | "quarantine";
+
+export interface SchemaDriftChange {
+  path: string;
+  kind:
+    | "description_changed"
+    | "property_added"
+    | "property_removed"
+    | "property_changed"
+    | "required_added"
+    | "required_removed"
+    | "additional_properties_tightened"
+    | "additional_properties_relaxed";
+}
+
+export interface SchemaDriftResult {
+  severity: SchemaDriftSeverity;
+  decision: SchemaDriftDecision;
+  cachedHash: string;
+  presentedHash: string;
+  changes: SchemaDriftChange[];
+  reason: string;
+}
+
+export interface SchemaDriftInput {
+  cached: Pick<CachedToolSchema, "inputSchema" | "description" | "hash">;
+  presented: {
+    inputSchema: Record<string, unknown>;
+    description?: string | undefined;
+  };
 }
 
 export class McpServerRegistry {
@@ -327,6 +441,178 @@ export class ToolSchemaCache {
     );
     return cloneSchema(active);
   }
+}
+
+export class InMemoryToolInvocationLedger {
+  private entries: ToolInvocationLedgerEntry[] = [];
+
+  record(input: ToolInvocationLedgerInput): ToolInvocationLedgerEntry {
+    const entry = createToolInvocationLedgerEntry(
+      input,
+      this.entries.length + 1,
+    );
+    this.entries.push(entry);
+    return cloneToolInvocationEntry(entry);
+  }
+
+  list(
+    filter?:
+      | { runId?: string | undefined; resource?: string | undefined }
+      | undefined,
+  ): ToolInvocationLedgerEntry[] {
+    return this.entries
+      .filter(
+        (entry) =>
+          (!filter?.runId || entry.runId === filter.runId) &&
+          (!filter?.resource || entry.resource === filter.resource),
+      )
+      .map((entry) => cloneToolInvocationEntry(entry));
+  }
+
+  summarize(
+    filter?:
+      | { runId?: string | undefined; resource?: string | undefined }
+      | undefined,
+  ): ToolInvocationSummary {
+    return summarizeToolInvocationLedger(this.list(filter), filter);
+  }
+}
+
+export function createToolInvocationLedgerEntry(
+  input: ToolInvocationLedgerInput,
+  sequence = 1,
+): ToolInvocationLedgerEntry {
+  if (!Number.isFinite(input.latencyMs) || input.latencyMs < 0) {
+    throw new Error(`latencyMs must be a non-negative number.`);
+  }
+  const entry: ToolInvocationLedgerEntry = {
+    id: input.id ?? `${input.runId}:${input.resource}:${sequence}`,
+    runId: input.runId,
+    resource: input.resource,
+    inputHash: input.inputHash,
+    latencyMs: input.latencyMs,
+    status: input.status,
+    createdAt: input.createdAt ?? new Date().toISOString(),
+  };
+  if (input.schemaVersion !== undefined) {
+    entry.schemaVersion = input.schemaVersion;
+  }
+  if (input.schemaHash !== undefined) {
+    entry.schemaHash = input.schemaHash;
+  }
+  if (input.outputHash !== undefined) {
+    entry.outputHash = input.outputHash;
+  }
+  if (input.error !== undefined) {
+    entry.error = input.error;
+  }
+  if (input.identityId !== undefined) {
+    entry.identityId = input.identityId;
+  }
+  if (input.credentialLeaseId !== undefined) {
+    entry.credentialLeaseId = input.credentialLeaseId;
+  }
+  return entry;
+}
+
+export function summarizeToolInvocationLedger(
+  entries: ToolInvocationLedgerEntry[],
+  filter?:
+    | { runId?: string | undefined; resource?: string | undefined }
+    | undefined,
+): ToolInvocationSummary {
+  const filtered = entries.filter(
+    (entry) =>
+      (!filter?.runId || entry.runId === filter.runId) &&
+      (!filter?.resource || entry.resource === filter.resource),
+  );
+  const summary: ToolInvocationSummary = {
+    entries: filtered.length,
+    executed: 0,
+    blocked: 0,
+    errors: 0,
+    totalLatencyMs: 0,
+    averageLatencyMs: 0,
+    maxLatencyMs: 0,
+  };
+  if (filter?.runId) {
+    summary.runId = filter.runId;
+  }
+  if (filter?.resource) {
+    summary.resource = filter.resource;
+  }
+  for (const entry of filtered) {
+    if (entry.status === "executed") {
+      summary.executed += 1;
+    } else if (entry.status === "blocked") {
+      summary.blocked += 1;
+    } else {
+      summary.errors += 1;
+    }
+    summary.totalLatencyMs += entry.latencyMs;
+    summary.maxLatencyMs = Math.max(summary.maxLatencyMs, entry.latencyMs);
+  }
+  summary.averageLatencyMs =
+    filtered.length > 0 ? summary.totalLatencyMs / filtered.length : 0;
+  return summary;
+}
+
+export function detectToolSchemaDrift(
+  input: SchemaDriftInput,
+): SchemaDriftResult {
+  const presentedHash = hashUnknown({
+    inputSchema: input.presented.inputSchema,
+    description: input.presented.description ?? "",
+  });
+  const cachedHash = hashUnknown({
+    inputSchema: input.cached.inputSchema,
+    description: input.cached.description ?? "",
+  });
+
+  const changes = diffToolSchemas(
+    input.cached.inputSchema,
+    input.presented.inputSchema,
+    "$",
+  );
+  if (
+    (input.cached.description ?? "") !== (input.presented.description ?? "")
+  ) {
+    changes.push({ path: "$", kind: "description_changed" });
+  }
+
+  if (changes.length === 0) {
+    return {
+      severity: "none",
+      decision: "unchanged",
+      cachedHash: input.cached.hash,
+      presentedHash,
+      changes,
+      reason: "Presented schema matches the cached schema.",
+    };
+  }
+
+  const breaking = changes.some(isBreakingSchemaChange);
+  if (breaking) {
+    return {
+      severity: "breaking",
+      decision: "quarantine",
+      cachedHash: input.cached.hash,
+      presentedHash,
+      changes,
+      reason:
+        "Breaking schema drift detected; admin review required before use.",
+    };
+  }
+
+  return {
+    severity: "compatible",
+    decision: "quarantine",
+    cachedHash: input.cached.hash,
+    presentedHash,
+    changes,
+    reason:
+      "Schema drift detected; admin review required before the new schema is used.",
+  };
 }
 
 export class McpTenantToolAllowlist {
@@ -507,8 +793,122 @@ export function classifyToolRisk(
   };
 }
 
+export function classifyToolManifestRisk(
+  input: ToolManifestRiskInput,
+): ToolManifestRiskClassification {
+  const signals: ToolRiskSignal[] = [];
+  const annotations = input.annotations;
+  const externalDomains = (input.externalDomains ?? []).filter(
+    (domain) => typeof domain === "string" && domain.trim().length > 0,
+  );
+
+  const keyword = classifyToolRisk({
+    name: input.name,
+    ...(input.description !== undefined
+      ? { description: input.description }
+      : {}),
+    ...(input.resource !== undefined ? { resource: input.resource } : {}),
+    ...(input.inputSchema !== undefined
+      ? { inputSchema: input.inputSchema }
+      : {}),
+  });
+  switch (keyword.risk) {
+    case "privileged":
+      signals.push("keyword_privileged");
+      break;
+    case "write_external":
+      signals.push("keyword_write");
+      break;
+    case "write_draft":
+      signals.push("keyword_draft");
+      break;
+    default:
+      signals.push("keyword_read");
+  }
+
+  let risk = keyword.risk;
+
+  // Conservative: an explicit destructive hint can only raise risk, never lower
+  // it, and touching an external/open world is at least an external write.
+  if (annotations?.destructiveHint === true) {
+    signals.push("annotation_destructive");
+    risk = highestRisk(risk, "write_external");
+  }
+  if (annotations?.openWorldHint === true) {
+    signals.push("annotation_open_world");
+    risk = highestRisk(risk, "write_external");
+  }
+  if (externalDomains.length > 0) {
+    signals.push("external_domain");
+    risk = highestRisk(risk, "write_external");
+  }
+
+  // A read-only hint is only trusted to *lower* risk when no stronger signal
+  // (privileged/destructive/external) is present. Unknown stays conservative.
+  const hasElevatingSignal =
+    annotations?.destructiveHint === true ||
+    annotations?.openWorldHint === true ||
+    externalDomains.length > 0 ||
+    keyword.risk === "privileged";
+  if (annotations?.readOnlyHint === true && !hasElevatingSignal) {
+    signals.push("annotation_read_only");
+    risk = "read_internal";
+  }
+
+  if (
+    annotations === undefined &&
+    externalDomains.length === 0 &&
+    keyword.risk === "read_internal" &&
+    !input.description
+  ) {
+    // No description and no metadata at all: treat as an unknown surface and
+    // refuse to assume it is read-only.
+    signals.push("unknown_conservative");
+    risk = highestRisk(risk, "write_external");
+  }
+
+  return {
+    risk,
+    requiresApproval: requiresApprovalForRisk(risk),
+    reason: buildManifestRiskReason(risk, signals, externalDomains),
+    signals,
+  };
+}
+
 export function requiresApprovalForRisk(risk: RiskLevel): boolean {
   return risk === "write_external" || risk === "privileged";
+}
+
+function buildManifestRiskReason(
+  risk: RiskLevel,
+  signals: ToolRiskSignal[],
+  externalDomains: string[],
+): string {
+  if (signals.includes("keyword_privileged")) {
+    return "Tool can access privileged data or execution surfaces.";
+  }
+  if (signals.includes("annotation_destructive")) {
+    return "Tool is annotated as destructive.";
+  }
+  if (signals.includes("annotation_open_world")) {
+    return "Tool is annotated as touching an open/external world.";
+  }
+  if (signals.includes("external_domain")) {
+    return `Tool touches external domains: ${externalDomains.join(", ")}.`;
+  }
+  if (signals.includes("unknown_conservative")) {
+    return "Tool metadata is unknown; defaulting to a conservative write risk.";
+  }
+  if (risk === "write_external") {
+    return "Tool appears to mutate an external system.";
+  }
+  if (risk === "write_draft") {
+    return "Tool appears limited to draft or preview changes.";
+  }
+  if (signals.includes("annotation_read_only")) {
+    return "Tool is annotated as read-only.";
+  }
+  return "Tool appears read-only.";
 }
 
 export function createMcpProxyRequest(
@@ -1255,6 +1655,149 @@ function toolNameFromResource(resource: string): string {
     .replace(/^mcp:/, "")
     .replace(/[^a-zA-Z0-9_/-]/g, "_")
     .replaceAll("/", "__");
+}
+
+function cloneToolInvocationEntry(
+  entry: ToolInvocationLedgerEntry,
+): ToolInvocationLedgerEntry {
+  const clone: ToolInvocationLedgerEntry = {
+    id: entry.id,
+    runId: entry.runId,
+    resource: entry.resource,
+    inputHash: entry.inputHash,
+    latencyMs: entry.latencyMs,
+    status: entry.status,
+    createdAt: entry.createdAt,
+  };
+  if (entry.schemaVersion !== undefined) {
+    clone.schemaVersion = entry.schemaVersion;
+  }
+  if (entry.schemaHash !== undefined) {
+    clone.schemaHash = entry.schemaHash;
+  }
+  if (entry.outputHash !== undefined) {
+    clone.outputHash = entry.outputHash;
+  }
+  if (entry.error !== undefined) {
+    clone.error = entry.error;
+  }
+  if (entry.identityId !== undefined) {
+    clone.identityId = entry.identityId;
+  }
+  if (entry.credentialLeaseId !== undefined) {
+    clone.credentialLeaseId = entry.credentialLeaseId;
+  }
+  return clone;
+}
+
+function diffToolSchemas(
+  cached: unknown,
+  presented: unknown,
+  path: string,
+): SchemaDriftChange[] {
+  if (!isPlainRecord(cached) || !isPlainRecord(presented)) {
+    if (!deepEqualJson(cached, presented)) {
+      return [{ path, kind: "property_changed" }];
+    }
+    return [];
+  }
+
+  const changes: SchemaDriftChange[] = [];
+
+  const cachedProps = isPlainRecord(cached.properties) ? cached.properties : {};
+  const presentedProps = isPlainRecord(presented.properties)
+    ? presented.properties
+    : {};
+  const propertyNames = new Set([
+    ...Object.keys(cachedProps),
+    ...Object.keys(presentedProps),
+  ]);
+  for (const name of propertyNames) {
+    const inCached = Object.hasOwn(cachedProps, name);
+    const inPresented = Object.hasOwn(presentedProps, name);
+    const propertyPath = `${path}.properties.${name}`;
+    if (inCached && !inPresented) {
+      changes.push({ path: propertyPath, kind: "property_removed" });
+    } else if (!inCached && inPresented) {
+      changes.push({ path: propertyPath, kind: "property_added" });
+    } else if (!deepEqualJson(cachedProps[name], presentedProps[name])) {
+      changes.push({ path: propertyPath, kind: "property_changed" });
+    }
+  }
+
+  const cachedRequired = readStringArray(cached.required);
+  const presentedRequired = readStringArray(presented.required);
+  for (const name of presentedRequired) {
+    if (!cachedRequired.includes(name)) {
+      changes.push({
+        path: `${path}.required.${name}`,
+        kind: "required_added",
+      });
+    }
+  }
+  for (const name of cachedRequired) {
+    if (!presentedRequired.includes(name)) {
+      changes.push({
+        path: `${path}.required.${name}`,
+        kind: "required_removed",
+      });
+    }
+  }
+
+  const additionalChange = diffAdditionalProperties(
+    cached.additionalProperties,
+    presented.additionalProperties,
+    path,
+  );
+  if (additionalChange) {
+    changes.push(additionalChange);
+  }
+
+  return changes;
+}
+
+function diffAdditionalProperties(
+  cached: unknown,
+  presented: unknown,
+  path: string,
+): SchemaDriftChange | undefined {
+  const cachedAllows = additionalPropertiesAllowed(cached);
+  const presentedAllows = additionalPropertiesAllowed(presented);
+  if (cachedAllows === presentedAllows) {
+    return undefined;
+  }
+  return {
+    path: `${path}.additionalProperties`,
+    kind: presentedAllows
+      ? "additional_properties_relaxed"
+      : "additional_properties_tightened",
+  };
+}
+
+function additionalPropertiesAllowed(value: unknown): boolean {
+  // Default (undefined) and schema objects allow additional properties; only an
+  // explicit `false` forbids them.
+  return value !== false;
+}
+
+function isBreakingSchemaChange(change: SchemaDriftChange): boolean {
+  switch (change.kind) {
+    case "property_removed":
+    case "property_changed":
+    case "required_added":
+    case "additional_properties_tightened":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter(isString) : [];
+}
+
+function deepEqualJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(stableJson(left)) === JSON.stringify(stableJson(right));
 }
 
 function highestRisk(left: RiskLevel, right: RiskLevel): RiskLevel {

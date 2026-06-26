@@ -2,6 +2,10 @@
 
 Bek is provider-neutral by design. End users tag `@bek`; admins govern model policies, budgets, and fallbacks behind that single teammate.
 
+> Runs on AI SDK 7 (`ai@7`, `@ai-sdk/openai@4`, `@ai-sdk/anthropic@4`). The
+> model-router gateway reads v7-canonical cumulative `usage`/`finalStep`. See
+> [AI SDK 7 architecture](../architecture/ai-sdk-7.md).
+
 ## Current Status
 
 The seed workspace includes one model policy:

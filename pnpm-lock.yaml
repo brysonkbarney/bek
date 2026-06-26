@@ -24,7 +24,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
+        version: 4.1.9(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
 
   apps/api:
     dependencies:
@@ -40,6 +40,9 @@ importers:
       "@bek/github":
         specifier: workspace:*
         version: link:../../packages/github
+      "@bek/mcp-gateway":
+        specifier: workspace:*
+        version: link:../../packages/mcp-gateway
       "@bek/observability":
         specifier: workspace:*
         version: link:../../packages/observability
@@ -70,7 +73,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
+        version: 4.1.9(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
 
   apps/web:
     dependencies:
@@ -116,7 +119,7 @@ importers:
         version: 7.3.5(@types/node@24.13.2)(tsx@4.22.4)
       vitest:
         specifier: ^4.0.16
-        version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
+        version: 4.1.9(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
 
   packages/core:
     dependencies:
@@ -129,7 +132,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
+        version: 4.1.9(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
 
   packages/credentials:
     devDependencies:
@@ -138,7 +141,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
+        version: 4.1.9(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
 
   packages/db:
     dependencies:
@@ -153,7 +156,7 @@ importers:
         version: link:../worker
       drizzle-orm:
         specifier: ^0.45.1
-        version: 0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(pg@8.22.0)
+        version: 0.45.2(@types/pg@8.20.0)(pg@8.22.0)
       pg:
         specifier: ^8.16.3
         version: 8.22.0
@@ -172,7 +175,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
+        version: 4.1.9(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
 
   packages/github:
     devDependencies:
@@ -181,7 +184,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
+        version: 4.1.9(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
 
   packages/mcp-gateway:
     dependencies:
@@ -197,23 +200,29 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
+        version: 4.1.9(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
 
   packages/model-router:
     dependencies:
+      "@ai-sdk/anthropic":
+        specifier: ^4.0.0
+        version: 4.0.0(zod@4.4.3)
+      "@ai-sdk/openai":
+        specifier: ^4.0.0
+        version: 4.0.0(zod@4.4.3)
       "@bek/core":
         specifier: workspace:*
         version: link:../core
       ai:
-        specifier: ^6.0.209
-        version: 6.0.209(zod@4.4.3)
+        specifier: ^7.0.0
+        version: 7.0.0(zod@4.4.3)
     devDependencies:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
+        version: 4.1.9(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
 
   packages/observability:
     devDependencies:
@@ -222,7 +231,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
+        version: 4.1.9(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
 
   packages/runtime:
     dependencies:
@@ -232,13 +241,19 @@ importers:
       "@bek/sandbox":
         specifier: workspace:*
         version: link:../sandbox
+      ai:
+        specifier: ^7.0.0
+        version: 7.0.0(zod@4.4.3)
+      zod:
+        specifier: ^4.0.0
+        version: 4.4.3
     devDependencies:
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
+        version: 4.1.9(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
 
   packages/sandbox:
     dependencies:
@@ -251,7 +266,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
+        version: 4.1.9(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
 
   packages/slack:
     devDependencies:
@@ -260,7 +275,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
+        version: 4.1.9(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
 
   packages/worker:
     dependencies:
@@ -288,33 +303,51 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.16
-        version: 4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
+        version: 4.1.9(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
 
 packages:
-  "@ai-sdk/gateway@3.0.134":
+  "@ai-sdk/anthropic@4.0.0":
     resolution:
       {
-        integrity: sha512-PfUkQp01EihEyNM6e+nexXmVANiY5KcHMui/MmaHsC4KVVQYh/MwPeOsD3bTPu63e581BKO+AwaPPNmD4x943A==,
+        integrity: sha512-N0lT1g6/5DEIZvalpkpwYRCdu7n5qb8qPN3PcTem6k4VkPBLC2+T2LAAyx1GS0eNOxavVa0CP7n2kCiye0yyfw==,
       }
-    engines: { node: ">=18" }
+    engines: { node: ">=22" }
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  "@ai-sdk/provider-utils@4.0.30":
+  "@ai-sdk/gateway@4.0.0":
     resolution:
       {
-        integrity: sha512-VO7I+vPffqI5sMnPoUq5DCSqKIgQIk/naJWRdQVpz2ma2zoprC/lqiJiUEl2s6DfvTD76TbhD3q39ROjlA6rGw==,
+        integrity: sha512-rcKukspbM4h511ot2E8TsPl7rXjRK1zHKrMCP7w4+XF55UKqQHaDzo2kKbGv5rp8Bjb1yQatIHJZE1E2yrOOMw==,
       }
-    engines: { node: ">=18" }
+    engines: { node: ">=22" }
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  "@ai-sdk/provider@3.0.10":
+  "@ai-sdk/openai@4.0.0":
     resolution:
       {
-        integrity: sha512-Q3BZ27qfpYqnCYGvE3vt+Qi6LGOF9R5Nmzn+9JoM1lCRsD9mYaIhfJLkSunN48nfGXJ6n+XNV0J/XVpqGQl7Dw==,
+        integrity: sha512-XcI/bJEG+Ymx8ZwQMY9GE9waHdEcSzT6wn2o+YW80hOQPf8IAGQvdNWKaD0mxLi6AmOM0L01y/p626w7rImblQ==,
       }
-    engines: { node: ">=18" }
+    engines: { node: ">=22" }
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  "@ai-sdk/provider-utils@5.0.0":
+    resolution:
+      {
+        integrity: sha512-zj66M02jc6ASYwIgWZowsooDUwaVngeNZQ3H10GwcPMZ+KR6gHMhcUuKl6tkai+JPXTKDyHY1pnszuxRtw2D4A==,
+      }
+    engines: { node: ">=22" }
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  "@ai-sdk/provider@4.0.0":
+    resolution:
+      {
+        integrity: sha512-fr9Gs89prDWiuox/T+kCA+i2cJkHpxU5S+tr4megjTzRC27ZsvFhwjU/+XrqqMbvBUlfmXxTOYWy8ng45dsjIg==,
+      }
+    engines: { node: ">=22" }
 
   "@babel/code-frame@7.29.7":
     resolution:
@@ -1416,13 +1449,6 @@ packages:
         integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==,
       }
 
-  "@opentelemetry/api@1.9.1":
-    resolution:
-      {
-        integrity: sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q==,
-      }
-    engines: { node: ">=8.0.0" }
-
   "@playwright/test@1.61.1":
     resolution:
       {
@@ -1923,12 +1949,18 @@ packages:
         integrity: sha512-A51o8ymO5PpqlWNnBP9ZHPXDIpuMtTLlGSjN7la4US+LJzoUMyhwjA5QXlm39JexgwHKW4Xjs8Z2d3dLCXOeuA==,
       }
 
-  ai@6.0.209:
+  "@workflow/serde@4.1.0":
     resolution:
       {
-        integrity: sha512-NE7uErmxOe+i77BPT1+AhW4wr7xzilbQLsKVmvGEyil5AjaF6C/m92hlPI4Xwtnv5n77D/29bizwcR27/S/gSQ==,
+        integrity: sha512-pav4F2BoirECWR7Nf1TKt+2eETcBj7jj4cBefQ8VXQCA6NPkaKeLfj/zMgi+3zYV5ZIBT4GuUiphsj0/b9hPQQ==,
       }
-    engines: { node: ">=18" }
+
+  ai@7.0.0:
+    resolution:
+      {
+        integrity: sha512-hncs+jamJh8r36K6G8xky7oF4Ai/RLU5TF85FMzI2vElyMJGGnLoHihpdmuDiuY2BsktDWHevKaJM1l0VcRLGw==,
+      }
+    engines: { node: ">=22" }
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
@@ -2742,21 +2774,34 @@ packages:
       }
 
 snapshots:
-  "@ai-sdk/gateway@3.0.134(zod@4.4.3)":
+  "@ai-sdk/anthropic@4.0.0(zod@4.4.3)":
     dependencies:
-      "@ai-sdk/provider": 3.0.10
-      "@ai-sdk/provider-utils": 4.0.30(zod@4.4.3)
+      "@ai-sdk/provider": 4.0.0
+      "@ai-sdk/provider-utils": 5.0.0(zod@4.4.3)
+      zod: 4.4.3
+
+  "@ai-sdk/gateway@4.0.0(zod@4.4.3)":
+    dependencies:
+      "@ai-sdk/provider": 4.0.0
+      "@ai-sdk/provider-utils": 5.0.0(zod@4.4.3)
       "@vercel/oidc": 3.2.0
       zod: 4.4.3
 
-  "@ai-sdk/provider-utils@4.0.30(zod@4.4.3)":
+  "@ai-sdk/openai@4.0.0(zod@4.4.3)":
     dependencies:
-      "@ai-sdk/provider": 3.0.10
+      "@ai-sdk/provider": 4.0.0
+      "@ai-sdk/provider-utils": 5.0.0(zod@4.4.3)
+      zod: 4.4.3
+
+  "@ai-sdk/provider-utils@5.0.0(zod@4.4.3)":
+    dependencies:
+      "@ai-sdk/provider": 4.0.0
       "@standard-schema/spec": 1.1.0
+      "@workflow/serde": 4.1.0
       eventsource-parser: 3.1.0
       zod: 4.4.3
 
-  "@ai-sdk/provider@3.0.10":
+  "@ai-sdk/provider@4.0.0":
     dependencies:
       json-schema: 0.4.0
 
@@ -3207,8 +3252,6 @@ snapshots:
       "@jridgewell/resolve-uri": 3.1.2
       "@jridgewell/sourcemap-codec": 1.5.5
 
-  "@opentelemetry/api@1.9.1": {}
-
   "@playwright/test@1.61.1":
     dependencies:
       playwright: 1.61.1
@@ -3463,12 +3506,13 @@ snapshots:
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.0
 
-  ai@6.0.209(zod@4.4.3):
+  "@workflow/serde@4.1.0": {}
+
+  ai@7.0.0(zod@4.4.3):
     dependencies:
-      "@ai-sdk/gateway": 3.0.134(zod@4.4.3)
-      "@ai-sdk/provider": 3.0.10
-      "@ai-sdk/provider-utils": 4.0.30(zod@4.4.3)
-      "@opentelemetry/api": 1.9.1
+      "@ai-sdk/gateway": 4.0.0(zod@4.4.3)
+      "@ai-sdk/provider": 4.0.0
+      "@ai-sdk/provider-utils": 5.0.0(zod@4.4.3)
       zod: 4.4.3
 
   assertion-error@2.0.1: {}
@@ -3506,9 +3550,8 @@ snapshots:
       esbuild: 0.25.12
       tsx: 4.22.4
 
-  drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(pg@8.22.0):
+  drizzle-orm@0.45.2(@types/pg@8.20.0)(pg@8.22.0):
     optionalDependencies:
-      "@opentelemetry/api": 1.9.1
       "@types/pg": 8.20.0
       pg: 8.22.0
 
@@ -3875,7 +3918,7 @@ snapshots:
       fsevents: 2.3.3
       tsx: 4.22.4
 
-  vitest@4.1.9(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4)):
+  vitest@4.1.9(@types/node@24.13.2)(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4)):
     dependencies:
       "@vitest/expect": 4.1.9
       "@vitest/mocker": 4.1.9(vite@7.3.5(@types/node@24.13.2)(tsx@4.22.4))
@@ -3898,7 +3941,6 @@ snapshots:
       vite: 7.3.5(@types/node@24.13.2)(tsx@4.22.4)
       why-is-node-running: 2.3.0
     optionalDependencies:
-      "@opentelemetry/api": 1.9.1
       "@types/node": 24.13.2
     transitivePeerDependencies:
       - msw

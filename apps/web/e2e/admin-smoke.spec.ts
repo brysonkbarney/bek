@@ -2,9 +2,15 @@ import { expect, test, type Page } from "@playwright/test";
 import type {
   AuditLogEntry,
   Bootstrap,
+  BudgetStatusResponse,
   GitHubSetupPreview,
+  HealthDashboard,
+  IdentitiesResponse,
+  MemoryInventory,
+  MemoryRetrieval,
   ModelUsage,
   RunDetail,
+  RunTrace,
   SetupStatus,
   SlackOutboxResponse,
   WorkerQueueResponse,
@@ -375,7 +381,29 @@ const workerQueueFixture = {
         updatedAt: now,
       },
     ],
-    deadLetters: [],
+    deadLetters: [
+      {
+        id: "dead_letter_456",
+        sequence: 2,
+        workId: "work_456",
+        idempotencyKey: "run_attempt:org_demo:run_456:3",
+        item: {
+          orgId: "org_demo",
+          runId: "run_456",
+          attempt: 3,
+          reason: "retry_exhausted",
+          traceId: "trace_run_456",
+          enqueuedAt: now,
+        },
+        reason: "max attempts exceeded",
+        failedAt: now,
+        result: {
+          status: "failed",
+          error: "Sandbox exited with code 137 (out of memory).",
+        },
+        retryPolicy: { maxAttempts: 3 },
+      },
+    ],
     events: [
       {
         id: "worker_event_123",
@@ -413,6 +441,168 @@ const runDetailFixture = {
   events: bootstrapFixture.events,
   approvals: bootstrapFixture.approvals,
 } satisfies RunDetail;
+
+const runTraceFixture = {
+  runId: "run_123",
+  eventCount: 3,
+  startedAt: now,
+  endedAt: now,
+  durationMs: 4200,
+  finalStatus: "awaiting_approval",
+  phases: [
+    {
+      type: "plan",
+      status: "completed",
+      message: "Planned checkout retry investigation.",
+      durationMs: 1200,
+    },
+    {
+      type: "execute",
+      status: "running",
+      message: "Drafting the fix.",
+      durationMs: 3000,
+    },
+  ],
+  modelCalls: [
+    {
+      model: "anthropic/claude-sonnet-4-5",
+      status: "completed",
+      durationMs: 2100,
+      inputTokens: 1200,
+      outputTokens: 450,
+    },
+  ],
+  toolCalls: [
+    {
+      name: "github.search",
+      status: "completed",
+      message: "Searched checkout repo.",
+      durationMs: 600,
+    },
+  ],
+  approvals: [
+    {
+      decision: "pending",
+      message: "Awaiting human review for github.pr.",
+      at: now,
+    },
+  ],
+} satisfies RunTrace;
+
+const healthDashboardFixture = {
+  status: "degraded",
+  generatedAt: now,
+  componentCount: 3,
+  healthy: false,
+  statusCounts: { ok: 2, degraded: 1 },
+  unhealthy: [
+    {
+      name: "slack-outbox",
+      status: "degraded",
+      reason: "Delivery backlog above threshold.",
+    },
+  ],
+  components: [
+    {
+      name: "api",
+      status: "ok",
+      detail: "All routes responding.",
+      checkedAt: now,
+    },
+    {
+      name: "worker",
+      status: "ok",
+      detail: "Queue draining normally.",
+      checkedAt: now,
+    },
+    {
+      name: "slack-outbox",
+      status: "degraded",
+      detail: "Delivery backlog above threshold.",
+      checkedAt: now,
+    },
+  ],
+} satisfies HealthDashboard;
+
+const memoryInventoryFixture = {
+  sources: [
+    {
+      id: "source_runbook",
+      kind: "document",
+      sensitivity: "internal",
+      placeId: "place_checkout",
+      title: "Checkout runbook",
+      createdAt: now,
+    },
+  ],
+  chunks: [
+    {
+      id: "chunk_retry",
+      sourceId: "source_runbook",
+      sensitivity: "internal",
+      placeId: "place_checkout",
+      citation: { label: "Checkout runbook §3" },
+      text: "Retries back off exponentially after the third failure.",
+    },
+  ],
+} satisfies MemoryInventory;
+
+const memoryRetrievalFixture = {
+  placeId: "place_checkout",
+  identityId: "principal_bryson",
+  isolated: true,
+  allowed: [memoryInventoryFixture.chunks[0]],
+  excluded: [
+    {
+      contentHash: "abc123def456ghi789",
+      reason: "Chunk belongs to a more sensitive place.",
+    },
+  ],
+} satisfies MemoryRetrieval;
+
+const budgetStatusFixture = {
+  budgets: [
+    {
+      budgetPolicyId: "budget_demo",
+      name: "Demo budget",
+      perDayCents: 2500,
+      spentTodayCents: 2000,
+      remainingTodayCents: 500,
+      utilization: 0.8,
+      state: "warning",
+      runCountToday: 4,
+    },
+  ],
+  alerts: [
+    {
+      budgetPolicyId: "budget_demo",
+      name: "Demo budget",
+      perDayCents: 2500,
+      spentTodayCents: 2000,
+      remainingTodayCents: 500,
+      utilization: 0.8,
+      state: "warning",
+      runCountToday: 4,
+    },
+  ],
+} satisfies BudgetStatusResponse;
+
+const identitiesFixture = {
+  identities: [
+    {
+      id: "identity_workspace",
+      orgId: "org_demo",
+      scope: "workspace",
+      name: "Workspace baseline",
+      baseline: true,
+      enabled: true,
+      placeId: "place_checkout",
+      accessBundleIds: ["bundle_checkout"],
+    },
+  ],
+  bindings: [],
+  derived: true,
+} satisfies IdentitiesResponse;
 
 const auditEventsFixture = [
   {
@@ -494,7 +684,19 @@ test("loads the admin overview and navigates representative routes", async ({
     }),
   ).toBeVisible();
   await page.getByRole("link", { name: "Open run run_123" }).click();
-  await expect(page.getByRole("heading", { name: demoPrompt })).toBeVisible();
+  // Run detail renders as a session workspace: conversation + report pane.
+  await expect(page.getByRole("heading", { name: "Run report" })).toBeVisible();
+  await expect(page.getByText(demoPrompt).first()).toBeVisible();
+  // Trace section renders per-run phases, tool calls, and approvals.
+  await expect(page.getByRole("heading", { name: "Trace" })).toBeVisible();
+  await expect(page.getByText("github.search").first()).toBeVisible();
+  // Artifact previews surface from run data: the command log derives from the
+  // run trace tool calls when no report/diff/PR artifact is present.
+  await expect(page.getByRole("heading", { name: "Artifacts" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Command log" })).toBeVisible();
+  await expect(page.getByLabel("Command log")).toContainText(
+    "[completed] github.search",
+  );
 
   await nav.getByRole("link", { name: "Worker", exact: true }).click();
   await expect(
@@ -504,6 +706,20 @@ test("loads the admin overview and navigates representative routes", async ({
   ).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Slack Outbox" }),
+  ).toBeVisible();
+  // Dead-letter detail expands inline with error, attempts, and timestamps.
+  await expect(
+    page.getByRole("heading", { name: "Dead Letters", exact: true }),
+  ).toBeVisible();
+  const deadLetterToggle = page.getByRole("button", {
+    name: "run_456",
+    exact: true,
+  });
+  await expect(deadLetterToggle).toHaveAttribute("aria-expanded", "false");
+  await deadLetterToggle.click();
+  await expect(deadLetterToggle).toHaveAttribute("aria-expanded", "true");
+  await expect(
+    page.getByText("Sandbox exited with code 137 (out of memory)."),
   ).toBeVisible();
 
   await nav.getByRole("link", { name: "Approvals", exact: true }).click();
@@ -537,11 +753,59 @@ test("loads the admin overview and navigates representative routes", async ({
   ).toBeVisible();
   await expect(page.getByText("Default Gateway Policy")).toBeVisible();
 
+  await nav.getByRole("link", { name: "Budgets", exact: true }).click();
+  await expect(
+    page.getByRole("heading", {
+      name: "Daily spend stays inside policy ceilings.",
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("Demo budget").first()).toBeVisible();
+  await expect(page.getByText("Runs today")).toBeVisible();
+
+  await nav.getByRole("link", { name: "Identities", exact: true }).click();
+  await expect(
+    page.getByRole("heading", {
+      name: "Each compartment runs under a scoped identity.",
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("Workspace baseline")).toBeVisible();
+  await expect(
+    page.getByText(
+      "These are derived default identities. No explicit compartment identity profiles are configured yet.",
+    ),
+  ).toBeVisible();
+
   await nav.getByRole("link", { name: "Memory", exact: true }).click();
   await expect(
     page.getByRole("heading", {
       name: "Team memory must be scoped, reviewable, and removable.",
     }),
+  ).toBeVisible();
+  await expect(page.getByText("Checkout runbook §3")).toBeVisible();
+  // Preview the ACL boundary for a place: allowed vs excluded with reasons.
+  await page
+    .getByRole("combobox", { name: "Place" })
+    .selectOption("place_checkout");
+  await page.getByRole("button", { name: "Preview retrieval" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Allowed (1)" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Excluded (1)" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Chunk belongs to a more sensitive place."),
+  ).toBeVisible();
+
+  await nav.getByRole("link", { name: "Health", exact: true }).click();
+  await expect(
+    page.getByRole("heading", {
+      name: "Watch every Bek component from one calm rollup.",
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("slack-outbox").first()).toBeVisible();
+  await expect(
+    page.getByText("Delivery backlog above threshold.").first(),
   ).toBeVisible();
 
   await nav.getByRole("link", { name: "Audit", exact: true }).click();
@@ -555,6 +819,8 @@ test("loads the admin overview and navigates representative routes", async ({
   await expect(
     page.getByText("access_grant · grant_checkout_pr · actor principal_admin"),
   ).toBeVisible();
+  // Audit filters are progressive — open them before filtering.
+  await page.getByRole("button", { name: "Show filters" }).click();
   await page.getByLabel("Search").fill("grant");
   await expect
     .poll(() =>
@@ -696,6 +962,12 @@ function responseFor(path: string): unknown {
     return auditEventsFixture;
   }
   if (path === "/api/runs/run_123") return runDetailFixture;
+  if (path === "/api/runs/run_123/trace") return runTraceFixture;
+  if (path === "/api/budgets/status") return budgetStatusFixture;
+  if (path === "/api/identities") return identitiesFixture;
+  if (path === "/api/health/dashboard") return healthDashboardFixture;
+  if (path === "/api/memory/chunks") return memoryInventoryFixture;
+  if (path.startsWith("/api/memory/retrieve")) return memoryRetrievalFixture;
   if (path === "/api/worker/queue") return workerQueueFixture;
   if (path === "/api/outbound/slack") return slackOutboxFixture;
   return undefined;

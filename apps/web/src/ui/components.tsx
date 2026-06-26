@@ -4,10 +4,12 @@ import {
   CheckCircle2,
   Clock,
   ExternalLink,
+  Plus,
+  X,
   XCircle,
 } from "lucide-react";
-import { useId, type ReactNode } from "react";
-import type { CapabilityGrant, Run } from "../api";
+import { useId, useState, type ReactNode } from "react";
+import type { BudgetState, CapabilityGrant, HealthStatus, Run } from "../api";
 import { formatMoney } from "./product-model";
 
 export function PageHeader({
@@ -56,6 +58,53 @@ export function Panel({
   );
 }
 
+/**
+ * A panel whose body is hidden behind an "+ Add" toggle (collapsed by default),
+ * so list/content leads and creation is progressive disclosure.
+ */
+export function CollapsibleSection({
+  title,
+  addLabel,
+  closeLabel = "Cancel",
+  children,
+  defaultOpen = false,
+}: {
+  title: string;
+  addLabel: string;
+  closeLabel?: string;
+  children: ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const bodyId = useId();
+  return (
+    <section className="panel">
+      <div className="panel-heading">
+        <h2>{title}</h2>
+        <button
+          type="button"
+          className="secondary"
+          aria-expanded={open}
+          aria-controls={bodyId}
+          onClick={() => setOpen((value) => !value)}
+        >
+          {open ? (
+            <X size={15} aria-hidden="true" />
+          ) : (
+            <Plus size={15} aria-hidden="true" />
+          )}
+          {open ? closeLabel : addLabel}
+        </button>
+      </div>
+      {open ? (
+        <div id={bodyId} className="collapsible-body">
+          {children}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export function EmptyState({ title, body }: { title: string; body: string }) {
   return (
     <div className="empty-state" role="status" aria-live="polite">
@@ -93,6 +142,84 @@ export function StatusBadge({ value }: { value: string }) {
             ? "success"
             : "neutral";
   return <span className={`badge ${tone}`}>{value.replaceAll("_", " ")}</span>;
+}
+
+export function HealthBadge({ value }: { value: HealthStatus }) {
+  const tone =
+    value === "ok"
+      ? "success"
+      : value === "degraded"
+        ? "warning"
+        : value === "down"
+          ? "danger"
+          : "neutral";
+  const Icon =
+    value === "ok"
+      ? CheckCircle2
+      : value === "degraded"
+        ? AlertTriangle
+        : value === "down"
+          ? XCircle
+          : Clock;
+  return (
+    <span className={`badge ${tone}`}>
+      <Icon size={13} aria-hidden="true" />
+      {value}
+    </span>
+  );
+}
+
+export function BudgetStateBadge({ value }: { value: BudgetState }) {
+  const tone =
+    value === "ok" ? "success" : value === "warning" ? "warning" : "danger";
+  const Icon =
+    value === "ok"
+      ? CheckCircle2
+      : value === "warning"
+        ? AlertTriangle
+        : XCircle;
+  return (
+    <span className={`badge ${tone}`}>
+      <Icon size={13} aria-hidden="true" />
+      {value}
+    </span>
+  );
+}
+
+/**
+ * Horizontal utilization bar driven by a 0..1+ ratio. The fill clamps to 100%
+ * width but the underlying value can exceed 1 (over budget); the tone follows
+ * the budget state so over-budget bars read as destructive.
+ */
+export function UtilizationBar({
+  value,
+  state,
+  label,
+}: {
+  value: number;
+  state: BudgetState;
+  label: string;
+}) {
+  const ratio = Number.isFinite(value) && value > 0 ? value : 0;
+  const percent = Math.round(ratio * 100);
+  const width = Math.min(100, Math.max(0, percent));
+  const tone =
+    state === "ok" ? "success" : state === "warning" ? "warning" : "danger";
+  return (
+    <div
+      className="utilization-bar"
+      role="meter"
+      aria-valuenow={percent}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-label={label}
+    >
+      <div
+        className={`utilization-fill ${tone}`}
+        style={{ width: `${width}%` }}
+      />
+    </div>
+  );
 }
 
 export function RiskBadge({ value }: { value: string }) {

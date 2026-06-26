@@ -40,6 +40,30 @@ This repository is a working OSS product spine for Bek. It runs locally without 
 - Docker Compose profiles for Postgres, Valkey, MinIO, API/web containers, and
   the local worker runner.
 
+## Editions / SKUs (proposed)
+
+> ⚠️ Proposed — confirm with the founder before external use. These are a
+> conservative baseline derived from the current repository state, not a final
+> business decision.
+
+Bek is packaged as five proposed SKUs. Only the first two are buildable from this
+repository today; the rest are gated or planned:
+
+- **OSS local demo** — available; seeded local console, no external credentials.
+- **OSS self-hosted pilot** — available; single-tenant, operator-owned Slack +
+  optional GitHub/model/MCP/sandbox, Postgres-backed.
+- **Managed design partner** — invite only; single-tenant deployment operated for
+  the partner with handholding (not multi-tenant, not self-serve).
+- **Hosted paid beta** — not open; planned once tenant isolation, RBAC, managed
+  credentials, durable fleet, hosted sandbox, and billing reconciliation land.
+- **Self-serve hosted GA** — future; general hosted market after the paid beta.
+
+See [Launch SKU boundaries](./docs/commercial/sku-boundaries.md) for exactly what
+each SKU delivers (including the marketable-today vs foundations-only table),
+[Sales-safe claims](./docs/commercial/claims.md) for allowed wording, and the
+[Do-not-claim list](./docs/commercial/do-not-claim.md) for what copy and
+screenshots must avoid.
+
 ## Quick Start
 
 Choose the path that matches what you are trying to prove:
@@ -140,10 +164,15 @@ deterministic runner smoke tests for the worker contract.
   quarantine posture.
 - [Operator checklist](./docs/operator-checklist.md): release and workspace
   readiness checks.
+- [Launch SKU boundaries](./docs/commercial/sku-boundaries.md): exactly what each
+  SKU delivers today; OSS demo and self-hosted pilot are available, hosted is
+  design-partner/waitlist, not self-serve GA.
 - [Hosted Bek](./docs/commercial/hosted.md): managed offering positioning and
   what remains admin-owned.
 - [Sales-safe claims](./docs/commercial/claims.md): what the current product
   can and cannot claim.
+- [Do-not-claim list](./docs/commercial/do-not-claim.md): concrete phrases and
+  screenshots that sales, README, and demos must avoid.
 - [Hosted packaging draft](./docs/commercial/pricing.md): design-partner
   packaging hypothesis and paid-beta gates.
 

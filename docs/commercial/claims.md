@@ -8,6 +8,10 @@ sound ambitious, but the claims need to match the code that exists today.
 - Bek is an open-source Claude Tag-style Slack teammate: teams tag one visible
   `@bek`, and admins govern models, tools, repos, channels, budgets, and
   approvals behind it.
+- Bek's agent loop runs on AI SDK 7: capability grants become `tool()`s with an
+  identity-scoped, secret-free `contextSchema`, and the multi-step loop is AI SDK
+  7's `ToolLoopAgent` (`packages/runtime`). Approval-required tools suspend the
+  run for the durable worker to resume.
 - The local admin-console spine works today with seeded data: setup, channels,
   access bundles, runs, approvals, connectors, models, memory stance, audit,
   worker, and settings.
@@ -34,6 +38,10 @@ sound ambitious, but the claims need to match the code that exists today.
 - Bek is designed to support many models, runtimes, MCP tools, repos, and
   sandboxes behind one visible teammate.
 - Hosted Bek is planned as a managed design-partner/waitlist offering.
+- The launch SKUs are defined in [launch SKU boundaries](./sku-boundaries.md):
+  OSS local demo and OSS self-hosted pilot are available; managed design partner
+  is invite-only and single-tenant; hosted paid beta and self-serve hosted GA are
+  planned.
 
 ## Do Not Say Yet
 
@@ -57,6 +65,19 @@ sound ambitious, but the claims need to match the code that exists today.
 - Do not claim compliance, SOC 2, tenant isolation, or managed key custody until
   those controls are implemented, tested, and reviewed for the hosted
   environment.
+- Do not claim AI SDK 7 features Bek does not use. `WorkflowAgent`, `HarnessAgent`,
+  and `@ai-sdk/sandbox`/`SandboxSession` are blog-announced but NOT in the stable
+  `ai@7` package; Bek uses its own durable worker queue, `RuntimeAdapter`, and
+  `@bek/sandbox` contracts for those concerns. Do not imply Bek ships durable
+  resumable AI SDK agents, a managed coding harness, or hosted SDK sandboxes (see
+  [AI SDK 7 architecture](../architecture/ai-sdk-7.md)).
+- Do not claim the managed design-partner offering is multi-tenant or self-serve.
+  It is single-tenant per deployment with operator handholding (see
+  [launch SKU boundaries](./sku-boundaries.md)).
+
+For a concrete, literal list of phrases and screenshots that must never ship —
+each with its honest current status — use the
+[do-not-claim list](./do-not-claim.md).
 
 ## Demo Positioning
 

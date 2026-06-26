@@ -62,11 +62,11 @@ describe("untrusted content prompts", () => {
 
   it("redacts secrets inside the model-bound envelope", () => {
     const prompt = buildUntrustedContentPrompt({
-      content: "use token xoxb-1234567890-secret to call Slack",
+      content: "use token xoxb-EXAMPLETOKEN-secret to call Slack",
       source: "api",
     });
 
-    expect(prompt).not.toContain("xoxb-1234567890-secret");
+    expect(prompt).not.toContain("xoxb-EXAMPLETOKEN-secret");
     expect(prompt).toContain("[redacted:slack-token]");
   });
 });

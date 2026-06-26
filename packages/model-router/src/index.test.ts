@@ -584,6 +584,44 @@ describe("model router", () => {
     ).not.toEqual(expect.arrayContaining(["run:run_gateway"]));
   });
 
+  it("reads AI SDK 7 cumulative usage and finalStep metadata", async () => {
+    const generate: AiSdkTextGenerationFunction = async () => {
+      return {
+        text: "AI SDK 7 response.",
+        // v7: `usage` is cumulative; per-step metadata lives on `finalStep`.
+        usage: { inputTokens: 21, outputTokens: 43 },
+        finalStep: {
+          usage: { inputTokens: 21, outputTokens: 43 },
+          finishReason: "stop",
+          response: { id: "gen_v7", modelId: "openai/gpt-5.4" },
+        },
+      };
+    };
+    const gateway = new VercelAiGatewayModelGateway({
+      generateText: generate,
+      now: () => "2026-06-24T00:00:00.000Z",
+      clock: () => 1_000,
+    });
+    const route = selectModel({ policy, benchmarks });
+
+    const response = await gateway.complete({
+      runId: "run_v7",
+      route,
+      prompt: "@bek summarize",
+    });
+
+    expect(response).toMatchObject({
+      runId: "run_v7",
+      provider: "openai",
+      model: "openai/gpt-5.4",
+      content: "AI SDK 7 response.",
+      inputTokens: 21,
+      outputTokens: 43,
+      finishReason: "stop",
+      gatewayResponseId: "gen_v7",
+    });
+  });
+
   it("marks auth and invalid request Gateway failures as non-retryable", async () => {
     const generate: AiSdkTextGenerationFunction = async () => {
       const error = new Error("AI Gateway authentication failed.") as Error & {

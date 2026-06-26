@@ -3,6 +3,15 @@ import {
   type GitHubPullRequestWriteApprovalHashInput,
 } from "./approvals";
 import {
+  createDeterministicGitHubBranchName,
+  createGitHubPullRequestPlanHashBinding,
+  resolveGitHubBranchPlan,
+  type GitHubBranchPlanResolution,
+  type GitHubExistingBranch,
+  type GitHubExistingPullRequest,
+  type GitHubPullRequestPlanHashBinding,
+} from "./branches";
+import {
   BEK_VISIBLE_AGENT_HANDLE,
   createGitHubPullRequestProposal,
   normalizeGitHubBranchName,
@@ -93,7 +102,13 @@ export interface CreateGitHubDraftPullRequestWorkflowPlanInput {
   installationId: string | number;
   repositoryId?: string | number | undefined;
   title: string;
-  headBranch: string;
+  /**
+   * Explicit head branch. When omitted, a deterministic, retry-safe branch is
+   * derived from the plan hash + a slug of the PR title via
+   * {@link createDeterministicGitHubBranchName}. Supplying an explicit value
+   * preserves the historical behavior exactly.
+   */
+  headBranch?: string | undefined;
   baseBranch?: string | undefined;
   body?: string | undefined;
   commitMessage: string;
@@ -102,6 +117,23 @@ export interface CreateGitHubDraftPullRequestWorkflowPlanInput {
   maintainerCanModify?: boolean | undefined;
   labels?: string[] | undefined;
   reviewers?: string[] | undefined;
+  /**
+   * Prefix for a derived head branch (ignored when `headBranch` is explicit).
+   * Defaults to the deterministic branch helper's own default ("bek").
+   */
+  branchPrefix?: string | undefined;
+  /**
+   * Branches already known to exist in the target repo. Used to detect
+   * duplicate/conflicting head branches via {@link resolveGitHubBranchPlan}.
+   * Defaults to empty (the historical behavior: never a duplicate).
+   */
+  existingBranches?: readonly GitHubExistingBranch[] | undefined;
+  /**
+   * Pull requests already known to exist in the target repo. Used to detect
+   * duplicate/conflicting head branches via {@link resolveGitHubBranchPlan}.
+   * Defaults to empty (the historical behavior: never a duplicate).
+   */
+  existingPullRequests?: readonly GitHubExistingPullRequest[] | undefined;
   runId?: string | undefined;
   requesterPrincipalId?: string | undefined;
 }
@@ -124,6 +156,19 @@ export interface GitHubDraftPullRequestWorkflowPlan {
   commit: GitHubCommitWorkflowPlan;
   pullRequest: GitHubPullRequestProposal;
   approvalHashInput: GitHubPullRequestWriteApprovalHashInput;
+  /**
+   * Plan-hash binding for the resolved PR plan. Binds the approval to the exact
+   * head branch + diff so the hash that is approved equals the hash that
+   * executes. Computed over the *final* head branch (explicit or derived).
+   */
+  planHashBinding: GitHubPullRequestPlanHashBinding;
+  /**
+   * Duplicate/conflict resolution for the head branch against any supplied
+   * existing branches/PRs. `decision` is "create_new" (default, nothing
+   * existed) or "reuse_existing" (idempotent retry). A "conflict" resolution
+   * is never present here: it is thrown during plan creation.
+   */
+  branchResolution: GitHubBranchPlanResolution;
   steps: GitHubDraftPullRequestWorkflowStep[];
   runId?: string | undefined;
   requesterPrincipalId?: string | undefined;
@@ -227,17 +272,39 @@ export function createGitHubCommitWorkflowPlan(
   return plan;
 }
 
+/**
+ * Placeholder head branch used only to compute the *branch-derivation* plan
+ * hash. The derivation hash must not depend on the head branch (which is what
+ * we are deriving), so a constant stand-in is substituted; every other field
+ * (repo, title, body, base, diff, files, install) still influences the hash.
+ */
+const BRANCH_DERIVATION_PLACEHOLDER_HEAD = "bek/__derive__";
+
 export function createGitHubDraftPullRequestWorkflowPlan(
   input: CreateGitHubDraftPullRequestWorkflowPlanInput,
 ): GitHubDraftPullRequestWorkflowPlan {
   const repository = parseGitHubRepoResource(input.repository);
   const installationId = normalizeGitHubInstallationId(input.installationId);
   const repositoryId = normalizeOptionalRepositoryId(input.repositoryId);
+  const title = normalizeRequiredText(input.title, "PR title");
+  const baseBranch = normalizeGitHubBranchName(input.baseBranch ?? "main");
+  const changes = normalizeCommitChanges(input.changes);
+
+  const headBranch = resolveDraftPullRequestHeadBranch({
+    input,
+    repository,
+    installationId,
+    repositoryId,
+    title,
+    baseBranch,
+    changes,
+  });
+
   const branch = createGitHubBranchWorkflowPlan({
     repository,
     installationId,
     baseBranch: input.baseBranch,
-    headBranch: input.headBranch,
+    headBranch,
     runId: input.runId,
     requesterPrincipalId: input.requesterPrincipalId,
   });
@@ -263,6 +330,47 @@ export function createGitHubDraftPullRequestWorkflowPlan(
     runId: input.runId,
     requesterPrincipalId: input.requesterPrincipalId,
   });
+
+  // Bind the plan hash to the *final* head branch + diff so the hash that is
+  // approved equals the hash that executes (the worker re-derives this plan
+  // from the approval payload, which carries the resolved head branch).
+  const planHashBinding = createGitHubPullRequestPlanHashBinding({
+    repository,
+    title: pullRequest.title,
+    body: pullRequest.body,
+    baseBranch: pullRequest.baseBranch,
+    headBranch: pullRequest.headBranch,
+    draft: pullRequest.draft,
+    maintainerCanModify: pullRequest.maintainerCanModify,
+    labels: pullRequest.labels,
+    reviewers: pullRequest.reviewers,
+    installationId,
+    repositoryId,
+    files: changes.map((change) => change.path),
+    ...(input.requesterPrincipalId !== undefined
+      ? { requesterPrincipalId: input.requesterPrincipalId }
+      : {}),
+  });
+
+  // Detect duplicate/conflicting head branches against whatever the caller
+  // knows about the repo. Defaults to empty -> always "create_new" (historical
+  // behavior). A conflict is fatal at plan time; reuse is recorded as-is.
+  const branchResolution = resolveGitHubBranchPlan({
+    branchName: pullRequest.headBranch,
+    baseBranch: pullRequest.baseBranch,
+    planHash: planHashBinding.hash,
+    ...(input.existingBranches !== undefined
+      ? { existingBranches: input.existingBranches }
+      : {}),
+    ...(input.existingPullRequests !== undefined
+      ? { existingPullRequests: input.existingPullRequests }
+      : {}),
+  });
+  if (branchResolution.decision === "conflict") {
+    throw new Error(
+      `GitHub draft PR plan conflicts with an existing branch or pull request: ${branchResolution.reason}`,
+    );
+  }
 
   const plan: GitHubDraftPullRequestWorkflowPlan = {
     type: "github.draft_pull_request_workflow_plan",
@@ -296,6 +404,8 @@ export function createGitHubDraftPullRequestWorkflowPlan(
       installationId,
       repositoryId,
     }),
+    planHashBinding,
+    branchResolution,
     steps: [
       "mint_installation_token",
       "create_branch",
@@ -308,6 +418,61 @@ export function createGitHubDraftPullRequestWorkflowPlan(
   }
   addRunMetadata(plan, input);
   return plan;
+}
+
+interface ResolveDraftPullRequestHeadBranchInput {
+  input: CreateGitHubDraftPullRequestWorkflowPlanInput;
+  repository: GitHubRepoResource;
+  installationId: string;
+  repositoryId: number | undefined;
+  title: string;
+  baseBranch: string;
+  changes: GitHubCommitFileChange[];
+}
+
+/**
+ * Return the explicit head branch when supplied; otherwise derive a
+ * deterministic, retry-safe branch from a branch-derivation plan hash (which
+ * excludes the head branch itself) + a slug of the PR title.
+ */
+function resolveDraftPullRequestHeadBranch(
+  args: ResolveDraftPullRequestHeadBranchInput,
+): string {
+  const { input, repository, installationId, repositoryId, title, baseBranch } =
+    args;
+  if (input.headBranch !== undefined) {
+    return normalizeGitHubBranchName(input.headBranch);
+  }
+
+  const derivationHash = createGitHubPullRequestPlanHashBinding({
+    repository,
+    title,
+    body: input.body,
+    baseBranch,
+    headBranch: BRANCH_DERIVATION_PLACEHOLDER_HEAD,
+    draft: input.draft ?? true,
+    maintainerCanModify: input.maintainerCanModify,
+    labels: input.labels,
+    reviewers: input.reviewers,
+    installationId,
+    repositoryId,
+    files: args.changes.map((change) => change.path),
+    ...(input.requesterPrincipalId !== undefined
+      ? { requesterPrincipalId: input.requesterPrincipalId }
+      : {}),
+  }).hash;
+
+  // The branch must be stable across idempotent retries of the same plan. The
+  // plan hash is the disambiguating anchor; the runId (when present) and title
+  // slug make the branch human-recognizable. Fall back to the plan hash as the
+  // run segment when no runId is supplied so the helper's requirement is met.
+  const runId = input.runId?.trim() || derivationHash;
+  return createDeterministicGitHubBranchName({
+    runId,
+    planHash: derivationHash,
+    slug: title,
+    ...(input.branchPrefix !== undefined ? { prefix: input.branchPrefix } : {}),
+  });
 }
 
 export function createGitHubDraftPullRequestWorkflowApprovalPayload(

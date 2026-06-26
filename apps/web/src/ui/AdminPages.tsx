@@ -1,6 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
+import { RunSessionView } from "./SessionView";
+import { ConnectorGlyph } from "./BrandGlyph";
 import {
+  Activity,
   ArrowLeft,
   Check,
   CircleSlash,
@@ -9,9 +12,12 @@ import {
   Database,
   Download,
   ExternalLink,
+  FileText,
+  Fingerprint,
+  Gauge,
   GitPullRequest,
+  HeartPulse,
   KeyRound,
-  LockKeyhole,
   Plus,
   RefreshCw,
   Route,
@@ -21,6 +27,8 @@ import {
   Slack,
   Trash2,
   Unlink,
+  Users,
+  Wallet,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
@@ -35,11 +43,16 @@ import {
   fetchAuditEventExport,
   fetchAuditEvents,
   fetchBootstrap,
+  fetchBudgetStatus,
   fetchGitHubSetup,
+  fetchHealthDashboard,
+  fetchIdentities,
+  fetchMemoryInventory,
   fetchRunDetail,
   fetchSlackManifest,
   fetchSlackInstallStart,
   fetchSetupStatus,
+  retrieveMemory,
   hasBuildTimeAdminToken,
   hasStoredAdminToken,
   linkPrincipalExternalIdentity,
@@ -56,12 +69,18 @@ import {
   type AuditLogEntry,
   type ApprovalRequest,
   type Bootstrap,
+  type BudgetStatus,
   type CapabilityGrant,
+  type CompartmentIdentity,
   type ConnectorInstall,
   type DiscoveredSlackChannel,
   type GitHubSetupPreview,
+  type HealthComponent,
   type McpConnectorStatus,
   type McpTransportKind,
+  type MemoryChunk,
+  type MemoryExcluded,
+  type MemoryRetrieval,
   type ModelPolicy,
   type Run,
   type RunEvent,
@@ -73,6 +92,7 @@ import {
   findPlace,
   findRunPlace,
   formatDateTime,
+  formatDuration,
   formatMoney,
   grantsByDecision,
   githubConnectorSetupModel,
@@ -81,9 +101,12 @@ import {
   type SetupOperation,
 } from "./product-model";
 import {
+  BudgetStateBadge,
+  CollapsibleSection,
   CostCell,
   DecisionBadge,
   EmptyState,
+  HealthBadge,
   MetricCard,
   PageHeader,
   Panel,
@@ -91,6 +114,7 @@ import {
   RunLink,
   StatusBadge,
   SuccessCallout,
+  UtilizationBar,
   WarningCallout,
 } from "./components";
 
@@ -99,19 +123,7 @@ function errorMessage(error: unknown, fallback: string): string {
 }
 
 function ConnectorIcon({ id }: { id: string }) {
-  const Icon =
-    id === "slack"
-      ? Slack
-      : id === "github"
-        ? GitPullRequest
-        : id === "model"
-          ? Route
-          : id === "runtime"
-            ? Server
-            : id === "sandbox"
-              ? LockKeyhole
-              : Database;
-  return <Icon size={20} aria-hidden="true" />;
+  return <ConnectorGlyph id={id} />;
 }
 
 type ConnectorSummary = ReturnType<typeof connectorSummaries>[number];
@@ -265,17 +277,15 @@ export function SetupPage() {
           </div>
         </Panel>
         <Panel title="Guardrails">
-          <div className="bundle-list">
+          <p className="muted" style={{ margin: "0 0 12px" }}>
+            Bek stays one visible teammate. Teams never pick the right bot
+            before asking for help, so it avoids:
+          </p>
+          <ul className="guardrail-list">
             {visibleHandleAntiPatterns.map((item) => (
-              <div className="bundle danger-outline" key={item}>
-                <strong>{item}</strong>
-                <span>
-                  Teams should not need to choose the right bot before asking
-                  for help.
-                </span>
-              </div>
+              <li key={item}>{item}</li>
             ))}
-          </div>
+          </ul>
         </Panel>
       </section>
       <Panel title="Operations checklist">
@@ -290,47 +300,40 @@ export function SetupPage() {
 }
 
 function SetupOperationCard({ operation }: { operation: SetupOperation }) {
-  return (
-    <article
-      className={
-        operation.complete
-          ? "setup-operation complete"
-          : "setup-operation attention"
-      }
-    >
-      <div className="setup-operation-marker" aria-hidden="true">
-        {operation.complete ? <Check size={16} /> : <Clock size={16} />}
+  // Completed steps recede to a single calm line.
+  if (operation.complete) {
+    return (
+      <div className="setup-op done">
+        <span className="setup-op-marker" aria-hidden="true">
+          <Check size={13} />
+        </span>
+        <span className="setup-op-title">{operation.title}</span>
+        <StatusBadge value="ready" />
       </div>
-      <div className="setup-operation-body">
-        <div className="setup-operation-heading">
-          <span className="setup-phase">{operation.phase}</span>
+    );
+  }
+  // Needs-action steps: title + one detail + a single muted facts line + one action.
+  const facts = operation.facts.slice(0, 3).join(" · ");
+  return (
+    <div className="setup-op attention">
+      <span className="setup-op-marker" aria-hidden="true">
+        <Clock size={13} />
+      </span>
+      <div className="setup-op-body">
+        <div className="setup-op-titlerow">
+          <span className="setup-op-title">{operation.title}</span>
           <StatusBadge value={operation.status} />
         </div>
-        <strong>{operation.title}</strong>
-        <p className="muted">{operation.detail}</p>
-        <div className="chips">
-          {operation.facts.map((fact) => (
-            <span
-              className={operation.complete ? "chip" : "chip warning-chip"}
-              key={fact}
-            >
-              {fact}
-            </span>
-          ))}
-        </div>
+        <p className="setup-op-detail">{operation.detail}</p>
+        {facts ? <p className="setup-op-facts">{facts}</p> : null}
       </div>
-      <div className="setup-operation-actions">
-        <Link to={operation.primaryAction.route} className="inline-link">
-          {operation.primaryAction.label}
-          <ExternalLink size={13} aria-hidden="true" />
-        </Link>
-        {operation.secondaryAction ? (
-          <Link to={operation.secondaryAction.route} className="inline-link">
-            {operation.secondaryAction.label}
-          </Link>
-        ) : null}
-      </div>
-    </article>
+      <Link
+        to={operation.primaryAction.route}
+        className="secondary setup-op-action"
+      >
+        {operation.primaryAction.label}
+      </Link>
+    </div>
   );
 }
 
@@ -426,7 +429,10 @@ export function ChannelsPage() {
           />
         )}
       </Panel>
-      <Panel title="Add Slack Channel Scope">
+      <CollapsibleSection
+        title="Add a Slack channel scope"
+        addLabel="Add scope"
+      >
         {createChannelMutation.isError ? (
           <WarningCallout>
             {errorMessage(
@@ -504,7 +510,7 @@ export function ChannelsPage() {
             </button>
           </div>
         </form>
-      </Panel>
+      </CollapsibleSection>
       <section className="channel-grid">
         {data.places.length === 0 ? (
           <EmptyState
@@ -546,7 +552,11 @@ export function ChannelsPage() {
                     bundles.map((bundle) => (
                       <div className="bundle" key={bundle.id}>
                         <strong>{bundle.name}</strong>
-                        <span>{bundle.grants.length} grants attached</span>
+                        <span>
+                          {bundle.grants.length}{" "}
+                          {bundle.grants.length === 1 ? "grant" : "grants"}{" "}
+                          attached
+                        </span>
                       </div>
                     ))
                   )}
@@ -720,7 +730,7 @@ export function AccessBundlesPage() {
         eyebrow="Access bundles"
         title="Bundle tools, repos, models, and approvals by place."
       />
-      <Panel title="Create Access Bundle">
+      <CollapsibleSection title="Create an access bundle" addLabel="New bundle">
         {createBundleMutation.isError ? (
           <WarningCallout>
             {errorMessage(
@@ -786,7 +796,7 @@ export function AccessBundlesPage() {
             </button>
           </div>
         </form>
-      </Panel>
+      </CollapsibleSection>
       {data.accessBundles.length === 0 ? (
         <EmptyState
           title="No access bundles"
@@ -1653,7 +1663,10 @@ export function ChannelDetailPage() {
                   key={bundle.id}
                 >
                   <strong>{bundle.name}</strong>
-                  <span>{bundle.grants.length} grants attached</span>
+                  <span>
+                    {bundle.grants.length}{" "}
+                    {bundle.grants.length === 1 ? "grant" : "grants"} attached
+                  </span>
                 </Link>
               ))
             )}
@@ -2213,7 +2226,7 @@ export function ConnectorsPage() {
           ) : null}
           <div className="connector-card">
             <div className="connector-icon">
-              <Slack size={20} aria-hidden="true" />
+              <ConnectorGlyph id="slack" />
             </div>
             <div>
               <strong>{slackSummary.metric}</strong>
@@ -2597,7 +2610,7 @@ function McpConnectorPanel({
       ) : null}
       <div className="connector-card">
         <div className="connector-icon">
-          <Database size={20} aria-hidden="true" />
+          <ConnectorGlyph id="mcp" />
         </div>
         <div>
           <strong>{connector.metric}</strong>
@@ -2798,7 +2811,7 @@ function GitHubConnectorPanel({
       ) : null}
       <div className="connector-card">
         <div className="connector-icon">
-          <GitPullRequest size={20} aria-hidden="true" />
+          <ConnectorGlyph id="github" />
         </div>
         <div>
           <strong>{connector.metric}</strong>
@@ -3190,50 +3203,675 @@ function modelPricingWarning(
   )}.`;
 }
 
+export function HealthPage() {
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
+    queryKey: ["healthDashboard"],
+    queryFn: fetchHealthDashboard,
+  });
+
+  if (isLoading) return <div className="state">Loading system health...</div>;
+  if (error || !data)
+    return <div className="state error">Bek API is not reachable.</div>;
+
+  const statusOrder = ["ok", "degraded", "down", "unknown"] as const;
+  const orderedCounts = statusOrder.filter(
+    (status) => (data.statusCounts[status] ?? 0) > 0,
+  );
+
+  return (
+    <div className="page">
+      <PageHeader
+        eyebrow="System health"
+        title="Watch every Bek component from one calm rollup."
+        description={`Last checked ${formatDateTime(data.generatedAt)}.`}
+        actions={
+          <button
+            className="secondary"
+            type="button"
+            disabled={isFetching}
+            aria-busy={isFetching}
+            onClick={() => void refetch()}
+          >
+            <RefreshCw size={16} aria-hidden="true" />
+            {isFetching ? "Refreshing..." : "Refresh"}
+          </button>
+        }
+      />
+      <section className="metrics">
+        <MetricCard
+          icon={<HeartPulse />}
+          label="Overall status"
+          value={data.status}
+          detail={data.healthy ? "All systems healthy" : "Attention required"}
+        />
+        <MetricCard
+          icon={<Server />}
+          label="Components"
+          value={String(data.componentCount)}
+          detail="Checked this cycle"
+        />
+        <MetricCard
+          icon={<Activity />}
+          label="Unhealthy"
+          value={String(data.unhealthy.length)}
+          detail={
+            data.unhealthy.length === 0 ? "Nothing degraded" : "Needs review"
+          }
+        />
+      </section>
+      <Panel title="Rollup" action={<HealthBadge value={data.status} />}>
+        {orderedCounts.length === 0 ? (
+          <p className="muted">No component status counts reported.</p>
+        ) : (
+          <div className="chips">
+            {orderedCounts.map((status) => (
+              <span className="chip" key={status}>
+                {status}: {data.statusCounts[status] ?? 0}
+              </span>
+            ))}
+          </div>
+        )}
+      </Panel>
+      {data.unhealthy.length > 0 ? (
+        <Panel title="Unhealthy components">
+          <ul className="timeline">
+            {data.unhealthy.map((component) => (
+              <li key={`unhealthy-${component.name}`}>
+                <HealthBadge value={component.status} />
+                <span className="timeline-copy">
+                  <span>{component.name}</span>
+                  <small>{component.reason}</small>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      ) : null}
+      <Panel title="Components">
+        {data.components.length === 0 ? (
+          <EmptyState
+            title="No components reported"
+            body="The health dashboard returned no component checks."
+          />
+        ) : (
+          <ul className="timeline">
+            {data.components.map((component) => (
+              <HealthComponentRow
+                component={component}
+                key={`component-${component.name}`}
+              />
+            ))}
+          </ul>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function HealthComponentRow({ component }: { component: HealthComponent }) {
+  return (
+    <li>
+      <HealthBadge value={component.status} />
+      <span className="timeline-copy">
+        <span>{component.name}</span>
+        {component.detail ? <small>{component.detail}</small> : null}
+      </span>
+      {component.checkedAt ? (
+        <small>{formatDateTime(component.checkedAt)}</small>
+      ) : null}
+    </li>
+  );
+}
+
 export function MemoryPage() {
-  const { data, isLoading, error } = useQuery({
+  const {
+    data: inventory,
+    isLoading,
+    error,
+  } = useQuery({
+    queryKey: ["memoryInventory"],
+    queryFn: fetchMemoryInventory,
+  });
+  const bootstrapQuery = useQuery({
     queryKey: ["bootstrap"],
     queryFn: fetchBootstrap,
   });
+  const [placeId, setPlaceId] = useState("");
+  const retrievalMutation = useMutation({
+    mutationFn: retrieveMemory,
+  });
 
   if (isLoading) return <div className="state">Loading memory...</div>;
-  if (error || !data)
+  if (error || !inventory)
     return <div className="state error">Bek API is not reachable.</div>;
+
+  const places = bootstrapQuery.data?.places ?? [];
+  const sourceById = new Map(
+    inventory.sources.map((source) => [source.id, source]),
+  );
+  const placeName = (id: string | undefined): string | undefined =>
+    id ? (places.find((place) => place.id === id)?.name ?? id) : undefined;
 
   return (
     <div className="page">
       <PageHeader
         eyebrow="Memory"
         title="Team memory must be scoped, reviewable, and removable."
+        description="Inspect every memory source and chunk, then preview exactly which chunks a place is allowed to retrieve."
       />
       <section className="metrics">
         <MetricCard
           icon={<Database />}
-          label="Workspace memories"
-          value="0"
-          detail="Planned for v0.2"
+          label="Sources"
+          value={String(inventory.sources.length)}
+          detail="Ingested memory origins"
         />
         <MetricCard
-          icon={<LockKeyhole />}
-          label="Retention"
-          value="Off"
-          detail="No silent long-term memory in local mode"
+          icon={<FileText />}
+          label="Chunks"
+          value={String(inventory.chunks.length)}
+          detail="Retrievable memory units"
         />
         <MetricCard
           icon={<ShieldCheck />}
           label="Visibility"
           value="Admin review"
-          detail="Every future memory has provenance"
+          detail="Every chunk carries a citation"
         />
       </section>
-      <Panel title="Memory stance">
-        <p className="muted">
-          Bek stores auditable run events and approvals today. Durable memory
-          should ship only after tenant isolation, redaction, retention
-          controls, and per-place memory policy are in place.
+      <Panel title="Preview retrieval for a place">
+        <p className="muted" style={{ margin: "0 0 12px" }}>
+          Pick a place to see which memory chunks the ACL boundary allows versus
+          excludes, with the reason for every exclusion.
         </p>
+        {retrievalMutation.isError ? (
+          <WarningCallout>
+            {errorMessage(
+              retrievalMutation.error,
+              "Bek could not preview retrieval for that place.",
+            )}
+          </WarningCallout>
+        ) : null}
+        <form
+          className="settings-grid compact-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!placeId) return;
+            retrievalMutation.mutate(placeId);
+          }}
+        >
+          <label>
+            Place
+            <select
+              value={placeId}
+              disabled={places.length === 0}
+              onChange={(event) => setPlaceId(event.target.value)}
+            >
+              <option value="">Choose place</option>
+              {places.map((place) => (
+                <option value={place.id} key={place.id}>
+                  {place.name}
+                </option>
+              ))}
+            </select>
+            {places.length === 0 ? (
+              <span className="field-hint">
+                Connect a place before previewing retrieval.
+              </span>
+            ) : null}
+          </label>
+          <div className="form-actions">
+            <button
+              className="primary"
+              disabled={!placeId || retrievalMutation.isPending}
+              aria-busy={retrievalMutation.isPending}
+            >
+              {retrievalMutation.isPending
+                ? "Previewing..."
+                : "Preview retrieval"}
+            </button>
+          </div>
+        </form>
+        {retrievalMutation.data ? (
+          <MemoryRetrievalResult
+            retrieval={retrievalMutation.data}
+            placeName={placeName}
+          />
+        ) : null}
+      </Panel>
+      <Panel title="Sources">
+        {inventory.sources.length === 0 ? (
+          <EmptyState
+            title="No memory sources"
+            body="Bek has not ingested any memory sources yet."
+          />
+        ) : (
+          <div className="table-scroll">
+            <table className="responsive-table">
+              <caption className="sr-only">Memory sources</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Source</th>
+                  <th scope="col">Kind</th>
+                  <th scope="col">Sensitivity</th>
+                  <th scope="col">Place</th>
+                  <th scope="col">Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {inventory.sources.map((source) => (
+                  <tr key={source.id}>
+                    <td data-label="Source">
+                      <strong>{source.title ?? source.id}</strong>
+                      <div className="muted">{source.id}</div>
+                    </td>
+                    <td data-label="Kind">{source.kind}</td>
+                    <td data-label="Sensitivity">
+                      <StatusBadge value={source.sensitivity} />
+                    </td>
+                    <td data-label="Place">
+                      {placeName(source.placeId) ?? (
+                        <span className="muted">Unscoped</span>
+                      )}
+                    </td>
+                    <td data-label="Created">
+                      {formatDateTime(source.createdAt)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+      <Panel title="Chunks">
+        {inventory.chunks.length === 0 ? (
+          <EmptyState
+            title="No memory chunks"
+            body="Memory chunks will appear here after sources are ingested."
+          />
+        ) : (
+          <div className="memory-chunk-list">
+            {inventory.chunks.map((chunk) => (
+              <MemoryChunkCard
+                chunk={chunk}
+                sourceTitle={
+                  sourceById.get(chunk.sourceId)?.title ?? chunk.sourceId
+                }
+                placeName={placeName(chunk.placeId)}
+                key={chunk.id}
+              />
+            ))}
+          </div>
+        )}
       </Panel>
     </div>
+  );
+}
+
+function MemoryChunkCard({
+  chunk,
+  sourceTitle,
+  placeName,
+}: {
+  chunk: MemoryChunk;
+  sourceTitle: string;
+  placeName?: string | undefined;
+}) {
+  return (
+    <article className="memory-chunk">
+      <div className="memory-chunk-head">
+        <span className="memory-citation">{chunk.citation.label}</span>
+        <StatusBadge value={chunk.sensitivity} />
+      </div>
+      <p className="memory-chunk-text">{chunk.text}</p>
+      <p className="muted memory-chunk-meta">
+        {[sourceTitle, placeName ? `place ${placeName}` : undefined]
+          .filter(Boolean)
+          .join(" · ")}
+      </p>
+    </article>
+  );
+}
+
+function MemoryRetrievalResult({
+  retrieval,
+  placeName,
+}: {
+  retrieval: MemoryRetrieval;
+  placeName: (id: string | undefined) => string | undefined;
+}) {
+  return (
+    <div className="memory-retrieval">
+      <div className="meta-row">
+        <StatusBadge value={retrieval.isolated ? "isolated" : "shared"} />
+        <span className="muted">
+          {placeName(retrieval.placeId) ?? retrieval.placeId} · identity{" "}
+          {retrieval.identityId}
+        </span>
+      </div>
+      <div className="grid">
+        <Panel title={`Allowed (${retrieval.allowed.length})`}>
+          {retrieval.allowed.length === 0 ? (
+            <EmptyState
+              title="No allowed chunks"
+              body="This place cannot retrieve any memory chunks under current policy."
+            />
+          ) : (
+            <div className="memory-chunk-list">
+              {retrieval.allowed.map((chunk) => (
+                <MemoryChunkCard
+                  chunk={chunk}
+                  sourceTitle={chunk.sourceId}
+                  placeName={placeName(chunk.placeId)}
+                  key={`allowed-${chunk.id}`}
+                />
+              ))}
+            </div>
+          )}
+        </Panel>
+        <Panel title={`Excluded (${retrieval.excluded.length})`}>
+          {retrieval.excluded.length === 0 ? (
+            <EmptyState
+              title="Nothing excluded"
+              body="The ACL boundary did not exclude any chunks for this place."
+            />
+          ) : (
+            <ul className="memory-excluded-list">
+              {retrieval.excluded.map((excluded, index) => (
+                <MemoryExcludedRow
+                  excluded={excluded}
+                  key={excluded.chunk?.id ?? excluded.contentHash ?? index}
+                />
+              ))}
+            </ul>
+          )}
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function MemoryExcludedRow({ excluded }: { excluded: MemoryExcluded }) {
+  const label =
+    excluded.chunk?.citation.label ??
+    (excluded.contentHash
+      ? `hash ${excluded.contentHash.slice(0, 12)}…`
+      : "memory chunk");
+  return (
+    <li className="memory-excluded">
+      <div className="memory-excluded-head">
+        <span className="memory-citation">{label}</span>
+        {excluded.chunk ? (
+          <StatusBadge value={excluded.chunk.sensitivity} />
+        ) : null}
+      </div>
+      <p className="muted memory-excluded-reason">{excluded.reason}</p>
+    </li>
+  );
+}
+
+export function BudgetsPage() {
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
+    queryKey: ["budgetStatus"],
+    queryFn: fetchBudgetStatus,
+  });
+
+  if (isLoading) return <div className="state">Loading budgets...</div>;
+  if (error || !data)
+    return <div className="state error">Bek API is not reachable.</div>;
+
+  const exceeded = data.budgets.filter(
+    (budget) => budget.state === "exceeded",
+  ).length;
+
+  return (
+    <div className="page">
+      <PageHeader
+        eyebrow="Budgets"
+        title="Daily spend stays inside policy ceilings."
+        description="Watch today's spend against each budget policy's per-day ceiling, with utilization and run counts."
+        actions={
+          <button
+            className="secondary"
+            type="button"
+            disabled={isFetching}
+            aria-busy={isFetching}
+            onClick={() => void refetch()}
+          >
+            <RefreshCw size={16} aria-hidden="true" />
+            {isFetching ? "Refreshing..." : "Refresh"}
+          </button>
+        }
+      />
+      <section className="metrics">
+        <MetricCard
+          icon={<Wallet />}
+          label="Budget policies"
+          value={String(data.budgets.length)}
+          detail="Tracked today"
+        />
+        <MetricCard
+          icon={<Gauge />}
+          label="Spent today"
+          value={formatMoney(
+            data.budgets.reduce(
+              (total, budget) => total + budget.spentTodayCents,
+              0,
+            ),
+          )}
+          detail="Across all policies"
+        />
+        <MetricCard
+          icon={<Activity />}
+          label="Over budget"
+          value={String(exceeded)}
+          detail={exceeded === 0 ? "All within ceiling" : "Needs review"}
+        />
+      </section>
+      {data.alerts.length > 0 ? (
+        <Panel title={`Alerts (${data.alerts.length})`}>
+          <div className="timeline">
+            {data.alerts.map((alert) => (
+              <WarningCallout key={`alert-${alert.budgetPolicyId}`}>
+                <strong>{alert.name}</strong> is {alert.state} —{" "}
+                {formatMoney(alert.spentTodayCents)} of{" "}
+                {formatMoney(alert.perDayCents)} spent today (
+                {Math.round(alert.utilization * 100)}%).
+              </WarningCallout>
+            ))}
+          </div>
+        </Panel>
+      ) : null}
+      <Panel title="Budget policies">
+        {data.budgets.length === 0 ? (
+          <EmptyState
+            title="No budget policies"
+            body="Create a budget policy to cap how much Bek can spend per day."
+          />
+        ) : (
+          <div className="budget-board">
+            {data.budgets.map((budget) => (
+              <BudgetCard budget={budget} key={budget.budgetPolicyId} />
+            ))}
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function BudgetCard({ budget }: { budget: BudgetStatus }) {
+  return (
+    <Panel
+      title={budget.name}
+      action={<BudgetStateBadge value={budget.state} />}
+    >
+      <UtilizationBar
+        value={budget.utilization}
+        state={budget.state}
+        label={`${budget.name} utilization`}
+      />
+      <div className="budget-card-foot">
+        <div>
+          <span>Spent today</span>
+          <strong>{formatMoney(budget.spentTodayCents)}</strong>
+        </div>
+        <div>
+          <span>Per-day ceiling</span>
+          <strong>{formatMoney(budget.perDayCents)}</strong>
+        </div>
+        <div>
+          <span>Remaining</span>
+          <strong>{formatMoney(budget.remainingTodayCents)}</strong>
+        </div>
+        <div>
+          <span>Utilization</span>
+          <strong>{Math.round(budget.utilization * 100)}%</strong>
+        </div>
+        <div>
+          <span>Runs today</span>
+          <strong>{budget.runCountToday}</strong>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+export function IdentitiesPage() {
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
+    queryKey: ["identities"],
+    queryFn: fetchIdentities,
+  });
+  const bootstrapQuery = useQuery({
+    queryKey: ["bootstrap"],
+    queryFn: fetchBootstrap,
+  });
+
+  if (isLoading) return <div className="state">Loading identities...</div>;
+  if (error || !data)
+    return <div className="state error">Bek API is not reachable.</div>;
+
+  const places = bootstrapQuery.data?.places ?? [];
+  const placeName = (id: string | undefined): string | undefined =>
+    id ? (places.find((place) => place.id === id)?.name ?? id) : undefined;
+  const enabledCount = data.identities.filter(
+    (identity) => identity.enabled,
+  ).length;
+
+  return (
+    <div className="page">
+      <PageHeader
+        eyebrow="Identities"
+        title="Each compartment runs under a scoped identity."
+        description="Review the identity profiles Bek uses per compartment, including scope, enabled state, bound place, and access bundles."
+        actions={
+          <button
+            className="secondary"
+            type="button"
+            disabled={isFetching}
+            aria-busy={isFetching}
+            onClick={() => void refetch()}
+          >
+            <RefreshCw size={16} aria-hidden="true" />
+            {isFetching ? "Refreshing..." : "Refresh"}
+          </button>
+        }
+      />
+      <section className="metrics">
+        <MetricCard
+          icon={<Fingerprint />}
+          label="Identities"
+          value={String(data.identities.length)}
+          detail={data.derived ? "Derived defaults" : "Configured profiles"}
+        />
+        <MetricCard
+          icon={<Users />}
+          label="Enabled"
+          value={String(enabledCount)}
+          detail="Active compartment identities"
+        />
+        <MetricCard
+          icon={<ShieldCheck />}
+          label="Bindings"
+          value={String(data.bindings.length)}
+          detail="Place/identity bindings"
+        />
+      </section>
+      {data.derived ? (
+        <WarningCallout>
+          These are derived default identities. No explicit compartment identity
+          profiles are configured yet.
+        </WarningCallout>
+      ) : null}
+      <Panel title="Compartment identities">
+        {data.identities.length === 0 ? (
+          <EmptyState
+            title="No identities"
+            body="Bek has not derived or configured any compartment identities yet."
+          />
+        ) : (
+          <div className="table-scroll">
+            <table className="responsive-table wide-table">
+              <caption className="sr-only">Compartment identities</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Identity</th>
+                  <th scope="col">Scope</th>
+                  <th scope="col">State</th>
+                  <th scope="col">Baseline</th>
+                  <th scope="col">Place</th>
+                  <th scope="col">Access bundles</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.identities.map((identity) => (
+                  <IdentityRow
+                    identity={identity}
+                    placeName={placeName(identity.placeId)}
+                    key={identity.id}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function IdentityRow({
+  identity,
+  placeName,
+}: {
+  identity: CompartmentIdentity;
+  placeName?: string | undefined;
+}) {
+  return (
+    <tr>
+      <td data-label="Identity">
+        <strong>{identity.name}</strong>
+        <div className="muted">{identity.id}</div>
+      </td>
+      <td data-label="Scope">
+        <StatusBadge value={identity.scope} />
+      </td>
+      <td data-label="State">
+        <StatusBadge value={identity.enabled ? "enabled" : "disabled"} />
+      </td>
+      <td data-label="Baseline">
+        {identity.baseline ? (
+          <StatusBadge value="baseline" />
+        ) : (
+          <span className="muted">—</span>
+        )}
+      </td>
+      <td data-label="Place">
+        {placeName ?? <span className="muted">Unscoped</span>}
+      </td>
+      <td data-label="Access bundles">{identity.accessBundleIds.length}</td>
+    </tr>
   );
 }
 
@@ -3253,10 +3891,15 @@ export function AuditPage() {
     runId,
     limit,
   };
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching } = useQuery({
     queryKey: ["audit-events", filters],
     queryFn: () => fetchAuditEvents(filters),
   });
+  const filtersActive =
+    source !== "all" ||
+    search.trim().length > 0 ||
+    action.trim().length > 0 ||
+    runId.trim().length > 0;
 
   if (isLoading) return <div className="state">Loading audit log...</div>;
   if (error || !data)
@@ -3315,7 +3958,11 @@ export function AuditPage() {
           </>
         }
       />
-      <Panel title="Audit filters">
+      <CollapsibleSection
+        title="Audit filters"
+        addLabel="Show filters"
+        closeLabel="Hide filters"
+      >
         {exportError ? <WarningCallout>{exportError}</WarningCallout> : null}
         <form
           className="settings-grid compact-form"
@@ -3386,83 +4033,32 @@ export function AuditPage() {
             </button>
           </div>
         </form>
-      </Panel>
-      <Panel>
-        <EventTimeline events={data} />
+      </CollapsibleSection>
+      <Panel
+        action={
+          isFetching ? (
+            <span className="chip" role="status" aria-live="polite">
+              Updating...
+            </span>
+          ) : null
+        }
+      >
+        <EventTimeline
+          events={data}
+          emptyTitle={filtersActive ? "No matching events" : "No events"}
+          emptyBody={
+            filtersActive
+              ? "No audit events match these filters. Try widening or resetting them."
+              : "Bek has not recorded events for this scope yet."
+          }
+        />
       </Panel>
     </div>
   );
 }
 
 export function RunDetailPage() {
-  const { runId } = useParams({ from: "/runs/$runId" });
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["run", runId],
-    queryFn: () => fetchRunDetail(runId),
-  });
-
-  if (isLoading) return <div className="state">Loading run...</div>;
-  if (error || !data) return <div className="state error">Run not found.</div>;
-
-  return (
-    <div className="page">
-      <PageHeader
-        eyebrow="Run detail"
-        title={data.run.prompt}
-        actions={
-          <Link to="/runs" className="secondary">
-            <ArrowLeft size={16} aria-hidden="true" />
-            Runs
-          </Link>
-        }
-      />
-      <section className="metrics">
-        <MetricCard
-          icon={<Clock />}
-          label="Status"
-          value={data.run.status.replaceAll("_", " ")}
-          detail={formatDateTime(data.run.updatedAt)}
-        />
-        <MetricCard
-          icon={<GitPullRequest />}
-          label="Trigger"
-          value={data.run.trigger}
-          detail={data.run.runtimeProfileId}
-        />
-        <MetricCard
-          icon={<KeyRound />}
-          label="Cost"
-          value={formatMoney(
-            data.run.actualCostCents || data.run.estimatedCostCents,
-          )}
-          detail="estimated or actual"
-        />
-      </section>
-      <section className="grid">
-        <Panel title="Approvals">
-          {data.approvals.length === 0 ? (
-            <EmptyState
-              title="No approval required"
-              body="This run completed under channel policy."
-            />
-          ) : (
-            <div className="bundle-list">
-              {data.approvals.map((approval) => (
-                <div className="bundle" key={approval.id}>
-                  <strong>{approval.action}</strong>
-                  <span>{approval.payloadHash}</span>
-                  <StatusBadge value={approval.status} />
-                </div>
-              ))}
-            </div>
-          )}
-        </Panel>
-        <Panel title="Events">
-          <EventTimeline events={data.events} />
-        </Panel>
-      </section>
-    </div>
-  );
+  return <RunSessionView />;
 }
 
 export function RunsTable({
@@ -3516,14 +4112,17 @@ export function RunsTable({
   );
 }
 
-function EventTimeline({ events }: { events: AuditLogEntry[] }) {
+function EventTimeline({
+  events,
+  emptyTitle = "No events",
+  emptyBody = "Bek has not recorded events for this scope yet.",
+}: {
+  events: AuditLogEntry[];
+  emptyTitle?: string;
+  emptyBody?: string;
+}) {
   if (events.length === 0) {
-    return (
-      <EmptyState
-        title="No events"
-        body="Bek has not recorded events for this scope yet."
-      />
-    );
+    return <EmptyState title={emptyTitle} body={emptyBody} />;
   }
   return (
     <ol className="timeline">

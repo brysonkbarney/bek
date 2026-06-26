@@ -22,13 +22,22 @@ import {
   type ModelGatewayRequest,
   type ModelGatewayResponse,
 } from "@bek/model-router";
-import { FakeSandboxProvider } from "@bek/sandbox";
+import {
+  FakeSandboxProvider,
+  createDefaultSandboxPolicy,
+  type SandboxMount,
+  type SandboxNetworkPolicy,
+  type SandboxPolicy,
+  type SandboxResourceLimits,
+} from "@bek/sandbox";
 import { describe, expect, it } from "vitest";
+import type { AiSdkAgentRuntimeAdapterOptions } from "./index";
 import {
   InMemoryWorkerEventSink,
   InMemoryWorkerQueue,
   WorkerRuntimeService,
   canTransitionRunAttemptState,
+  createAiSdkAgentRuntimeAdapter,
   createAiSdkGatewayRuntimeAdapter,
   createLocalRuntimeAdapters,
   createModelGatewayFromEnv,
@@ -125,6 +134,38 @@ function removeSandboxGrant(snapshot: ReturnType<typeof createSeedSnapshot>) {
     );
   }
 }
+
+function sandboxPolicyWith(input: {
+  network?: Partial<SandboxNetworkPolicy> | undefined;
+  mounts?: SandboxMount[] | undefined;
+  resourceLimits?: Partial<SandboxResourceLimits> | undefined;
+}): SandboxPolicy {
+  const base = createDefaultSandboxPolicy({
+    providerKind: "noop",
+    risk: "privileged",
+  });
+  return {
+    ...base,
+    network: { ...base.network, ...input.network },
+    mounts: input.mounts ?? base.mounts,
+    resourceLimits: { ...base.resourceLimits, ...input.resourceLimits },
+  };
+}
+
+const sandboxWorktreeMounts: SandboxMount[] = [
+  {
+    source: "/host/worktree",
+    target: "/workspace/worktree",
+    mode: "read_write",
+    purpose: "worktree",
+  },
+  {
+    source: "/host/artifacts",
+    target: "/workspace/artifacts",
+    mode: "read_write",
+    purpose: "artifact",
+  },
+];
 
 function completedResult(): RuntimeResult {
   return {
@@ -1511,6 +1552,220 @@ describe("worker runtime service", () => {
     });
   });
 
+  it("processes queued runs through the AI SDK 7 agent-loop adapter", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_agent_loop",
+      prompt: "@bek investigate the failing deploy",
+    });
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_agent_loop",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [
+        createAiSdkAgentRuntimeAdapter({
+          // Match the seeded ai_sdk runtime profile adapter id.
+          id: "ai-sdk-local-stub",
+          registry: createModelProviderRegistry([
+            {
+              id: "openai",
+              displayName: "OpenAI",
+              kind: "openai",
+              models: [
+                {
+                  id: "openai/gpt-5.4",
+                  benchmark: {
+                    model: "openai/gpt-5.4",
+                    qualityScore: 95,
+                    speedScore: 70,
+                    inputCostPerMillionTokensCents: 125,
+                    outputCostPerMillionTokensCents: 1000,
+                    contextWindowTokens: 400_000,
+                  },
+                },
+              ],
+            },
+          ]),
+          // Deterministic, network-free model generation for the test.
+          generate: async (params) => {
+            expect(params.prompt).toContain(
+              "Envelope: bek-untrusted-content-v1",
+            );
+            return {
+              text: "Deploy investigation complete.",
+              usage: { inputTokens: 8_000, outputTokens: 2_000 },
+              finishReason: "stop",
+              toolCallCount: 0,
+            };
+          },
+        }),
+      ],
+      workerId: "worker_agent_loop",
+      now: () => baseNow,
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected agent-loop processing.");
+    }
+    expect(decision.result).toMatchObject({
+      status: "completed",
+      finalText: "Deploy investigation complete.",
+      // (8000 * 125 + 2000 * 1000) / 1_000_000 = 3 cents.
+      actualCostCents: 3,
+    });
+    const events = queue.read().events;
+    expect(events.map((event) => event.type)).toEqual(
+      expect.arrayContaining([
+        "runtime.started",
+        "model.requested",
+        "model.completed",
+        "runtime.completed",
+        "worker.completed",
+      ]),
+    );
+  });
+
+  it("resumes the agent-loop adapter with approval-required grants treated as approved", async () => {
+    let now = baseNow;
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_agent_loop_resume",
+      prompt: "@bek open a pull request with the fix",
+    });
+    const queue = new InMemoryWorkerQueue({
+      now: () => now,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_agent_loop_resume",
+        now,
+      }),
+      now,
+    });
+
+    // Deterministic, network-free generation that always "invokes" the
+    // approval-gated github.pr tool. On the initial start the loop has not been
+    // approved, so the tool records a pending approval and the run suspends. On
+    // resume the adapter passes isApproved=() => true, so the same tool call is
+    // allowed through the governed proxy and the run completes.
+    let generateCalls = 0;
+    const generate: NonNullable<
+      AiSdkAgentRuntimeAdapterOptions["generate"]
+    > = async (params) => {
+      generateCalls += 1;
+      const toolName = "github_pr";
+      const pr = params.tools[toolName];
+      if (!pr?.execute) {
+        throw new Error(`Expected an approval-gated ${toolName} tool.`);
+      }
+      await pr.execute({}, {
+        toolCallId: `t${generateCalls}`,
+        messages: [],
+      } as never);
+      return {
+        text:
+          generateCalls === 1
+            ? "Approval required before I open the PR."
+            : "Pull request opened.",
+        usage: { inputTokens: 1_000, outputTokens: 500 },
+        finishReason: "stop",
+        toolCallCount: 1,
+      };
+    };
+
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [
+        createAiSdkAgentRuntimeAdapter({
+          // Match the seeded ai_sdk runtime profile adapter id.
+          id: "ai-sdk-local-stub",
+          generate,
+        }),
+      ],
+      workerId: "worker_agent_loop_resume",
+      now: () => now,
+    });
+
+    now = "2026-06-24T18:00:01.000Z";
+    const paused = await service.processNext({ now });
+    expect(paused.decision).toBe("processed");
+    if (paused.decision !== "processed") {
+      throw new Error("Expected agent-loop start to pause for approval.");
+    }
+    expect(paused.result.status).toBe("awaiting_approval");
+    // The text generated before suspension is carried into the result.
+    expect(paused.result).toMatchObject({
+      finalText: "Approval required before I open the PR.",
+    });
+    expect(paused.settlement.decision).toBe("paused_for_approval");
+    const gate = queue.read().records[0]?.approval;
+    if (!gate) {
+      throw new Error("Expected the agent loop to record an approval gate.");
+    }
+    expect(gate).toMatchObject({
+      action: "github.pr",
+      risk: "write_external",
+      status: "pending",
+    });
+
+    now = "2026-06-24T18:00:03.000Z";
+    const resume = queue.resumeAfterApproval({
+      approval: {
+        id: gate.approvalId,
+        orgId: run.orgId,
+        runId: run.id,
+        action: gate.action,
+        risk: gate.risk,
+        status: "approved",
+        payloadHash: gate.payloadHash,
+        requestedByPrincipalId: run.requesterPrincipalId,
+        createdAt: gate.createdAt,
+        expiresAt: gate.expiresAt,
+        decidedByPrincipalId: "principal_admin",
+        decidedAt: now,
+      },
+      now,
+    });
+    expect(resume.decision).toBe("resume_enqueued");
+
+    const completed = await service.processNext({ now });
+    expect(completed.decision).toBe("processed");
+    if (completed.decision !== "processed") {
+      throw new Error("Expected agent-loop resume processing.");
+    }
+    expect(completed.result.status).toBe("completed");
+    expect(completed.result).toMatchObject({
+      finalText: "Pull request opened.",
+    });
+    expect(completed.settlement.decision).toBe("completed");
+    // Same attempt resumed, not a fresh attempt.
+    expect(completed.record.item.attempt).toBe(1);
+    expect(generateCalls).toBe(2);
+    expect(queue.read().records[0]).toMatchObject({
+      status: "completed",
+      attemptState: "completed",
+    });
+  });
+
   it("keeps AI SDK Gateway fallback under the strictest runtime budget", async () => {
     const { snapshot, run } = snapshotWithQueuedRun({
       runId: "run_gateway_budget_fallback",
@@ -1932,6 +2187,293 @@ describe("worker runtime service", () => {
         risk: "read_internal",
       }),
     ).rejects.toThrow(/destroyed/);
+  });
+
+  it("fails sandbox runs without executing when egress is denied by policy", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_sandbox_egress_denied",
+      runtimeProfileId: "runtime_code",
+    });
+    updateSandboxGrant(snapshot, {
+      decision: "allow",
+      requiresApproval: false,
+      risk: "privileged",
+      resource: "sandbox:noop",
+    });
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_sandbox_egress_denied",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+    const sandboxProvider = new FakeSandboxProvider({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [
+        createSandboxRuntimeAdapter({
+          provider: sandboxProvider,
+          networkTargets: ["https://evil.example.com"],
+        }),
+      ],
+      sandboxProvider,
+      // Network is disabled by default, so any egress target is denied.
+      sandboxPolicyProvider: () => sandboxPolicyWith({}),
+      workerId: "worker_sandbox_egress_denied",
+      now: () => baseNow,
+      retryPolicy: { maxAttempts: 1 },
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected egress denial to settle.");
+    }
+    expect(decision.result).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("Sandbox egress denied"),
+    });
+    // The command must never have executed.
+    expect(sandboxProvider.read().commands).toHaveLength(0);
+    expect(queue.read().events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "sandbox.network_changed",
+          data: expect.objectContaining({
+            target: "https://evil.example.com",
+            reason: "network_disabled",
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("fails sandbox runs closed when a path escapes the filesystem roots", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_sandbox_fs_escape",
+      runtimeProfileId: "runtime_code",
+    });
+    updateSandboxGrant(snapshot, {
+      decision: "allow",
+      requiresApproval: false,
+      risk: "privileged",
+      resource: "sandbox:noop",
+    });
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_sandbox_fs_escape",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+    const sandboxProvider = new FakeSandboxProvider({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [
+        createSandboxRuntimeAdapter({
+          provider: sandboxProvider,
+          // cwd escapes the configured worktree/artifact roots.
+          cwd: "/etc/secrets",
+        }),
+      ],
+      sandboxProvider,
+      sandboxPolicyProvider: () =>
+        sandboxPolicyWith({ mounts: sandboxWorktreeMounts }),
+      workerId: "worker_sandbox_fs_escape",
+      now: () => baseNow,
+      retryPolicy: { maxAttempts: 1 },
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected filesystem escape to settle.");
+    }
+    expect(decision.result).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("Sandbox working directory /etc/secrets"),
+    });
+    // Failed closed: command never executed.
+    expect(sandboxProvider.read().commands).toHaveLength(0);
+  });
+
+  it("clamps oversized sandbox resource limits and emits a warning event", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_sandbox_clamped",
+      runtimeProfileId: "runtime_code",
+    });
+    updateSandboxGrant(snapshot, {
+      decision: "allow",
+      requiresApproval: false,
+      risk: "privileged",
+      resource: "sandbox:noop",
+    });
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_sandbox_clamped",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+    const sandboxProvider = new FakeSandboxProvider({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+      execResults: [
+        {
+          exitCode: 0,
+          stdout: "clamped hello",
+          stderr: "",
+          durationMs: 10,
+          timedOut: false,
+        },
+      ],
+    });
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [createSandboxRuntimeAdapter({ provider: sandboxProvider })],
+      sandboxProvider,
+      sandboxPolicyProvider: () =>
+        sandboxPolicyWith({
+          // Memory far exceeds the default max (65_536mb) and is clamped down.
+          resourceLimits: { memoryMb: 1_000_000 },
+        }),
+      workerId: "worker_sandbox_clamped",
+      now: () => baseNow,
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected clamped run to process.");
+    }
+    expect(decision.result.status).toBe("completed");
+    // Command still runs after clamping.
+    expect(sandboxProvider.read().commands).toHaveLength(1);
+    expect(queue.read().events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "sandbox.started",
+          message: expect.stringContaining("clamped"),
+          data: expect.objectContaining({
+            warnings: expect.arrayContaining([
+              expect.objectContaining({
+                field: "memoryMb",
+                kind: "clamped_high",
+              }),
+            ]),
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("runs the happy path when egress, filesystem, and limits all pass", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_sandbox_happy_policy",
+      runtimeProfileId: "runtime_code",
+    });
+    updateSandboxGrant(snapshot, {
+      decision: "allow",
+      requiresApproval: false,
+      risk: "privileged",
+      resource: "sandbox:noop",
+    });
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: createRunWorkItem({
+        orgId: run.orgId,
+        runId: run.id,
+        reason: "new_run",
+        traceId: "trace_sandbox_happy_policy",
+        now: baseNow,
+      }),
+      now: baseNow,
+    });
+    const sandboxProvider = new FakeSandboxProvider({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+      execResults: [
+        {
+          exitCode: 0,
+          stdout: "allowed hello",
+          stderr: "",
+          durationMs: 12,
+          timedOut: false,
+        },
+      ],
+    });
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [
+        createSandboxRuntimeAdapter({
+          provider: sandboxProvider,
+          networkTargets: ["https://api.allowed.example.com"],
+          cwd: "/workspace/worktree",
+        }),
+      ],
+      sandboxProvider,
+      sandboxPolicyProvider: () =>
+        sandboxPolicyWith({
+          network: {
+            mode: "egress_allowlist",
+            allowlist: ["https://api.allowed.example.com"],
+          },
+          mounts: sandboxWorktreeMounts,
+        }),
+      workerId: "worker_sandbox_happy_policy",
+      now: () => baseNow,
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected happy-path sandbox processing.");
+    }
+    expect(decision.settlement.decision).toBe("completed");
+    expect(decision.result.status).toBe("completed");
+    expect(decision.result.finalText).toContain("allowed hello");
+    expect(sandboxProvider.read().commands).toHaveLength(1);
+    // No egress denial event and no clamp warning when everything passes.
+    const eventTypes = queue.read().events.map((event) => event.type);
+    expect(eventTypes).not.toContain("sandbox.network_changed");
   });
 
   it("denies sandbox runtime adapters when sandbox.exec is not granted", async () => {
@@ -2359,6 +2901,100 @@ describe("worker runtime service", () => {
       ]),
     );
     expect(JSON.stringify(events)).not.toContain("fake-gh-installation-token");
+  });
+
+  it("executes an approved GitHub draft PR with a deterministically derived head branch", async () => {
+    const { snapshot, run } = snapshotWithQueuedRun({
+      runId: "run_github_derived",
+      capability: "github.pr",
+      resource: "github:redohq/checkout",
+    });
+    // No explicit headBranch: it is derived deterministically from the plan
+    // hash + title slug, and the approval-hash round trip must still hold.
+    const plan = createGitHubDraftPullRequestWorkflowPlan({
+      repository: "github:redohq/checkout",
+      installationId: 99,
+      title: "Add deterministic branch coverage",
+      body: "Approved Bek GitHub workflow.",
+      commitMessage: "Add deterministic branch coverage",
+      changes: [{ path: ".bek/run_github_derived.txt", content: "ok\n" }],
+      labels: ["bek"],
+      runId: run.id,
+      requesterPrincipalId: run.requesterPrincipalId,
+    });
+    expect(plan.pullRequest.headBranch.startsWith("bek/")).toBe(true);
+    expect(plan.branchResolution.decision).toBe("create_new");
+    const derivedBranch = plan.pullRequest.headBranch;
+
+    const approved = approval({
+      id: "approval_github_derived",
+      runId: run.id,
+      status: "approved",
+      payloadHash: hashPayload(
+        createGitHubDraftPullRequestWorkflowApprovalPayload(plan),
+      ),
+      payloadMetadata: createGitHubDraftPullRequestWorkflowApprovalPayload(
+        plan,
+      ) as unknown as Record<string, unknown>,
+      decidedByPrincipalId: "principal_admin",
+      decidedAt: "2026-06-24T18:00:01.000Z",
+    });
+    const queue = new InMemoryWorkerQueue({
+      now: () => baseNow,
+      idFactory: createSequentialIdFactory(),
+    });
+    queue.enqueue({
+      item: workItem({
+        runId: run.id,
+        reason: "approval_granted",
+        traceId: "trace_github_derived",
+      }),
+      now: baseNow,
+    });
+    const fakeGitHub = new FakeGitHubClient([
+      { repository: "github:redohq/checkout" },
+    ]);
+    const service = new WorkerRuntimeService({
+      queue,
+      state: snapshot,
+      adapters: [resumeTrackingAdapter(() => undefined)],
+      workerId: "worker_service",
+      now: () => baseNow,
+      approvalProvider: () => approved,
+      githubDraftPullRequest: {
+        tokenProvider: new FakeGitHubInstallationTokenProvider({
+          now: () => new Date(baseNow),
+        }),
+        client: fakeGitHub,
+        // The planProvider re-derives the same plan; the derived branch must
+        // match so validateApprovedGitHubDraftPullRequestPlan stays green.
+        planProvider: () =>
+          createGitHubDraftPullRequestWorkflowPlan({
+            repository: "github:redohq/checkout",
+            installationId: 99,
+            title: "Add deterministic branch coverage",
+            body: "Approved Bek GitHub workflow.",
+            commitMessage: "Add deterministic branch coverage",
+            changes: [{ path: ".bek/run_github_derived.txt", content: "ok\n" }],
+            labels: ["bek"],
+            runId: run.id,
+            requesterPrincipalId: run.requesterPrincipalId,
+          }),
+      },
+    });
+
+    const decision = await service.processNext({ now: baseNow });
+
+    expect(decision.decision).toBe("processed");
+    if (decision.decision !== "processed") {
+      throw new Error("Expected GitHub workflow processing.");
+    }
+    expect(decision.settlement.decision).toBe("completed");
+    expect(
+      fakeGitHub.readRepositoryState("github:redohq/checkout"),
+    ).toMatchObject({
+      pullRequests: [{ number: 1, headBranch: derivedBranch, labels: ["bek"] }],
+    });
   });
 
   it("fails GitHub execution before token leasing when the approved hash differs", async () => {

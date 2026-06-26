@@ -1,4 +1,5 @@
 export * from "./approvals";
+export * from "./branches";
 export * from "./config";
 export * from "./execution";
 export * from "./fake-client";

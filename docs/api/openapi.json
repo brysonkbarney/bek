@@ -1,0 +1,1692 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Bek Admin API",
+    "version": "0.1.0",
+    "description": "Bek admin control-plane API. Generated from registered routes."
+  },
+  "servers": [{ "url": "/" }],
+  "tags": [
+    { "name": "access-bundles" },
+    { "name": "agent" },
+    { "name": "approvals" },
+    { "name": "audit-events" },
+    { "name": "auth" },
+    { "name": "bootstrap" },
+    { "name": "budgets" },
+    { "name": "capabilities" },
+    { "name": "channels" },
+    { "name": "connectors" },
+    { "name": "credentials" },
+    { "name": "github" },
+    { "name": "health" },
+    { "name": "identities" },
+    { "name": "mcp" },
+    { "name": "memory" },
+    { "name": "model-policies" },
+    { "name": "model-usage" },
+    { "name": "openapi.json" },
+    { "name": "org" },
+    { "name": "outbound" },
+    { "name": "policy" },
+    { "name": "principals" },
+    { "name": "ready" },
+    { "name": "runs" },
+    { "name": "runtime-profiles" },
+    { "name": "setup" },
+    { "name": "slack" },
+    { "name": "worker" }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "GET /health",
+        "tags": ["health"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "summary": "GET /ready",
+        "tags": ["ready"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/auth/session": {
+      "post": {
+        "summary": "Exchange admin auth for a signed session cookie + CSRF token.",
+        "tags": ["auth"],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "role": { "type": "string" },
+                    "principalId": { "type": "string" },
+                    "orgId": { "type": "string" },
+                    "csrfToken": { "type": "string" },
+                    "expiresAt": { "type": "string", "format": "date-time" }
+                  },
+                  "required": [
+                    "ok",
+                    "role",
+                    "principalId",
+                    "orgId",
+                    "csrfToken",
+                    "expiresAt"
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      },
+      "get": {
+        "summary": "Describe the current admin session.",
+        "tags": ["auth"],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "role": { "type": "string" },
+                    "principalId": { "type": "string" },
+                    "orgId": { "type": "string" },
+                    "method": {
+                      "type": "string",
+                      "enum": ["bearer_token", "local_bypass", "session"]
+                    }
+                  },
+                  "required": ["ok", "role", "principalId", "orgId", "method"]
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "summary": "Clear the admin session cookie.",
+        "tags": ["auth"],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "ok": { "type": "boolean" } },
+                  "required": ["ok"]
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/memory/chunks": {
+      "get": {
+        "summary": "List memory sources and chunks for the authenticated org.",
+        "tags": ["memory"],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sources": {
+                      "type": "array",
+                      "items": { "type": "object" }
+                    },
+                    "chunks": { "type": "array", "items": { "type": "object" } }
+                  },
+                  "required": ["sources", "chunks"]
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      },
+      "post": {
+        "summary": "Record memory chunks for a source.",
+        "tags": ["memory"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "201": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "created": { "type": "integer" },
+                    "chunks": { "type": "array", "items": { "type": "object" } }
+                  },
+                  "required": ["created", "chunks"]
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sourceId": { "type": "string" },
+                  "chunks": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "contentHash": { "type": "string" },
+                        "text": { "type": "string" },
+                        "sensitivity": {
+                          "type": "string",
+                          "enum": [
+                            "public",
+                            "internal",
+                            "confidential",
+                            "restricted"
+                          ]
+                        },
+                        "placeId": { "type": "string" },
+                        "identityId": { "type": "string" },
+                        "allowedPlaceIds": {
+                          "type": "array",
+                          "items": { "type": "string" }
+                        },
+                        "allowedIdentityIds": {
+                          "type": "array",
+                          "items": { "type": "string" }
+                        },
+                        "citation": {
+                          "type": "object",
+                          "properties": {
+                            "sourceId": { "type": "string" },
+                            "sourceKind": {
+                              "type": "string",
+                              "enum": [
+                                "slack_thread",
+                                "doc",
+                                "repo",
+                                "ticket",
+                                "mcp_output",
+                                "uploaded_file",
+                                "generated_report"
+                              ]
+                            },
+                            "label": { "type": "string" },
+                            "uri": { "type": "string" },
+                            "locator": { "type": "string" }
+                          },
+                          "required": ["sourceId", "sourceKind", "label"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": ["contentHash", "text", "citation"],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": ["sourceId", "chunks"],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/memory/sources": {
+      "post": {
+        "summary": "Register a governed memory source.",
+        "tags": ["memory"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "201": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "string" },
+                    "orgId": { "type": "string" },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "slack_thread",
+                        "doc",
+                        "repo",
+                        "ticket",
+                        "mcp_output",
+                        "uploaded_file",
+                        "generated_report"
+                      ]
+                    },
+                    "sensitivity": {
+                      "type": "string",
+                      "enum": [
+                        "public",
+                        "internal",
+                        "confidential",
+                        "restricted"
+                      ]
+                    },
+                    "contentHash": { "type": "string" }
+                  },
+                  "required": ["id", "kind", "sensitivity"]
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "slack_thread",
+                      "doc",
+                      "repo",
+                      "ticket",
+                      "mcp_output",
+                      "uploaded_file",
+                      "generated_report"
+                    ]
+                  },
+                  "sensitivity": {
+                    "type": "string",
+                    "enum": ["public", "internal", "confidential", "restricted"]
+                  },
+                  "contentHash": { "type": "string" },
+                  "placeId": { "type": "string" },
+                  "identityId": { "type": "string" },
+                  "title": { "type": "string" },
+                  "uri": { "type": "string" },
+                  "retention": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": ["forever", "ttl_days", "keep_until"]
+                      },
+                      "ttlDays": { "type": "integer" },
+                      "retainUntil": { "type": "string" }
+                    },
+                    "required": ["kind"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["kind", "sensitivity", "contentHash"],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/memory/retrieve": {
+      "get": {
+        "summary": "Retrieve ACL-filtered injectable memory chunks for a place.",
+        "tags": ["memory"],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "placeId": { "type": "string" },
+                    "identityId": { "type": "string" },
+                    "isolated": { "type": "boolean" },
+                    "allowed": {
+                      "type": "array",
+                      "items": { "type": "object" }
+                    },
+                    "excluded": {
+                      "type": "array",
+                      "items": { "type": "object" }
+                    }
+                  },
+                  "required": [
+                    "placeId",
+                    "identityId",
+                    "isolated",
+                    "allowed",
+                    "excluded"
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/health/dashboard": {
+      "get": {
+        "summary": "Operator health dashboard (component rollup).",
+        "tags": ["health"],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": ["ok", "degraded", "down", "unknown"]
+                    },
+                    "generatedAt": { "type": "string", "format": "date-time" },
+                    "componentCount": { "type": "integer" },
+                    "healthy": { "type": "boolean" },
+                    "statusCounts": {
+                      "type": "object",
+                      "properties": {
+                        "ok": { "type": "integer" },
+                        "degraded": { "type": "integer" },
+                        "down": { "type": "integer" },
+                        "unknown": { "type": "integer" }
+                      },
+                      "required": ["ok", "degraded", "down", "unknown"]
+                    },
+                    "unhealthy": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": { "type": "string" },
+                          "status": {
+                            "type": "string",
+                            "enum": ["ok", "degraded", "down", "unknown"]
+                          },
+                          "reason": { "type": "string" }
+                        },
+                        "required": ["name", "status", "reason"]
+                      }
+                    },
+                    "components": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": { "type": "string" },
+                          "status": {
+                            "type": "string",
+                            "enum": ["ok", "degraded", "down", "unknown"]
+                          },
+                          "detail": { "type": "string" },
+                          "checkedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": ["name", "status"]
+                      }
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "generatedAt",
+                    "componentCount",
+                    "healthy",
+                    "statusCounts",
+                    "unhealthy",
+                    "components"
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/credentials/health": {
+      "get": {
+        "summary": "Credential health rollup for the authenticated org.",
+        "tags": ["credentials"],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "credentials": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "credentialId": { "type": "string" },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "active",
+                              "disabled",
+                              "rotation_due",
+                              "revoked",
+                              "expired",
+                              "missing_scopes"
+                            ]
+                          },
+                          "reason": { "type": "string" },
+                          "leaseable": { "type": "boolean" },
+                          "missingScopes": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                          },
+                          "activeLeaseIds": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                          }
+                        },
+                        "required": [
+                          "credentialId",
+                          "state",
+                          "reason",
+                          "leaseable"
+                        ]
+                      }
+                    },
+                    "summary": {
+                      "type": "object",
+                      "additionalProperties": { "type": "integer" }
+                    },
+                    "leaseableCount": { "type": "integer" }
+                  },
+                  "required": ["credentials", "summary", "leaseableCount"]
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/credentials/{id}/lease": {
+      "post": {
+        "summary": "Issue a lease against a credential (records last-used).",
+        "tags": ["credentials"],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "credentialId": { "type": "string" },
+                    "leasedAt": { "type": "string", "format": "date-time" },
+                    "health": {
+                      "type": "object",
+                      "properties": {
+                        "credentialId": { "type": "string" },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "active",
+                            "disabled",
+                            "rotation_due",
+                            "revoked",
+                            "expired",
+                            "missing_scopes"
+                          ]
+                        },
+                        "reason": { "type": "string" },
+                        "leaseable": { "type": "boolean" },
+                        "missingScopes": {
+                          "type": "array",
+                          "items": { "type": "string" }
+                        },
+                        "activeLeaseIds": {
+                          "type": "array",
+                          "items": { "type": "string" }
+                        }
+                      },
+                      "required": [
+                        "credentialId",
+                        "state",
+                        "reason",
+                        "leaseable"
+                      ]
+                    }
+                  },
+                  "required": ["credentialId", "leasedAt", "health"]
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/mcp/invocations": {
+      "post": {
+        "summary": "Classify and record an MCP tool invocation.",
+        "tags": ["mcp"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "201": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entry": {
+                      "type": "object",
+                      "properties": {
+                        "id": { "type": "string" },
+                        "runId": { "type": "string" },
+                        "resource": { "type": "string" },
+                        "inputHash": { "type": "string" },
+                        "latencyMs": { "type": "integer" },
+                        "status": {
+                          "type": "string",
+                          "enum": ["executed", "blocked", "error"]
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "schemaVersion": { "type": "string" },
+                        "schemaHash": { "type": "string" },
+                        "outputHash": { "type": "string" },
+                        "error": { "type": "string" },
+                        "identityId": { "type": "string" },
+                        "credentialLeaseId": { "type": "string" }
+                      },
+                      "required": [
+                        "id",
+                        "runId",
+                        "resource",
+                        "inputHash",
+                        "latencyMs",
+                        "status",
+                        "createdAt"
+                      ]
+                    },
+                    "risk": {
+                      "type": "object",
+                      "properties": {
+                        "risk": {
+                          "type": "string",
+                          "enum": [
+                            "read_internal",
+                            "write_draft",
+                            "write_external",
+                            "privileged"
+                          ]
+                        },
+                        "requiresApproval": { "type": "boolean" },
+                        "reason": { "type": "string" }
+                      },
+                      "required": ["risk", "requiresApproval", "reason"]
+                    }
+                  },
+                  "required": ["entry", "risk"]
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "runId": { "type": "string" },
+                  "toolName": { "type": "string" },
+                  "resource": { "type": "string" },
+                  "status": {
+                    "type": "string",
+                    "enum": ["executed", "blocked", "error"]
+                  },
+                  "latencyMs": { "type": "integer" },
+                  "input": { "type": "object", "additionalProperties": true },
+                  "description": { "type": "string" },
+                  "inputSchema": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "identityId": { "type": "string" },
+                  "error": { "type": "string" }
+                },
+                "required": [
+                  "runId",
+                  "toolName",
+                  "resource",
+                  "status",
+                  "latencyMs"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List MCP tool-invocation ledger entries with a summary.",
+        "tags": ["mcp"],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string" },
+                          "runId": { "type": "string" },
+                          "resource": { "type": "string" },
+                          "inputHash": { "type": "string" },
+                          "latencyMs": { "type": "integer" },
+                          "status": {
+                            "type": "string",
+                            "enum": ["executed", "blocked", "error"]
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "schemaVersion": { "type": "string" },
+                          "schemaHash": { "type": "string" },
+                          "outputHash": { "type": "string" },
+                          "error": { "type": "string" },
+                          "identityId": { "type": "string" },
+                          "credentialLeaseId": { "type": "string" }
+                        },
+                        "required": [
+                          "id",
+                          "runId",
+                          "resource",
+                          "inputHash",
+                          "latencyMs",
+                          "status",
+                          "createdAt"
+                        ]
+                      }
+                    },
+                    "summary": {
+                      "type": "object",
+                      "properties": {
+                        "runId": { "type": "string" },
+                        "resource": { "type": "string" },
+                        "entries": { "type": "integer" },
+                        "executed": { "type": "integer" },
+                        "blocked": { "type": "integer" },
+                        "errors": { "type": "integer" },
+                        "totalLatencyMs": { "type": "integer" },
+                        "averageLatencyMs": { "type": "number" },
+                        "maxLatencyMs": { "type": "integer" }
+                      },
+                      "required": [
+                        "entries",
+                        "executed",
+                        "blocked",
+                        "errors",
+                        "totalLatencyMs",
+                        "averageLatencyMs",
+                        "maxLatencyMs"
+                      ]
+                    }
+                  },
+                  "required": ["entries", "summary"]
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/budgets/status": {
+      "get": {
+        "summary": "Daily budget status per policy with alert rollup.",
+        "tags": ["budgets"],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "budgets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "budgetPolicyId": { "type": "string" },
+                          "name": { "type": "string" },
+                          "perDayCents": { "type": "integer" },
+                          "spentTodayCents": { "type": "integer" },
+                          "remainingTodayCents": { "type": "integer" },
+                          "utilization": { "type": "number" },
+                          "state": {
+                            "type": "string",
+                            "enum": ["ok", "warning", "exceeded"]
+                          },
+                          "runCountToday": { "type": "integer" }
+                        },
+                        "required": [
+                          "budgetPolicyId",
+                          "name",
+                          "perDayCents",
+                          "spentTodayCents",
+                          "remainingTodayCents",
+                          "utilization",
+                          "state",
+                          "runCountToday"
+                        ]
+                      }
+                    },
+                    "alerts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "budgetPolicyId": { "type": "string" },
+                          "name": { "type": "string" },
+                          "perDayCents": { "type": "integer" },
+                          "spentTodayCents": { "type": "integer" },
+                          "remainingTodayCents": { "type": "integer" },
+                          "utilization": { "type": "number" },
+                          "state": {
+                            "type": "string",
+                            "enum": ["ok", "warning", "exceeded"]
+                          },
+                          "runCountToday": { "type": "integer" }
+                        },
+                        "required": [
+                          "budgetPolicyId",
+                          "name",
+                          "perDayCents",
+                          "spentTodayCents",
+                          "remainingTodayCents",
+                          "utilization",
+                          "state",
+                          "runCountToday"
+                        ]
+                      }
+                    }
+                  },
+                  "required": ["budgets", "alerts"]
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/identities": {
+      "get": {
+        "summary": "Agent identity profiles and bindings for the authenticated org.",
+        "tags": ["identities"],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "identities": {
+                      "type": "array",
+                      "items": { "type": "object" }
+                    },
+                    "bindings": {
+                      "type": "array",
+                      "items": { "type": "object" }
+                    },
+                    "derived": { "type": "boolean" }
+                  },
+                  "required": ["identities", "bindings", "derived"]
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/openapi.json": {
+      "get": {
+        "summary": "GET /api/openapi.json",
+        "tags": ["openapi.json"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/bootstrap": {
+      "get": {
+        "summary": "GET /api/bootstrap",
+        "tags": ["bootstrap"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/org": {
+      "get": {
+        "summary": "GET /api/org",
+        "tags": ["org"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/principals": {
+      "get": {
+        "summary": "GET /api/principals",
+        "tags": ["principals"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/principals/{principalId}/external-identity": {
+      "patch": {
+        "summary": "PATCH /api/principals/{principalId}/external-identity",
+        "tags": ["principals"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/agent": {
+      "get": {
+        "summary": "GET /api/agent",
+        "tags": ["agent"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      },
+      "patch": {
+        "summary": "PATCH /api/agent",
+        "tags": ["agent"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/capabilities": {
+      "get": {
+        "summary": "GET /api/capabilities",
+        "tags": ["capabilities"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/setup/status": {
+      "get": {
+        "summary": "GET /api/setup/status",
+        "tags": ["setup"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/channels": {
+      "get": {
+        "summary": "GET /api/channels",
+        "tags": ["channels"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      },
+      "post": {
+        "summary": "POST /api/channels",
+        "tags": ["channels"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/connectors/slack": {
+      "get": {
+        "summary": "GET /api/connectors/slack",
+        "tags": ["connectors"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/connectors/slack/manual-install": {
+      "post": {
+        "summary": "POST /api/connectors/slack/manual-install",
+        "tags": ["connectors"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/connectors/mcp": {
+      "get": {
+        "summary": "GET /api/connectors/mcp",
+        "tags": ["connectors"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      },
+      "post": {
+        "summary": "POST /api/connectors/mcp",
+        "tags": ["connectors"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/connectors/mcp/{serverId}": {
+      "patch": {
+        "summary": "PATCH /api/connectors/mcp/{serverId}",
+        "tags": ["connectors"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/slack/channels/discover": {
+      "get": {
+        "summary": "GET /api/slack/channels/discover",
+        "tags": ["slack"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/setup/github": {
+      "get": {
+        "summary": "GET /api/setup/github",
+        "tags": ["setup"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/github/webhooks": {
+      "post": {
+        "summary": "POST /api/github/webhooks",
+        "tags": ["github"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/channels/{channelId}": {
+      "get": {
+        "summary": "GET /api/channels/{channelId}",
+        "tags": ["channels"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      },
+      "patch": {
+        "summary": "PATCH /api/channels/{channelId}",
+        "tags": ["channels"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      },
+      "delete": {
+        "summary": "DELETE /api/channels/{channelId}",
+        "tags": ["channels"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/access-bundles": {
+      "get": {
+        "summary": "GET /api/access-bundles",
+        "tags": ["access-bundles"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      },
+      "post": {
+        "summary": "POST /api/access-bundles",
+        "tags": ["access-bundles"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/access-bundles/{bundleId}": {
+      "patch": {
+        "summary": "PATCH /api/access-bundles/{bundleId}",
+        "tags": ["access-bundles"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/access-bundles/{bundleId}/places": {
+      "post": {
+        "summary": "POST /api/access-bundles/{bundleId}/places",
+        "tags": ["access-bundles"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/access-bundles/{bundleId}/places/{placeId}": {
+      "delete": {
+        "summary": "DELETE /api/access-bundles/{bundleId}/places/{placeId}",
+        "tags": ["access-bundles"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/access-bundles/{bundleId}/grants": {
+      "post": {
+        "summary": "POST /api/access-bundles/{bundleId}/grants",
+        "tags": ["access-bundles"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/access-bundles/{bundleId}/grants/{grantId}": {
+      "patch": {
+        "summary": "PATCH /api/access-bundles/{bundleId}/grants/{grantId}",
+        "tags": ["access-bundles"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      },
+      "delete": {
+        "summary": "DELETE /api/access-bundles/{bundleId}/grants/{grantId}",
+        "tags": ["access-bundles"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/model-policies": {
+      "get": {
+        "summary": "GET /api/model-policies",
+        "tags": ["model-policies"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/model-policies/{modelPolicyId}": {
+      "patch": {
+        "summary": "PATCH /api/model-policies/{modelPolicyId}",
+        "tags": ["model-policies"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/runtime-profiles": {
+      "get": {
+        "summary": "GET /api/runtime-profiles",
+        "tags": ["runtime-profiles"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/runtime-profiles/{runtimeProfileId}": {
+      "patch": {
+        "summary": "PATCH /api/runtime-profiles/{runtimeProfileId}",
+        "tags": ["runtime-profiles"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/runs": {
+      "get": {
+        "summary": "GET /api/runs",
+        "tags": ["runs"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      },
+      "post": {
+        "summary": "POST /api/runs",
+        "tags": ["runs"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/approvals": {
+      "get": {
+        "summary": "GET /api/approvals",
+        "tags": ["approvals"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/audit-events": {
+      "get": {
+        "summary": "GET /api/audit-events",
+        "tags": ["audit-events"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/audit-events/export": {
+      "get": {
+        "summary": "GET /api/audit-events/export",
+        "tags": ["audit-events"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/model-usage": {
+      "get": {
+        "summary": "GET /api/model-usage",
+        "tags": ["model-usage"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/runs/{runId}": {
+      "get": {
+        "summary": "GET /api/runs/{runId}",
+        "tags": ["runs"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/runs/{runId}/events": {
+      "get": {
+        "summary": "GET /api/runs/{runId}/events",
+        "tags": ["runs"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/runs/{runId}/trace": {
+      "get": {
+        "summary": "Structured execution trace for a run.",
+        "tags": ["runs"],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "runId": { "type": "string" },
+                    "eventCount": { "type": "integer" },
+                    "startedAt": { "type": "string", "format": "date-time" },
+                    "endedAt": { "type": "string", "format": "date-time" },
+                    "durationMs": { "type": "integer" },
+                    "finalStatus": { "type": "string" },
+                    "phases": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "type": { "type": "string" },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "completed",
+                              "failed",
+                              "denied",
+                              "in_progress",
+                              "pending",
+                              "unknown"
+                            ]
+                          },
+                          "message": { "type": "string" },
+                          "startedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "endedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "durationMs": { "type": "integer" }
+                        },
+                        "required": ["type", "status"]
+                      }
+                    },
+                    "modelCalls": {
+                      "type": "array",
+                      "items": { "type": "object" }
+                    },
+                    "toolCalls": {
+                      "type": "array",
+                      "items": { "type": "object" }
+                    },
+                    "approvals": {
+                      "type": "array",
+                      "items": { "type": "object" }
+                    }
+                  },
+                  "required": [
+                    "runId",
+                    "eventCount",
+                    "finalStatus",
+                    "phases",
+                    "modelCalls",
+                    "toolCalls",
+                    "approvals"
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/worker/queue": {
+      "get": {
+        "summary": "GET /api/worker/queue",
+        "tags": ["worker"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/outbound/slack": {
+      "get": {
+        "summary": "GET /api/outbound/slack",
+        "tags": ["outbound"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/outbound/slack/drain": {
+      "post": {
+        "summary": "POST /api/outbound/slack/drain",
+        "tags": ["outbound"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/worker/drain": {
+      "post": {
+        "summary": "POST /api/worker/drain",
+        "tags": ["worker"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/worker/dead-letters/{deadLetterId}/redrive": {
+      "post": {
+        "summary": "POST /api/worker/dead-letters/{deadLetterId}/redrive",
+        "tags": ["worker"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/runs/{runId}/cancel": {
+      "post": {
+        "summary": "POST /api/runs/{runId}/cancel",
+        "tags": ["runs"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/approvals/{approvalId}/approve": {
+      "post": {
+        "summary": "POST /api/approvals/{approvalId}/approve",
+        "tags": ["approvals"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/approvals/{approvalId}/deny": {
+      "post": {
+        "summary": "POST /api/approvals/{approvalId}/deny",
+        "tags": ["approvals"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/policy/evaluate": {
+      "post": {
+        "summary": "POST /api/policy/evaluate",
+        "tags": ["policy"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/slack/install": {
+      "get": {
+        "summary": "GET /api/slack/install",
+        "tags": ["slack"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/slack/install-url": {
+      "get": {
+        "summary": "GET /api/slack/install-url",
+        "tags": ["slack"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/slack/manifest": {
+      "get": {
+        "summary": "GET /api/slack/manifest",
+        "tags": ["slack"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/slack/oauth/callback": {
+      "get": {
+        "summary": "GET /api/slack/oauth/callback",
+        "tags": ["slack"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/slack/interactivity": {
+      "post": {
+        "summary": "POST /api/slack/interactivity",
+        "tags": ["slack"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/slack/commands": {
+      "post": {
+        "summary": "POST /api/slack/commands",
+        "tags": ["slack"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/slack/events": {
+      "post": {
+        "summary": "POST /api/slack/events",
+        "tags": ["slack"],
+        "responses": {
+          "200": { "description": "Successful response" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden (insufficient scope)" },
+          "404": { "description": "Not found" }
+        }
+      }
+    }
+  }
+}

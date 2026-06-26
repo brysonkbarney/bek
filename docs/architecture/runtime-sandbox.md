@@ -1,5 +1,11 @@
 # Runtime And Sandbox Architecture
 
+> AI SDK 7 update: Bek now ships a real `ToolLoopAgent`-based agent loop
+> (worker adapter `ai-sdk-agent`). See
+> [AI SDK 7 architecture](./ai-sdk-7.md) for the agent loop, approvals,
+> `contextSchema`, telemetry, and the status of `WorkflowAgent`/`HarnessAgent`/
+> `@ai-sdk/sandbox` (not in stable `ai@7`).
+
 Status: implementation in progress. Bek has runtime/sandbox contracts, a local
 Docker sandbox provider, and a worker runtime adapter that can create a sandbox
 lease, execute a command, collect an optional artifact, emit sandbox timeline

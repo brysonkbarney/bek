@@ -273,3 +273,6 @@ function escapeUntrustedContentBoundary(content: string): string {
 function singleLine(value: string): string {
   return value.replace(/[\r\n]+/g, " ").trim();
 }
+
+export * from "./agent-loop";
+export * from "./telemetry";

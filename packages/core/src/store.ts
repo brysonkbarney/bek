@@ -4,6 +4,14 @@ import { createApprovalRequest, createRun, createRunEvent } from "./runs";
 import { createId } from "./ids";
 import { redactSecrets, redactUnknown } from "./security";
 import type {
+  MemoryChunk,
+  MemoryCitation,
+  MemoryRetention,
+  MemorySensitivity,
+  MemorySource,
+  MemorySourceKind,
+} from "./memory";
+import type {
   AccessBundle,
   AgentIdentity,
   ApprovalRequest,
@@ -644,6 +652,24 @@ export class BekStore {
     return structuredClone(credential);
   }
 
+  /** Records that a credential was just used (e.g. a lease was issued). */
+  markCredentialUsed(
+    credentialId: string,
+    now?: string,
+  ): CredentialRecord | undefined {
+    const credential = this.snapshot.credentials.find(
+      (candidate) => candidate.id === credentialId,
+    );
+    if (!credential) {
+      return undefined;
+    }
+    const at = now ?? new Date().toISOString();
+    credential.lastUsedAt = at;
+    credential.updatedAt = at;
+    this.recordChange();
+    return structuredClone(credential);
+  }
+
   createRun(input: {
     prompt: string;
     placeScopeId: string;
@@ -1116,6 +1142,82 @@ export class BekStore {
     this.snapshot.auditEvents.unshift(event);
     this.recordChange();
     return structuredClone(event);
+  }
+
+  recordMemorySource(input: {
+    kind: MemorySourceKind;
+    sensitivity: MemorySensitivity;
+    contentHash: string;
+    createdByPrincipalId: string;
+    retention: MemoryRetention;
+    placeId?: string | undefined;
+    identityId?: string | undefined;
+    title?: string | undefined;
+    uri?: string | undefined;
+    now?: string | undefined;
+  }): MemorySource {
+    const source: MemorySource = {
+      id: createId("memsrc"),
+      orgId: this.snapshot.org.id,
+      kind: input.kind,
+      sensitivity: input.sensitivity,
+      contentHash: input.contentHash,
+      createdByPrincipalId: input.createdByPrincipalId,
+      retention: input.retention,
+      createdAt: input.now ?? new Date().toISOString(),
+    };
+    assignOptional(source, "placeId", input.placeId);
+    assignOptional(source, "identityId", input.identityId);
+    assignOptional(source, "title", input.title);
+    assignOptional(source, "uri", input.uri);
+    if (!this.snapshot.memorySources) {
+      this.snapshot.memorySources = [];
+    }
+    this.snapshot.memorySources.unshift(source);
+    this.recordChange();
+    return structuredClone(source);
+  }
+
+  recordMemoryChunks(
+    inputs: Array<{
+      sourceId: string;
+      sensitivity: MemorySensitivity;
+      contentHash: string;
+      citation: MemoryCitation;
+      text: string;
+      placeId?: string | undefined;
+      identityId?: string | undefined;
+      allowedPlaceIds?: string[] | undefined;
+      allowedIdentityIds?: string[] | undefined;
+    }>,
+  ): MemoryChunk[] {
+    if (!this.snapshot.memoryChunks) {
+      this.snapshot.memoryChunks = [];
+    }
+    const created: MemoryChunk[] = [];
+    for (const input of inputs) {
+      const chunk: MemoryChunk = {
+        id: createId("memchunk"),
+        orgId: this.snapshot.org.id,
+        sourceId: input.sourceId,
+        sensitivity: input.sensitivity,
+        contentHash: input.contentHash,
+        citation: input.citation,
+        text: redactSecrets(input.text),
+      };
+      assignOptional(chunk, "placeId", input.placeId);
+      assignOptional(chunk, "identityId", input.identityId);
+      assignOptional(chunk, "allowedPlaceIds", input.allowedPlaceIds);
+      assignOptional(chunk, "allowedIdentityIds", input.allowedIdentityIds);
+      this.snapshot.memoryChunks.push(chunk);
+      created.push(chunk);
+    }
+    this.recordChange();
+    return structuredClone(created);
+  }
+
+  listMemoryChunks(): MemoryChunk[] {
+    return structuredClone(this.snapshot.memoryChunks ?? []);
   }
 
   appendRunEvent(input: AppendRunEventInput): RunEvent {

@@ -1,17 +1,22 @@
 import type { CapabilityGrant } from "@bek/core";
 import { describe, expect, it } from "vitest";
 import {
+  InMemoryToolInvocationLedger,
   McpTenantToolAllowlist,
   MockMcpTransport,
   McpServerRegistry,
   ToolSchemaCache,
   canExposeTool,
+  classifyToolManifestRisk,
   classifyToolRisk,
   createMcpProxyRequest,
+  createToolInvocationLedgerEntry,
+  detectToolSchemaDrift,
   executeMcpProxyRequest,
   manifestFromGrants,
   parseMcpResource,
   resourceFromTool,
+  summarizeToolInvocationLedger,
 } from "./index";
 
 const grants: CapabilityGrant[] = [
@@ -705,5 +710,366 @@ describe("MCP gateway", () => {
       output: { restarted: true },
     });
     expect(transportCalls).toBe(1);
+  });
+});
+
+describe("classifyToolManifestRisk", () => {
+  it("escalates to privileged from name/description keywords", () => {
+    const result = classifyToolManifestRisk({
+      name: "secrets_read",
+      description: "Read API tokens from the vault",
+    });
+    expect(result).toMatchObject({
+      risk: "privileged",
+      requiresApproval: true,
+    });
+    expect(result.signals).toContain("keyword_privileged");
+  });
+
+  it("treats destructive annotations as at least an external write", () => {
+    const result = classifyToolManifestRisk({
+      name: "cleanup",
+      description: "Tidy up old records",
+      annotations: { destructiveHint: true },
+    });
+    expect(result).toMatchObject({
+      risk: "write_external",
+      requiresApproval: true,
+    });
+    expect(result.signals).toContain("annotation_destructive");
+  });
+
+  it("treats open-world and external domains as external writes", () => {
+    const openWorld = classifyToolManifestRisk({
+      name: "fetch_page",
+      description: "Fetch a page",
+      annotations: { openWorldHint: true },
+    });
+    expect(openWorld.risk).toBe("write_external");
+    expect(openWorld.signals).toContain("annotation_open_world");
+
+    const external = classifyToolManifestRisk({
+      name: "lookup",
+      description: "Look up a record",
+      externalDomains: ["api.partner.com"],
+    });
+    expect(external.risk).toBe("write_external");
+    expect(external.signals).toContain("external_domain");
+    expect(external.reason).toContain("api.partner.com");
+  });
+
+  it("trusts a read-only hint only when no elevating signal is present", () => {
+    const trusted = classifyToolManifestRisk({
+      name: "list_things",
+      description: "List things",
+      annotations: { readOnlyHint: true },
+    });
+    expect(trusted.risk).toBe("read_internal");
+    expect(trusted.signals).toContain("annotation_read_only");
+
+    const overridden = classifyToolManifestRisk({
+      name: "list_things",
+      description: "List things",
+      annotations: { readOnlyHint: true, destructiveHint: true },
+    });
+    expect(overridden.risk).toBe("write_external");
+    expect(overridden.signals).not.toContain("annotation_read_only");
+
+    const privileged = classifyToolManifestRisk({
+      name: "read_secrets",
+      description: "Read secrets",
+      annotations: { readOnlyHint: true },
+    });
+    expect(privileged.risk).toBe("privileged");
+  });
+
+  it("is conservative when no metadata is available (unknown -> higher risk)", () => {
+    const result = classifyToolManifestRisk({ name: "do_thing" });
+    expect(result.risk).toBe("write_external");
+    expect(result.requiresApproval).toBe(true);
+    expect(result.signals).toContain("unknown_conservative");
+  });
+
+  it("keeps a benign described read tool internal", () => {
+    const result = classifyToolManifestRisk({
+      name: "get_status",
+      description: "Return the current rollout status",
+    });
+    expect(result.risk).toBe("read_internal");
+    expect(result.requiresApproval).toBe(false);
+  });
+});
+
+describe("InMemoryToolInvocationLedger", () => {
+  const baseEntry = {
+    runId: "run_1",
+    resource: "mcp:docs/search",
+    inputHash: "a".repeat(64),
+    latencyMs: 12,
+    status: "executed" as const,
+  };
+
+  it("records entries with deterministic ids and preserves optional fields", () => {
+    const ledger = new InMemoryToolInvocationLedger();
+    const entry = ledger.record({
+      ...baseEntry,
+      schemaVersion: "v2",
+      schemaHash: "b".repeat(64),
+      outputHash: "c".repeat(64),
+      identityId: "identity_alpha",
+      credentialLeaseId: "lease_1",
+      createdAt: "2026-06-24T00:00:00.000Z",
+    });
+
+    expect(entry).toMatchObject({
+      id: "run_1:mcp:docs/search:1",
+      schemaVersion: "v2",
+      identityId: "identity_alpha",
+      credentialLeaseId: "lease_1",
+      outputHash: "c".repeat(64),
+      createdAt: "2026-06-24T00:00:00.000Z",
+    });
+  });
+
+  it("omits optional fields when not provided", () => {
+    const entry = createToolInvocationLedgerEntry(baseEntry);
+    expect(entry.error).toBeUndefined();
+    expect(entry.outputHash).toBeUndefined();
+    expect(entry.identityId).toBeUndefined();
+    expect(entry.credentialLeaseId).toBeUndefined();
+    expect(entry.schemaVersion).toBeUndefined();
+  });
+
+  it("rejects negative or non-finite latency", () => {
+    expect(() =>
+      createToolInvocationLedgerEntry({ ...baseEntry, latencyMs: -1 }),
+    ).toThrow(/non-negative/);
+    expect(() =>
+      createToolInvocationLedgerEntry({
+        ...baseEntry,
+        latencyMs: Number.NaN,
+      }),
+    ).toThrow(/non-negative/);
+  });
+
+  it("returns defensive copies that do not mutate ledger state", () => {
+    const ledger = new InMemoryToolInvocationLedger();
+    ledger.record(baseEntry);
+    const listed = ledger.list();
+    listed[0]!.latencyMs = 9999;
+    expect(ledger.list()[0]!.latencyMs).toBe(12);
+  });
+
+  it("filters by runId and resource", () => {
+    const ledger = new InMemoryToolInvocationLedger();
+    ledger.record(baseEntry);
+    ledger.record({ ...baseEntry, runId: "run_2", resource: "mcp:x/y" });
+    ledger.record({ ...baseEntry, resource: "mcp:x/y" });
+
+    expect(ledger.list({ runId: "run_1" })).toHaveLength(2);
+    expect(ledger.list({ resource: "mcp:x/y" })).toHaveLength(2);
+    expect(ledger.list({ runId: "run_1", resource: "mcp:x/y" })).toHaveLength(
+      1,
+    );
+  });
+
+  it("summarizes statuses and latency", () => {
+    const ledger = new InMemoryToolInvocationLedger();
+    ledger.record({ ...baseEntry, latencyMs: 10 });
+    ledger.record({ ...baseEntry, status: "blocked", latencyMs: 20 });
+    ledger.record({
+      ...baseEntry,
+      status: "error",
+      error: "boom",
+      latencyMs: 30,
+    });
+
+    const summary = ledger.summarize({ runId: "run_1" });
+    expect(summary).toMatchObject({
+      runId: "run_1",
+      entries: 3,
+      executed: 1,
+      blocked: 1,
+      errors: 1,
+      totalLatencyMs: 60,
+      averageLatencyMs: 20,
+      maxLatencyMs: 30,
+    });
+  });
+
+  it("summarizes an empty ledger without dividing by zero", () => {
+    const summary = summarizeToolInvocationLedger([]);
+    expect(summary).toMatchObject({
+      entries: 0,
+      averageLatencyMs: 0,
+      maxLatencyMs: 0,
+      totalLatencyMs: 0,
+    });
+  });
+});
+
+describe("detectToolSchemaDrift", () => {
+  const cached = {
+    description: "Search docs",
+    hash: "cached_hash",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        limit: { type: "integer" },
+      },
+      required: ["query"],
+    } as Record<string, unknown>,
+  };
+
+  it("reports no drift for an identical schema", () => {
+    const result = detectToolSchemaDrift({
+      cached,
+      presented: {
+        description: "Search docs",
+        inputSchema: cached.inputSchema,
+      },
+    });
+    expect(result).toMatchObject({
+      severity: "none",
+      decision: "unchanged",
+    });
+    expect(result.changes).toHaveLength(0);
+    expect(result.cachedHash).toBe("cached_hash");
+    expect(result.presentedHash).toHaveLength(64);
+  });
+
+  it("flags an added optional property as compatible drift to quarantine", () => {
+    const result = detectToolSchemaDrift({
+      cached,
+      presented: {
+        description: "Search docs",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            limit: { type: "integer" },
+            cursor: { type: "string" },
+          },
+          required: ["query"],
+        },
+      },
+    });
+    expect(result.severity).toBe("compatible");
+    expect(result.decision).toBe("quarantine");
+    expect(result.changes).toContainEqual({
+      path: "$.properties.cursor",
+      kind: "property_added",
+    });
+  });
+
+  it("flags removed properties and new required fields as breaking", () => {
+    const removed = detectToolSchemaDrift({
+      cached,
+      presented: {
+        description: "Search docs",
+        inputSchema: {
+          type: "object",
+          properties: { query: { type: "string" } },
+          required: ["query"],
+        },
+      },
+    });
+    expect(removed.severity).toBe("breaking");
+    expect(removed.changes).toContainEqual({
+      path: "$.properties.limit",
+      kind: "property_removed",
+    });
+
+    const newRequired = detectToolSchemaDrift({
+      cached,
+      presented: {
+        description: "Search docs",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            limit: { type: "integer" },
+          },
+          required: ["query", "limit"],
+        },
+      },
+    });
+    expect(newRequired.severity).toBe("breaking");
+    expect(newRequired.changes).toContainEqual({
+      path: "$.required.limit",
+      kind: "required_added",
+    });
+  });
+
+  it("treats a changed property type as breaking", () => {
+    const result = detectToolSchemaDrift({
+      cached,
+      presented: {
+        description: "Search docs",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            limit: { type: "string" },
+          },
+          required: ["query"],
+        },
+      },
+    });
+    expect(result.severity).toBe("breaking");
+    expect(result.changes).toContainEqual({
+      path: "$.properties.limit",
+      kind: "property_changed",
+    });
+  });
+
+  it("treats tightening additionalProperties as breaking and relaxing as compatible", () => {
+    const tightened = detectToolSchemaDrift({
+      cached: {
+        ...cached,
+        inputSchema: { ...cached.inputSchema, additionalProperties: true },
+      },
+      presented: {
+        description: "Search docs",
+        inputSchema: { ...cached.inputSchema, additionalProperties: false },
+      },
+    });
+    expect(tightened.severity).toBe("breaking");
+    expect(tightened.changes).toContainEqual({
+      path: "$.additionalProperties",
+      kind: "additional_properties_tightened",
+    });
+
+    const relaxed = detectToolSchemaDrift({
+      cached: {
+        ...cached,
+        inputSchema: { ...cached.inputSchema, additionalProperties: false },
+      },
+      presented: {
+        description: "Search docs",
+        inputSchema: { ...cached.inputSchema, additionalProperties: true },
+      },
+    });
+    expect(relaxed.severity).toBe("compatible");
+    expect(relaxed.changes).toContainEqual({
+      path: "$.additionalProperties",
+      kind: "additional_properties_relaxed",
+    });
+  });
+
+  it("detects a description-only change as compatible drift", () => {
+    const result = detectToolSchemaDrift({
+      cached,
+      presented: {
+        description: "Search docs (now with limits)",
+        inputSchema: cached.inputSchema,
+      },
+    });
+    expect(result.severity).toBe("compatible");
+    expect(result.changes).toContainEqual({
+      path: "$",
+      kind: "description_changed",
+    });
   });
 });
