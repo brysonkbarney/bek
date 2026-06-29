@@ -15,7 +15,7 @@
   "dependencies": {
     "@bek/core": "workspace:*",
     "@bek/sandbox": "workspace:*",
-    "ai": "^7.0.0",
+    "ai": "^7.0.4",
     "zod": "^4.0.0"
   },
   "devDependencies": {

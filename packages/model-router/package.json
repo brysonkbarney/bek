@@ -13,10 +13,10 @@
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^4.0.0",
-    "@ai-sdk/openai": "^4.0.0",
+    "@ai-sdk/anthropic": "^4.0.1",
+    "@ai-sdk/openai": "^4.0.2",
     "@bek/core": "workspace:*",
-    "ai": "^7.0.0"
+    "ai": "^7.0.4"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
