@@ -23,7 +23,7 @@
     "@bek/runtime": "workspace:*",
     "@bek/slack": "workspace:*",
     "@bek/worker": "workspace:*",
-    "@hono/node-server": "^1.19.6",
+    "@hono/node-server": "^2.0.6",
     "hono": "^4.11.3",
     "tsx": "^4.21.0",
     "zod": "^4.2.1"
